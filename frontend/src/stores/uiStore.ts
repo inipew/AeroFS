@@ -20,6 +20,7 @@ export const useUiStore = defineStore('ui', () => {
   const deleteTargets = ref<string[]>([]);
 
   const isUploadOpen = ref<boolean>(false);
+  const isSearchOpen = ref<boolean>(false);
 
   // Code Editor
   const isEditorOpen = ref<boolean>(false);
@@ -199,6 +200,7 @@ export const useUiStore = defineStore('ui', () => {
     isDeleteOpen,
     deleteTargets,
     isUploadOpen,
+    isSearchOpen,
     isEditorOpen,
     editorFile,
     editorContent,

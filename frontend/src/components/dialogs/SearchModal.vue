@@ -36,22 +36,40 @@
         </span>
       </div>
 
-      <!-- Scope Filter Tabs -->
-      <div class="px-4 py-2 border-b border-gray-100 dark:border-slate-800/80 bg-white dark:bg-[#0f1422] flex items-center space-x-1.5 text-[11px]">
-        <span class="text-gray-400 dark:text-slate-500 text-[10px] font-bold uppercase tracking-wider mr-1">Scope:</span>
-        <button
-          v-for="sc in scopeOptions"
-          :key="sc.id"
-          @click="scope = sc.id"
-          :class="[
-            'px-2.5 py-1 rounded-xl transition cursor-pointer font-medium',
-            scope === sc.id
-              ? 'bg-blue-600 text-white font-semibold shadow-xs'
-              : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-gray-900 dark:hover:text-white'
-          ]"
-        >
-          {{ sc.label }}
-        </button>
+      <!-- Scope Filter Tabs & Type Chips -->
+      <div class="px-4 py-2 border-b border-gray-100 dark:border-slate-800/80 bg-white dark:bg-[#0f1422] flex flex-wrap items-center justify-between gap-2 text-[11px]">
+        <div class="flex items-center space-x-1.5 overflow-x-auto">
+          <span class="text-gray-400 dark:text-slate-500 text-[10px] font-bold uppercase tracking-wider mr-1">Scope:</span>
+          <button
+            v-for="sc in scopeOptions"
+            :key="sc.id"
+            @click="scope = sc.id"
+            :class="[
+              'px-2.5 py-0.5 rounded-xl transition cursor-pointer font-medium text-xs',
+              scope === sc.id
+                ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-gray-900 dark:hover:text-white'
+            ]"
+          >
+            {{ sc.label }}
+          </button>
+        </div>
+
+        <div class="flex items-center space-x-1 overflow-x-auto">
+          <button
+            v-for="cat in ['all', 'code', 'images', 'archives', 'documents', 'large']"
+            :key="cat"
+            @click="filterType = cat as any"
+            :class="[
+              'px-2 py-0.5 rounded-lg transition cursor-pointer text-[10px] font-medium capitalize',
+              filterType === cat
+                ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400 font-bold border border-blue-500/30'
+                : 'text-gray-400 dark:text-slate-500 hover:bg-gray-100 dark:hover:bg-slate-800'
+            ]"
+          >
+            {{ cat === 'large' ? '> 10 MB' : cat }}
+          </button>
+        </div>
       </div>
 
       <!-- Results List -->
@@ -61,7 +79,7 @@
           <p class="font-medium">Searching files...</p>
         </div>
 
-        <div v-else-if="results.length === 0 && query.trim()" class="py-12 text-center text-gray-400 dark:text-slate-500">
+        <div v-else-if="filteredResults.length === 0 && query.trim()" class="py-12 text-center text-gray-400 dark:text-slate-500">
           No files found matching "<span class="text-gray-700 dark:text-slate-200 font-semibold">{{ query }}</span>"
         </div>
 
@@ -71,14 +89,14 @@
         </div>
 
         <div
-          v-for="res in results"
+          v-for="res in filteredResults"
           :key="`${res.connectionId}:${res.entry.path}`"
           @click="handleSelect(res)"
           class="p-2.5 rounded-2xl hover:bg-gray-100 dark:hover:bg-slate-800/80 cursor-pointer flex items-center justify-between transition group text-xs border border-transparent hover:border-gray-200 dark:hover:border-slate-700"
         >
           <div class="flex items-center space-x-2.5 truncate max-w-[420px]">
             <FbIcon
-              :name="res.entry.kind === 'directory' ? 'folder' : 'file'"
+              :name="getEntryIcon(res.entry)"
               size="18px"
               :class="res.entry.kind === 'directory' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-slate-500'"
             />
@@ -105,12 +123,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { apiClient } from '../../api/client';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import type { FileEntry } from '../../types/vfs';
+
+import type { IconName } from '../../utils/icons';
 
 interface SearchResultItem {
   connectionId: string;
@@ -132,6 +152,7 @@ const isOpen = ref(props.modelValue);
 const query = ref('');
 const isRegex = ref(false);
 const scope = ref<'current_dir' | 'current_conn' | 'all_conns'>('current_dir');
+const filterType = ref<'all' | 'code' | 'images' | 'archives' | 'documents' | 'large'>('all');
 const loading = ref(false);
 const results = ref<SearchResultItem[]>([]);
 const inputRef = ref<HTMLInputElement | null>(null);
@@ -141,6 +162,41 @@ const scopeOptions = [
   { id: 'current_conn' as const, label: 'Current Connection' },
   { id: 'all_conns' as const, label: 'All Connections' },
 ];
+
+const filteredResults = computed(() => {
+  if (filterType.value === 'all') return results.value;
+  return results.value.filter((r) => {
+    if (r.entry.kind === 'directory') return true;
+    const ext = r.entry.name.split('.').pop()?.toLowerCase() || '';
+    if (filterType.value === 'code') {
+      return ['rs', 'ts', 'js', 'vue', 'html', 'css', 'py', 'json', 'toml', 'yaml', 'sh', 'sql', 'c', 'cpp', 'go', 'java'].includes(ext);
+    }
+    if (filterType.value === 'images') {
+      return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'avif'].includes(ext);
+    }
+    if (filterType.value === 'archives') {
+      return ['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'bz2', 'xz'].includes(ext);
+    }
+    if (filterType.value === 'documents') {
+      return ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'xlsx'].includes(ext);
+    }
+    if (filterType.value === 'large') {
+      return (r.entry.size || 0) > 10 * 1024 * 1024; // > 10 MB
+    }
+    return true;
+  });
+});
+
+function getEntryIcon(entry: FileEntry): IconName {
+  if (entry.kind === 'directory') return 'folder';
+  const ext = entry.name.split('.').pop()?.toLowerCase() || '';
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image';
+  if (['mp4', 'webm', 'mov', 'mkv'].includes(ext)) return 'video';
+  if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) return 'audio';
+  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(ext)) return 'archive';
+  if (['pdf'].includes(ext)) return 'pdf';
+  return 'file';
+}
 
 let debounceTimer: any = null;
 

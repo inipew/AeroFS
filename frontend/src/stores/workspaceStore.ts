@@ -490,17 +490,49 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     const { operation, sourceConnectionId, paths } = clipboard.value;
     const isCut = operation === 'cut';
+    transferStore.resetBatchConflict();
 
     try {
       for (const filePath of paths) {
-        const fileName = filePath.split('/').pop() || 'file';
-        const destPath = targetPanel.location.path === '/'
+        let fileName = filePath.split('/').pop() || 'file';
+        let destPath = targetPanel.location.path === '/'
           ? `/${fileName}`
           : `${targetPanel.location.path}/${fileName}`;
 
         // Skip pasting into exact same path on same connection
         if (sourceConnectionId === targetPanel.location.connectionId && filePath === destPath) {
           continue;
+        }
+
+        // Check if destination directory already has an entry with the same name
+        const alreadyExists = targetPanel.runtime.entries.some((e) => e.name === fileName);
+        if (alreadyExists) {
+          const resolution = await transferStore.requestConflict(fileName, filePath, destPath);
+          if (resolution === 'cancel') {
+            break;
+          }
+          if (resolution === 'skip') {
+            continue;
+          }
+          if (resolution === 'keep_both') {
+            const dotIdx = fileName.lastIndexOf('.');
+            let count = 1;
+            let candidateName = dotIdx > 0
+              ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+              : `${fileName} (${count})`;
+
+            while (targetPanel.runtime.entries.some((e) => e.name === candidateName)) {
+              count++;
+              candidateName = dotIdx > 0
+                ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+                : `${fileName} (${count})`;
+            }
+
+            fileName = candidateName;
+            destPath = targetPanel.location.path === '/'
+              ? `/${fileName}`
+              : `${targetPanel.location.path}/${fileName}`;
+          }
         }
 
         await transferStore.submitTransfer(
@@ -528,24 +560,57 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function transferBetweenPanels(
-    _sourcePanelId: PanelId,
+    sourcePanelId: PanelId,
     destPanelId: PanelId,
     filePaths: string[],
     isMove: boolean = false
   ) {
     const destPanel = getPanel(destPanelId);
+    const sourcePanel = getPanel(sourcePanelId);
     const transferStore = useTransferStore();
+    transferStore.resetBatchConflict();
 
     for (const filePath of filePaths) {
-      const fileName = filePath.split('/').pop() || 'file';
-      const destPath = destPanel.location.path === '/'
+      let fileName = filePath.split('/').pop() || 'file';
+      let destPath = destPanel.location.path === '/'
         ? `/${fileName}`
         : `${destPanel.location.path}/${fileName}`;
+
+      // Check if destination directory already has an entry with the same name
+      const alreadyExists = destPanel.runtime.entries.some((e) => e.name === fileName);
+      if (alreadyExists) {
+        const resolution = await transferStore.requestConflict(fileName, filePath, destPath);
+        if (resolution === 'cancel') {
+          break;
+        }
+        if (resolution === 'skip') {
+          continue;
+        }
+        if (resolution === 'keep_both') {
+          const dotIdx = fileName.lastIndexOf('.');
+          let count = 1;
+          let candidateName = dotIdx > 0
+            ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+            : `${fileName} (${count})`;
+
+          while (destPanel.runtime.entries.some((e) => e.name === candidateName)) {
+            count++;
+            candidateName = dotIdx > 0
+              ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+              : `${fileName} (${count})`;
+          }
+
+          fileName = candidateName;
+          destPath = destPanel.location.path === '/'
+            ? `/${fileName}`
+            : `${destPanel.location.path}/${fileName}`;
+        }
+      }
 
       await transferStore.submitTransfer(
         `${isMove ? 'Move' : 'Copy'} ${fileName} to ${destPanel.location.path}`,
         isMove ? 'move' : 'copy',
-        _sourcePanelId === 'left' ? leftPanel.value.location.connectionId : rightPanel.value.location.connectionId,
+        sourcePanel.location.connectionId,
         filePath,
         destPanel.location.connectionId,
         destPath

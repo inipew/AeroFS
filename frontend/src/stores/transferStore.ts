@@ -3,10 +3,33 @@ import { ref, computed } from 'vue';
 import { apiClient } from '../api/client';
 import type { TransferJob, TransferType } from '../types/transfer';
 
+export type ConflictResolution = 'replace' | 'skip' | 'keep_both' | 'cancel';
+
+export interface ConflictState {
+  isOpen: boolean;
+  fileName: string;
+  sourcePath: string;
+  destPath: string;
+  resolve?: (resolution: ConflictResolution, applyToAll: boolean) => void;
+}
+
+export interface LiveSpeedMetrics {
+  speedBytesPerSec: number;
+  etaSeconds: number | null;
+}
+
 export const useTransferStore = defineStore('transfer', () => {
   const jobs = ref<TransferJob[]>([]);
   const isDrawerOpen = ref<boolean>(false);
   const isConnected = ref<boolean>(false);
+
+  // Live speed tracking (jobId -> { lastBytes, lastTimestamp, speed, eta })
+  const speedMetrics = ref<Record<string, LiveSpeedMetrics>>({});
+
+  // Conflict Resolution State
+  const conflictState = ref<ConflictState | null>(null);
+  let batchResolution: ConflictResolution | null = null;
+
   let socket: WebSocket | null = null;
   let reconnectTimer: any = null;
   let pollInterval: any = null;
@@ -39,6 +62,35 @@ export const useTransferStore = defineStore('transfer', () => {
       jobs.value = resp.data;
     } catch (err) {
       console.error('Failed to fetch transfers', err);
+    }
+  }
+
+  function updateJobProgress(job: TransferJob) {
+    const idx = jobs.value.findIndex((j) => j.id === job.id);
+    if (idx >= 0) {
+      // Calculate speed and ETA
+      const prev = speedMetrics.value[job.id];
+      if (prev && job.status === 'running') {
+        const deltaBytes = (job.transferred_bytes || 0) - (jobs.value[idx].transferred_bytes || 0);
+        if (deltaBytes > 0) {
+          const speed = deltaBytes; // approximate 1-second delta
+          const remainingBytes = (job.total_bytes || 0) - (job.transferred_bytes || 0);
+          const eta = speed > 0 ? Math.ceil(remainingBytes / speed) : null;
+          speedMetrics.value[job.id] = {
+            speedBytesPerSec: speed,
+            etaSeconds: eta,
+          };
+        }
+      } else {
+        speedMetrics.value[job.id] = {
+          speedBytesPerSec: 0,
+          etaSeconds: null,
+        };
+      }
+
+      jobs.value[idx] = job;
+    } else {
+      jobs.value.unshift(job);
     }
   }
 
@@ -79,13 +131,7 @@ export const useTransferStore = defineStore('transfer', () => {
             payload.type === 'transfer_completed' ||
             payload.type === 'transfer_failed'
           ) {
-            const updatedJob: TransferJob = payload.data;
-            const idx = jobs.value.findIndex((j) => j.id === updatedJob.id);
-            if (idx >= 0) {
-              jobs.value[idx] = updatedJob;
-            } else {
-              jobs.value.unshift(updatedJob);
-            }
+            updateJobProgress(payload.data);
           }
         } catch (e) {
           console.error('WS Parse Error', e);
@@ -143,10 +189,59 @@ export const useTransferStore = defineStore('transfer', () => {
     }
   }
 
+  async function retryTransfer(jobId: string) {
+    const job = jobs.value.find((j) => j.id === jobId);
+    if (!job) return;
+    await submitTransfer(
+      job.name,
+      job.transfer_type,
+      job.source_connection_id,
+      job.source_path,
+      job.destination_connection_id,
+      job.destination_path
+    );
+  }
+
   function clearFinished() {
     jobs.value = jobs.value.filter(
       (j) => j.status === 'running' || j.status === 'queued'
     );
+  }
+
+  // --- CONFLICT RESOLUTION ---
+
+  function requestConflict(fileName: string, sourcePath: string, destPath: string): Promise<ConflictResolution> {
+    if (batchResolution !== null) {
+      return Promise.resolve(batchResolution);
+    }
+
+    return new Promise((resolve) => {
+      conflictState.value = {
+        isOpen: true,
+        fileName,
+        sourcePath,
+        destPath,
+        resolve: (resolution, applyToAll) => {
+          if (applyToAll) {
+            batchResolution = resolution;
+          }
+          conflictState.value = null;
+          resolve(resolution);
+        },
+      };
+    });
+  }
+
+  function resolveConflict(resolution: ConflictResolution, applyToAll: boolean) {
+    if (conflictState.value?.resolve) {
+      conflictState.value.resolve(resolution, applyToAll);
+    }
+    conflictState.value = null;
+  }
+
+  function resetBatchConflict() {
+    batchResolution = null;
+    conflictState.value = null;
   }
 
   return {
@@ -155,10 +250,16 @@ export const useTransferStore = defineStore('transfer', () => {
     activeCount,
     isDrawerOpen,
     isConnected,
+    speedMetrics,
+    conflictState,
     fetchJobs,
     connectWs,
     submitTransfer,
     cancelTransfer,
+    retryTransfer,
     clearFinished,
+    requestConflict,
+    resolveConflict,
+    resetBatchConflict,
   };
 });

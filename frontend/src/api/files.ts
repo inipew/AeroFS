@@ -34,6 +34,20 @@ export function getDownloadUrl(connectionId: string, path: string): string {
   )}&download=true`;
 }
 
+export async function readFileApi(
+  connectionId: string,
+  path: string
+): Promise<{ content: string; etag: string }> {
+  const resp = await apiClient.get<string>(`/connections/${connectionId}/files/content`, {
+    params: { path },
+    responseType: 'text',
+  });
+  return {
+    content: resp.data,
+    etag: (resp.headers['etag'] as string) || '',
+  };
+}
+
 export async function createFileApi(connectionId: string, path: string): Promise<void> {
   await apiClient.post(`/connections/${connectionId}/files`, { path });
 }

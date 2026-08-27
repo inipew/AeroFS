@@ -56,9 +56,11 @@ import FbIcon from '../common/FbIcon.vue';
 import { renameEntryApi } from '../../api/files';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useHistoryStore } from '../../stores/historyStore';
 
 const workspaceStore = useWorkspaceStore();
 const uiStore = useUiStore();
+const historyStore = useHistoryStore();
 
 const newName = ref('');
 const loading = ref(false);
@@ -87,6 +89,13 @@ async function handleSubmit() {
     const toPath = parent === '/' ? `/${newName.value.trim()}` : `${parent}/${newName.value.trim()}`;
 
     await renameEntryApi(activeP.connectionId, oldPath, toPath);
+    historyStore.pushOperation({
+      type: 'rename',
+      description: `Renamed ${uiStore.renameTarget.name} → ${newName.value.trim()}`,
+      connectionId: activeP.connectionId,
+      oldPath,
+      newPath: toPath,
+    });
     uiStore.showToast(`Renamed to ${newName.value}`, 'success');
     uiStore.isRenameOpen = false;
 

@@ -59,6 +59,7 @@ import FbIcon from '../common/FbIcon.vue';
 import { createFileApi, createDirectoryApi } from '../../api/files';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useHistoryStore } from '../../stores/historyStore';
 
 const workspaceStore = useWorkspaceStore();
 const uiStore = useUiStore();
@@ -96,11 +97,20 @@ async function handleSubmit() {
       await createDirectoryApi(activeP.connectionId, fullPath);
     }
 
+    const historyStore = useHistoryStore();
+    historyStore.pushOperation({
+      type: 'create',
+      description: `Created ${uiStore.createType} ${name.value.trim()}`,
+      connectionId: activeP.connectionId,
+      path: fullPath,
+      kind: uiStore.createType,
+    });
+
     uiStore.showToast(`Created ${name.value}`, 'success');
     uiStore.isCreateOpen = false;
 
-    // Immediately reload entries!
-    await workspaceStore.refreshAll();
+    // Refresh active panel
+    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Creation failed', 'error');
   } finally {

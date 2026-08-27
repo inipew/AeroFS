@@ -237,6 +237,7 @@
     <!-- Drop Zone & File Listing Content (with Touch Pull-To-Refresh on Mobile) -->
     <div
       ref="panelContentRef"
+      @click="handleContainerClick($event)"
       @dragenter="handleDragEnter"
       @dragover="handleDragOver"
       @dragleave="handleDragLeave"
@@ -296,6 +297,7 @@
             <div
               v-for="folder in displayedFolders"
               :key="folder.path"
+              data-entry-item="true"
               draggable="true"
               @dragstart="handleDragStart($event, folder)"
               @touchstart.passive="handleTouchStart($event, folder)"
@@ -348,6 +350,7 @@
             <div
               v-for="file in displayedFiles"
               :key="file.path"
+              data-entry-item="true"
               draggable="true"
               @dragstart="handleDragStart($event, file)"
               @touchstart.passive="handleTouchStart($event, file)"
@@ -513,6 +516,7 @@
             <tr
               v-for="entry in displayedEntries"
               :key="entry.path"
+              data-entry-item="true"
               draggable="true"
               @dragstart="handleDragStart($event, entry)"
               @touchstart.passive="handleTouchStart($event, entry)"
@@ -641,9 +645,9 @@ import { useConnectionStore } from '../../stores/connectionStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useTransferStore } from '../../stores/transferStore';
 import { useUiStore } from '../../stores/uiStore';
-import { apiClient } from '../../api/client';
 import { getDownloadUrl } from '../../api/files';
 import type { FileEntry } from '../../types/vfs';
+import { PreviewResolver } from '../../services/previewResolver';
 
 const props = defineProps<{
   panelId: 'left' | 'right';
@@ -1030,46 +1034,39 @@ function handleEntryClick(e: MouseEvent, entry: FileEntry) {
   }
 }
 
+function handleContainerClick(e: MouseEvent) {
+  const target = e.target as HTMLElement;
+  if (
+    target.closest('[data-entry-item]') ||
+    target.closest('button') ||
+    target.closest('input') ||
+    target.closest('a') ||
+    target.closest('th')
+  ) {
+    return;
+  }
+
+  // User clicked on blank/empty space of workspace -> clear selection!
+  workspaceStore.setActivePanel(props.panelId);
+  panel.value.selectedEntries = [];
+  lastClickedIndex = -1;
+  uiStore.closeContextMenu();
+}
+
 async function handleEntryDoubleClick(entry: FileEntry) {
   if (entry.kind === 'directory') {
     workspaceStore.navigatePanel(props.panelId, entry.path);
     return;
   }
 
-  // 1. Archive files -> ALWAYS open in Archive Explorer directly!
-  if (isArchiveFile(entry)) {
-    emit('openArchiveViewer', {
-      connectionId: panel.value.connectionId,
-      path: entry.path,
-    });
-    return;
-  }
+  const resolution = PreviewResolver.resolve(
+    entry,
+    panel.value.connectionId,
+    displayedFiles.value,
+    (payload) => emit('openArchiveViewer', payload)
+  );
 
-  // 2. Media files -> Open in Media Viewer Modal
-  const ext = getFileExt(entry);
-  const isMedia = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif', 'mp4', 'webm', 'mov', 'mkv', 'avi', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg'].includes(ext);
-  const url = getDownloadUrl(panel.value.connectionId, entry.path);
-
-  if (isMedia) {
-    uiStore.openMediaViewer(entry.name, url, entry, displayedFiles.value, panel.value.connectionId);
-    return;
-  }
-
-  // 3. Text, config, code, dotfiles -> Open in Code Editor Modal
-  if (isTextOrCode(entry)) {
-    try {
-      fileStore.currentConnectionId = panel.value.connectionId;
-      const resp = await apiClient.get(`/connections/${panel.value.connectionId}/files/content`, {
-        params: { path: entry.path },
-        responseType: 'text',
-      });
-      uiStore.openEditor(entry, resp.data, resp.headers['etag'] || '');
-    } catch {
-      window.open(url, '_blank');
-    }
-  } else {
-    window.open(url, '_blank');
-  }
+  await resolution.open();
 }
 
 let dragEnterCounter = 0;
@@ -1182,9 +1179,40 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
       return;
     }
 
+    transferStore.resetBatchConflict();
+
     for (const filePath of data.paths) {
-      const fileName = filePath.split('/').pop() || 'file';
-      const targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
+      let fileName = filePath.split('/').pop() || 'file';
+      let targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
+
+      // Check if target directory already has an entry with the same name
+      const alreadyExists = panel.value.entries.some((e: FileEntry) => e.name === fileName);
+      if (alreadyExists) {
+        const resolution = await transferStore.requestConflict(fileName, filePath, targetPath);
+        if (resolution === 'cancel') {
+          break;
+        }
+        if (resolution === 'skip') {
+          continue;
+        }
+        if (resolution === 'keep_both') {
+          const dotIdx = fileName.lastIndexOf('.');
+          let count = 1;
+          let candidateName = dotIdx > 0
+            ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+            : `${fileName} (${count})`;
+
+          while (panel.value.entries.some((e: FileEntry) => e.name === candidateName)) {
+            count++;
+            candidateName = dotIdx > 0
+              ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+              : `${fileName} (${count})`;
+          }
+
+          fileName = candidateName;
+          targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
+        }
+      }
 
       await transferStore.submitTransfer(
         `Copy ${fileName} to ${targetDir}`,

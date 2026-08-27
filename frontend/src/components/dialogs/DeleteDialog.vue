@@ -133,10 +133,12 @@ import { apiClient } from '../../api/client';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useHistoryStore } from '../../stores/historyStore';
 
 const workspaceStore = useWorkspaceStore();
 const fileStore = useFileStore();
 const uiStore = useUiStore();
+const historyStore = useHistoryStore();
 
 const deleteMode = ref<'trash' | 'permanent'>('trash');
 const loading = ref(false);
@@ -164,6 +166,19 @@ async function handleConfirmDelete() {
         connection_id: connId,
         paths: uiStore.deleteTargets,
       });
+
+      if (resp.data.moved_items) {
+        for (const item of resp.data.moved_items) {
+          historyStore.pushOperation({
+            type: 'trash',
+            description: `Moved ${item.original_path.split('/').pop()} to Trash`,
+            connectionId: connId,
+            trashItemId: item.id,
+            originalPath: item.original_path,
+          });
+        }
+      }
+
       uiStore.showToast(resp.data.message || 'Moved item(s) to Recycle Bin', 'success');
     } else {
       // Permanent delete

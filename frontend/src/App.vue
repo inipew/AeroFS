@@ -187,6 +187,7 @@
         :connectionId="shareTargetConnection"
         :path="shareTargetPath"
       />
+      <ConflictDialog />
       <CodeEditorModal />
       <MediaViewerModal />
       <CommandPaletteModal
@@ -218,6 +219,7 @@ import { useWorkspaceStore } from './stores/workspaceStore';
 import { useTransferStore } from './stores/transferStore';
 import { useFileStore } from './stores/fileStore';
 import { useUiStore } from './stores/uiStore';
+import { initializeCommandRegistry, commandRegistry } from './services/commandRegistry';
 import type { FileEntry } from './types/vfs';
 
 import AppHeader from './components/layout/AppHeader.vue';
@@ -232,6 +234,7 @@ import UploadDialog from './components/dialogs/UploadDialog.vue';
 import ConnectionDialog from './components/dialogs/ConnectionDialog.vue';
 import ArchiveDialog from './components/dialogs/ArchiveDialog.vue';
 import ArchiveViewerModal from './components/dialogs/ArchiveViewerModal.vue';
+import ConflictDialog from './components/dialogs/ConflictDialog.vue';
 import SearchModal from './components/dialogs/SearchModal.vue';
 import SettingsModal from './components/dialogs/SettingsModal.vue';
 import SharesModal from './components/dialogs/SharesModal.vue';
@@ -410,9 +413,37 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     activeP.selectedEntries = activeP.entries.map((entry: FileEntry) => entry.path);
     return;
   }
+
+  // 7. Ctrl+Z / Cmd+Z: Reversible Undo
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    commandRegistry.execute('edit.undo');
+    return;
+  }
+
+  // 8. Ctrl+Y / Cmd+Shift+Z: Redo
+  if (
+    ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+    ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+  ) {
+    e.preventDefault();
+    commandRegistry.execute('edit.redo');
+    return;
+  }
+
+  // 9. Escape: Deselect all items & close context menu
+  if (e.key === 'Escape') {
+    if (activeP.selectedEntries.length > 0) {
+      e.preventDefault();
+      activeP.selectedEntries = [];
+      uiStore.closeContextMenu();
+      return;
+    }
+  }
 }
 
 onMounted(async () => {
+  initializeCommandRegistry();
   window.addEventListener('keydown', handleGlobalKeydown);
   await authStore.checkAuth();
   if (authStore.isAuthenticated) {

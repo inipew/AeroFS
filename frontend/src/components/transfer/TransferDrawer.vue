@@ -105,6 +105,15 @@
                 </span>
 
                 <button
+                  v-if="job.status === 'failed' || job.status === 'cancelled'"
+                  @click="transferStore.retryTransfer(job.id)"
+                  class="text-blue-500 hover:text-blue-600 font-medium px-1 cursor-pointer text-[10px]"
+                  title="Retry Transfer"
+                >
+                  Retry
+                </button>
+
+                <button
                   v-if="job.status === 'running' || job.status === 'queued'"
                   @click="transferStore.cancelTransfer(job.id)"
                   class="text-red-500 hover:text-red-600 font-bold px-1 cursor-pointer"
@@ -130,9 +139,13 @@
             <div class="flex items-center justify-between text-[10px] text-gray-400 dark:text-slate-500 font-mono">
               <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
               <span v-if="job.status === 'running'">
-                {{ formatSpeed(job.speed_bytes_per_sec) }}
-                <span v-if="job.eta_seconds !== undefined"> • ETA {{ job.eta_seconds }}s</span>
+                {{ getLiveSpeed(job) }}
               </span>
+            </div>
+
+            <!-- Error message if failed -->
+            <div v-if="job.status === 'failed' && job.error_message" class="text-[10px] text-red-500 dark:text-red-400 truncate">
+              {{ job.error_message }}
             </div>
           </div>
         </div>
@@ -170,5 +183,17 @@ function formatSpeed(bytesPerSec: number): string {
   }
   const kbps = bytesPerSec / 1024;
   return `${kbps.toFixed(0)} KB/s`;
+}
+
+function getLiveSpeed(job: TransferJob): string {
+  const metric = transferStore.speedMetrics[job.id];
+  const speed = metric?.speedBytesPerSec || job.speed_bytes_per_sec || 0;
+  const eta = metric?.etaSeconds !== undefined ? metric.etaSeconds : job.eta_seconds;
+
+  let str = formatSpeed(speed);
+  if (eta !== null && eta !== undefined && eta > 0) {
+    str += ` • ETA ${eta}s`;
+  }
+  return str;
 }
 </script>
