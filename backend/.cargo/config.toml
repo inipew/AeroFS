@@ -1,0 +1,23 @@
+[target.aarch64-linux-android]
+linker = "/home/dhimas/android-ndk/r30-beta2/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+ar = "/home/dhimas/android-ndk/r30-beta2/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+    "-C", "link-arg=-Wl,--hash-style=both"
+]
+
+[env]
+CC_aarch64_linux_android = "/home/dhimas/android-ndk/r30-beta2/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+CXX_aarch64_linux_android = "/home/dhimas/android-ndk/r30-beta2/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++"
+AR_aarch64_linux_android = "/home/dhimas/android-ndk/r30-beta2/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+
+[target.aarch64-unknown-linux-musl]
+linker = "clang"
+rustflags = [
+    "-C", "link-arg=--target=aarch64-unknown-linux-musl",
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]

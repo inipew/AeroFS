@@ -1,27 +1,37 @@
 # 🌌 AeroFS — Modern & Ultra-Fast Web File Manager
 
 <p align="center">
-  <b>A modern, high-performance, and self-hosted cloud & local file manager powered by Rust (Axum) and Vue 3 + Tailwind CSS.</b>
+  <b>A modern, high-performance, and self-hosted cloud & local file manager powered by Rust (Axum) and Vue 3 + Tailwind CSS.</b><br>
+  <i>Bundled into a single self-contained standalone binary with an integrated CLI operational control plane.</i>
 </p>
 
 ---
 
 ## ⚡ Key Features
 
-- **🚀 Blazing Fast Backend (Rust + Axum + Tokio)**:
-  - Asynchronous streaming architecture for gigabyte-scale uploads and downloads.
-  - SQLite WAL mode database for fast metadata queries, audit logging, and share links.
+- **🚀 Single Self-Contained Binary (Rust + Vue 3 SPA Embedded)**:
+  - Frontend SPA (HTML, JS, CSS, SVG icons, Ace Editor) is embedded directly into the Rust executable binary via `rust-embed`.
+  - Zero external web server or Node.js runtime required in production — run just `./backend` or `aerofs serve`.
+
+- **🖥️ Operational CLI Control Plane (`aerofs`)**:
+  - Full CLI management subcommands: `serve`, `config`, `doctor`, `db`, `transfer`, `admin`.
+  - Output formatting in human-readable table or machine-readable JSON (`--json`) for CI/CD automation.
+
+- **⚙️ Hierarchical Configuration Loader**:
+  - Prioritized configuration resolution: **CLI Arguments** $\rightarrow$ **Environment Variables (`AEROFS_*`)** $\rightarrow$ **TOML Configuration File (`/etc/aerofs/config.toml` or `--config`)** $\rightarrow$ **Defaults**.
+  - Automatic secrets sanitization and production mode security enforcement.
+
+- **🛡️ High-Performance Multi-Cloud VFS & SQLite WAL**:
+  - Unified Virtual File System powered by OpenDAL supporting **Local Storage**, **AWS S3 / MinIO**, **FTP**, and **SFTP**.
+  - **SQLite WAL Mode** (`PRAGMA journal_mode = WAL;`) for high-concurrency read/write transactions without lock contention.
   - SafePath filesystem isolation preventing path traversal attacks and escaping symlinks.
 
-- **🎨 Modern & Responsive Frontend (Vue 3 + Vite + Tailwind CSS 4)**:
-  - **Dual-Pane & Single-Pane Workspace**: Work seamlessly across multiple local and remote directories side-by-side.
-  - **Light & Dark Theme**: Adaptive design with modern rounded cards and soft contrast.
-  - **Integrated Ace Code Editor**: Instant syntax-highlighted editing for code, scripts, configs, and dotfiles (`.env`, `.gitignore`, `.bashrc`, etc.) with `Ctrl+S` saving.
-  - **Live Storage Statistics**: Real-time disk capacity and usage metrics for local storage (`statvfs`) and live status indicators for remote storage.
-  - **Recycle Bin (Soft Delete)**: Safety first with a choice between moving to Recycle Bin or permanent deletion.
-  - **Properties & CHMOD Inspector**: 3x3 Unix permission matrix with 2-way octal sync (`0755`/`0644`) and recursive apply.
-  - **Multi-Source Support**: Built-in support for Local Storage, Remote FTP, SFTP, and S3 connections.
-  - **Rich Context Menu & Starred Items**: Quick actions for compression (`.zip`, `.tar.gz`), instant extraction, sharing links, renaming, and bookmarking.
+- **🎨 Modern & Responsive Dual-Pane Frontend (Vue 3 + Vite + Tailwind CSS)**:
+  - **Dual-Pane & Single-Pane Workspace**: Side-by-side file operations with drag-and-drop and touch swipe gestures (`swipe left/right`) on mobile.
+  - **Smart Navigation Header**: Direct path editing with `Ctrl+L`, popover breadcrumb truncation, quick bookmarking, and search palette (`⌘K`).
+  - **Durable Transfer Manager**: SQLite-backed background transfer queue with pause, resume, cancel, auto-retry, and WebSocket live progress tracking.
+  - **Integrated Ace Code Editor**: Syntax-highlighted editing for code, scripts, and dotfiles (`.env`, `.gitignore`, `.bashrc`) with `Ctrl+S` saving.
+  - **Recycle Bin & Unix CHMOD Inspector**: 3x3 Unix permission matrix with 2-way octal sync (`0755`/`0644`) and soft-delete capabilities.
 
 ---
 
@@ -29,24 +39,30 @@
 
 ```text
 aerofs/
-├── backend/                  # High-performance Rust Axum API Service
-│   ├── Cargo.toml            # Dependencies (Axum, Tokio, SQLx, SuppaFTP, Utioipa)
+├── backend/                  # High-performance Rust Axum API Service & CLI
+│   ├── Cargo.toml            # Dependencies (Axum, Clap, SQLx, OpenDAL, Utioipa, rust-embed)
 │   ├── migrations/           # SQLite schema migrations
 │   └── src/
-│       ├── api/              # RESTful API endpoints (files, trash, chmod, stats)
+│       ├── api/              # RESTful API endpoints (files, trash, transfers, shares, settings)
 │       ├── auth/             # Argon2 hashing, session tokens, audit logging
+│       ├── cli.rs            # Operational CLI subcommands (serve, doctor, db, config, admin)
+│       ├── config.rs         # Hierarchical TOML & environment configuration loader
 │       ├── domain/           # VFS abstractions and entities
 │       ├── filesystem/       # SafePath security, zip/tar engines, fast search
+│       ├── static_files.rs   # Embedded SPA static asset handler
+│       ├── transfer/         # Durable SQLite-backed background transfer engine
 │       └── router.rs         # Axum route definitions
 │
 ├── frontend/                 # Reactive Vue 3 + Vite Single Page Application
 │   ├── package.json          # Node dependencies (Vue 3, Pinia, Tailwind, Ace)
 │   ├── src/
-│   │   ├── api/              # Axios API clients
-│   │   ├── components/       # UI components (browser, dialogs, layout, editor)
+│   │   ├── api/              # Axios API clients & WebSocket client
+│   │   ├── components/       # UI components (browser, dialogs, layout, editor, header)
 │   │   └── stores/           # Pinia reactive state stores
 │   └── index.html            # Entry HTML
 │
+├── config.example.toml       # Example TOML configuration file
+├── Dockerfile                # Multi-stage build producing 1 single binary container
 └── README.md                 # Project documentation
 ```
 
@@ -54,24 +70,51 @@ aerofs/
 
 ## 🚀 Quickstart Guide
 
-### Prerequisites
-- **Rust toolchain** (1.80+): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- **Node.js** (18+) & **npm**: `https://nodejs.org/`
-
-### 1. Run Backend (Rust API)
+### 1. Build and Run (Single Standalone Binary)
 ```bash
-cd backend
-cargo run
-```
-*The backend API server will start at `http://127.0.0.1:8080` (or `http://0.0.0.0:8080`).*
-
-### 2. Run Frontend (Vue 3 Dev Server)
-```bash
+# 1. Build Vue 3 Frontend
 cd frontend
 npm install
-npm run dev
+npm run build
+
+# 2. Build Release Rust Binary with Embedded Frontend
+cd ../backend
+cargo build --release
+
+# 3. Run AeroFS Server
+./target/release/backend serve
 ```
-*The web interface will be available at `http://localhost:5173`.*
+*Open your browser at `http://127.0.0.1:8080` to access the Web File Manager.*
+
+---
+
+## 🖥️ CLI Management Commands
+
+AeroFS includes a comprehensive CLI control plane:
+
+```bash
+# Check system health & diagnostics
+aerofs doctor
+
+# Inspect active configuration (secrets masked)
+aerofs config show
+aerofs config show --json
+
+# Database maintenance & online backups
+aerofs db status
+aerofs db integrity-check
+aerofs db vacuum
+aerofs db backup /path/to/backup.db
+
+# Inspect background transfers
+aerofs transfer list --active
+aerofs transfer purge --days 30
+
+# Manage users from the terminal
+aerofs admin user list
+aerofs admin user create operator --password secretpass --admin
+aerofs admin user reset-password operator --password newsecretpass
+```
 
 ---
 
@@ -79,27 +122,9 @@ npm run dev
 
 | Username | Password | Role |
 | :--- | :--- | :--- |
-| `admin` | `admin123` | **Administrator** |
+| `admin` | `admin12345` | **Administrator** |
 
-*(You can change default credentials and configure custom storage paths in System Settings).*
-
----
-
-## 🛠️ Building for Production
-
-### Build Frontend
-```bash
-cd frontend
-npm run build
-```
-*Outputs minified static production bundle in `frontend/dist/`.*
-
-### Build Backend
-```bash
-cd backend
-cargo build --release
-```
-*Outputs optimized native binary in `backend/target/release/backend`.*
+*(You can customize the initial password with `AEROFS_ADMIN_PASSWORD` or reset it via `aerofs admin user reset-password`).*
 
 ---
 

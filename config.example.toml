@@ -1,0 +1,46 @@
+# ==============================================================================
+# AeroFS Configuration Reference
+# Place this file at /etc/aerofs/config.toml, ~/.config/aerofs/config.toml, or ./config.toml
+# ==============================================================================
+
+[server]
+# IP address to bind the web server to (127.0.0.1 for local only, 0.0.0.0 for all interfaces)
+host = "127.0.0.1"
+# Port to listen on
+port = 8080
+
+[filesystem]
+# Default root directory for local storage provider
+default_local_root = "./storage"
+# Temporary directory for chunked multipart uploads and archive extractions
+temp_dir = "./storage/temp"
+# Whether hidden files (starting with dot) are visible by default
+show_hidden_default = false
+# Read-only mode by default for safety
+read_only_default = false
+
+[limits]
+# Maximum allowed file upload size in bytes (1 GiB = 1073741824)
+max_upload_size = 1073741824
+# Maximum file size editable in Ace editor (10 MiB = 10485760)
+max_editable_size = 10485760
+# Maximum file size previewable in media previewer (25 MiB = 26214400)
+max_preview_size = 26214400
+# Maximum directory entries returned in a single listing
+max_directory_entries = 50000
+# Maximum number of concurrent background transfer jobs
+max_concurrent_transfers = 4
+
+[security]
+# Session secret key used to sign HTTP authentication tokens (must be >= 32 chars in production)
+session_secret = "dev_secret_change_in_production_32_chars_min"
+# Session time-to-live in seconds (7 days = 604800)
+session_ttl_secs = 604800
+# Allow symlinks pointing outside the local storage root (false recommended for security)
+allow_symlinks_outside_root = false
+# Allow remote connections to private/loopback RFC1918 addresses
+allow_private_network_connections = true
+
+[database]
+# SQLite database URL connection string
+url = "sqlite://./filemanager.db?mode=rwc"

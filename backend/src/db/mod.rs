@@ -1,14 +1,29 @@
 use crate::auth::password::hash_password;
 use chrono::Utc;
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+    Pool, Row, Sqlite,
+};
+use std::path::Path;
+use std::str::FromStr;
+use std::time::Duration;
 use uuid::Uuid;
 
 pub type DbPool = Pool<Sqlite>;
 
 pub async fn init_db(database_url: &str) -> anyhow::Result<DbPool> {
+    let connect_options = SqliteConnectOptions::from_str(database_url)?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_millis(5000));
+
     let pool = SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect(database_url)
+        .max_connections(8)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(connect_options)
         .await?;
 
     // Run migrations
@@ -21,6 +36,53 @@ pub async fn init_db(database_url: &str) -> anyhow::Result<DbPool> {
     seed_default_connection(&pool).await?;
 
     Ok(pool)
+}
+
+/// Run PRAGMA integrity_check and foreign_key_check on SQLite
+pub async fn check_integrity(pool: &DbPool) -> anyhow::Result<Vec<String>> {
+    let mut reports = Vec::new();
+
+    let rows = sqlx::query("PRAGMA integrity_check;")
+        .fetch_all(pool)
+        .await?;
+
+    for row in rows {
+        let result: String = row.get(0);
+        reports.push(format!("integrity_check: {}", result));
+    }
+
+    let fk_rows = sqlx::query("PRAGMA foreign_key_check;")
+        .fetch_all(pool)
+        .await?;
+
+    if fk_rows.is_empty() {
+        reports.push("foreign_key_check: ok".to_string());
+    } else {
+        for row in fk_rows {
+            let table: String = row.get(0);
+            reports.push(format!("foreign_key_violation in table: {}", table));
+        }
+    }
+
+    Ok(reports)
+}
+
+/// Run SQLite VACUUM to reclaim space and defragment database file
+pub async fn vacuum_db(pool: &DbPool) -> anyhow::Result<()> {
+    sqlx::query("VACUUM;").execute(pool).await?;
+    Ok(())
+}
+
+/// Create a consistent online backup snapshot using SQLite VACUUM INTO
+pub async fn backup_db(pool: &DbPool, target_path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let target_str = target_path.to_string_lossy();
+    sqlx::query(&format!("VACUUM INTO '{}';", target_str.replace('\'', "''")))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {

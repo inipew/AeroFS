@@ -1,8 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error("Failed to read configuration file at '{0}': {1}")]
+    Io(PathBuf, #[source] std::io::Error),
+    #[error("Failed to parse TOML configuration at '{0}': {1}")]
+    Toml(PathBuf, #[source] toml::de::Error),
+    #[error("Configuration validation error: {0}")]
+    Validation(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub security: SecurityConfig,
@@ -11,13 +24,24 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct SecurityConfig {
     pub session_secret: String,
     pub session_ttl_secs: u64,
@@ -25,7 +49,19 @@ pub struct SecurityConfig {
     pub allow_private_network_connections: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            session_secret: "dev_secret_change_in_production_32_chars_min".to_string(),
+            session_ttl_secs: 86400 * 7,
+            allow_symlinks_outside_root: false,
+            allow_private_network_connections: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct FilesystemConfig {
     pub default_local_root: PathBuf,
     pub temp_dir: Option<PathBuf>,
@@ -33,7 +69,19 @@ pub struct FilesystemConfig {
     pub read_only_default: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for FilesystemConfig {
+    fn default() -> Self {
+        Self {
+            default_local_root: PathBuf::from("./storage"),
+            temp_dir: Some(PathBuf::from("./storage/temp")),
+            show_hidden_default: false,
+            read_only_default: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct LimitsConfig {
     pub max_upload_size: u64,
     pub max_editable_size: u64,
@@ -42,85 +90,185 @@ pub struct LimitsConfig {
     pub max_concurrent_transfers: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_upload_size: 1024 * 1024 * 1024,
+            max_editable_size: 10 * 1024 * 1024,
+            max_preview_size: 25 * 1024 * 1024,
+            max_directory_entries: 50_000,
+            max_concurrent_transfers: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct DatabaseConfig {
     pub url: String,
 }
 
-impl Default for AppConfig {
+impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            server: ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 8080,
-            },
-            security: SecurityConfig {
-                session_secret: "dev_secret_change_in_production_32_chars_min".to_string(),
-                session_ttl_secs: 86400 * 7, // 7 days
-                allow_symlinks_outside_root: false,
-                allow_private_network_connections: true, // dev default
-            },
-            filesystem: FilesystemConfig {
-                default_local_root: PathBuf::from("./storage"),
-                temp_dir: Some(PathBuf::from("./storage/temp")),
-                show_hidden_default: false,
-                read_only_default: false,
-            },
-            limits: LimitsConfig {
-                max_upload_size: 1024 * 1024 * 1024,      // 1 GB
-                max_editable_size: 10 * 1024 * 1024,      // 10 MB
-                max_preview_size: 25 * 1024 * 1024,       // 25 MB
-                max_directory_entries: 50_000,
-                max_concurrent_transfers: 3,
-            },
-            database: DatabaseConfig {
-                url: "sqlite://./filemanager.db?mode=rwc".to_string(),
-            },
+            url: "sqlite://./filemanager.db?mode=rwc".to_string(),
         }
     }
 }
 
 impl AppConfig {
-    /// Load config from environment variables with fallback to defaults
-    pub fn from_env_or_default() -> Self {
-        let mut cfg = Self::default();
+    /// Hierarchically load configuration:
+    /// 1. Defaults
+    /// 2. TOML file (CLI flag > env AEROFS_CONFIG > standard locations: /etc/aerofs/config.toml, ./aerofs.toml, ./config.toml)
+    /// 3. Environment Variables (AEROFS_* and WFM_*)
+    pub fn load(cli_config_path: Option<&Path>) -> Result<Self, ConfigError> {
+        let mut config = Self::default();
 
-        if let Ok(host) = env::var("WFM_HOST").or_else(|_| env::var("HOST")) {
-            cfg.server.host = host;
+        // 1. Determine config file path
+        let explicit_path = cli_config_path.map(PathBuf::from).or_else(|| {
+            env::var("AEROFS_CONFIG")
+                .or_else(|_| env::var("WFM_CONFIG"))
+                .ok()
+                .map(PathBuf::from)
+        });
+
+        let toml_file_to_load = if let Some(path) = explicit_path {
+            if !path.exists() {
+                return Err(ConfigError::Io(
+                    path.clone(),
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "Config file not found"),
+                ));
+            }
+            Some(path)
+        } else {
+            // Search standard locations
+            let candidates = [
+                PathBuf::from("/etc/aerofs/config.toml"),
+                dirs_config_path(),
+                PathBuf::from("./aerofs.toml"),
+                PathBuf::from("./config.toml"),
+            ];
+            candidates.into_iter().find(|p| p.exists())
+        };
+
+        // 2. If a TOML file was found, parse and overlay
+        if let Some(path) = toml_file_to_load {
+            let content = fs::read_to_string(&path)
+                .map_err(|e| ConfigError::Io(path.clone(), e))?;
+            let toml_config: AppConfig = toml::from_str(&content)
+                .map_err(|e| ConfigError::Toml(path.clone(), e))?;
+            config = toml_config;
+            tracing::info!("Loaded configuration from: {}", path.display());
         }
 
-        if let Ok(port_str) = env::var("WFM_PORT").or_else(|_| env::var("PORT")) {
+        // 3. Override with Environment Variables
+        config.apply_env_overrides();
+
+        // 4. Validate configuration
+        config.validate()?;
+
+        Ok(config)
+    }
+
+    /// Apply environment variables
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(host) = env::var("AEROFS_HOST").or_else(|_| env::var("WFM_HOST")).or_else(|_| env::var("HOST")) {
+            self.server.host = host;
+        }
+
+        if let Ok(port_str) = env::var("AEROFS_PORT").or_else(|_| env::var("WFM_PORT")).or_else(|_| env::var("PORT")) {
             if let Ok(port) = port_str.parse::<u16>() {
-                cfg.server.port = port;
+                self.server.port = port;
             }
         }
 
-        if let Ok(root) = env::var("WFM_ROOT_PATH").or_else(|_| env::var("WFM_LOCAL_ROOT")) {
-            cfg.filesystem.default_local_root = PathBuf::from(root);
+        if let Ok(root) = env::var("AEROFS_ROOT_PATH").or_else(|_| env::var("WFM_ROOT_PATH")).or_else(|_| env::var("WFM_LOCAL_ROOT")) {
+            self.filesystem.default_local_root = PathBuf::from(root);
         }
 
-        if let Ok(temp) = env::var("WFM_TEMP_DIR") {
-            cfg.filesystem.temp_dir = Some(PathBuf::from(temp));
+        if let Ok(temp) = env::var("AEROFS_TEMP_DIR").or_else(|_| env::var("WFM_TEMP_DIR")) {
+            self.filesystem.temp_dir = Some(PathBuf::from(temp));
         }
 
-        if let Ok(db_url) = env::var("WFM_DATABASE_URL").or_else(|_| env::var("DATABASE_URL")) {
-            cfg.database.url = db_url;
+        if let Ok(db_url) = env::var("AEROFS_DATABASE_URL").or_else(|_| env::var("WFM_DATABASE_URL")).or_else(|_| env::var("DATABASE_URL")) {
+            self.database.url = db_url;
         }
 
-        if let Ok(symlinks) = env::var("WFM_ALLOW_SYMLINKS") {
-            cfg.security.allow_symlinks_outside_root = symlinks == "1" || symlinks.to_lowercase() == "true";
+        if let Ok(symlinks) = env::var("AEROFS_ALLOW_SYMLINKS").or_else(|_| env::var("WFM_ALLOW_SYMLINKS")) {
+            self.security.allow_symlinks_outside_root = symlinks == "1" || symlinks.to_lowercase() == "true";
         }
 
-        if let Ok(secret) = env::var("WFM_SESSION_SECRET") {
-            cfg.security.session_secret = secret;
+        if let Ok(secret) = env::var("AEROFS_SESSION_SECRET").or_else(|_| env::var("WFM_SESSION_SECRET")) {
+            self.security.session_secret = secret;
         }
 
-        if let Ok(max_upload_mb) = env::var("WFM_MAX_UPLOAD_MB") {
+        if let Ok(max_upload_mb) = env::var("AEROFS_MAX_UPLOAD_MB").or_else(|_| env::var("WFM_MAX_UPLOAD_MB")) {
             if let Ok(mb) = max_upload_mb.parse::<u64>() {
-                cfg.limits.max_upload_size = mb * 1024 * 1024;
+                self.limits.max_upload_size = mb * 1024 * 1024;
             }
         }
 
-        cfg
+        if let Ok(max_transfers) = env::var("AEROFS_MAX_TRANSFERS") {
+            if let Ok(n) = max_transfers.parse::<usize>() {
+                self.limits.max_concurrent_transfers = n;
+            }
+        }
+    }
+
+    /// Validate sanity of the configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.server.port == 0 {
+            return Err(ConfigError::Validation("Server port cannot be 0".into()));
+        }
+
+        if self.database.url.is_empty() {
+            return Err(ConfigError::Validation("Database URL cannot be empty".into()));
+        }
+
+        if self.limits.max_upload_size == 0 {
+            return Err(ConfigError::Validation("Max upload size must be greater than 0".into()));
+        }
+
+        if self.limits.max_concurrent_transfers == 0 {
+            return Err(ConfigError::Validation("Max concurrent transfers must be at least 1".into()));
+        }
+
+        // Production environment check
+        let is_prod = env::var("AEROFS_ENV")
+            .map(|v| v.to_lowercase() == "production" || v.to_lowercase() == "prod")
+            .unwrap_or(false);
+
+        if is_prod {
+            if self.security.session_secret == "dev_secret_change_in_production_32_chars_min" {
+                return Err(ConfigError::Validation(
+                    "Default development session secret is forbidden in production. Set AEROFS_SESSION_SECRET.".into(),
+                ));
+            }
+            if self.security.session_secret.len() < 32 {
+                return Err(ConfigError::Validation(
+                    "Session secret must be at least 32 characters long in production.".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Return a sanitized copy with secrets masked for safe CLI display
+    pub fn to_sanitized_toml(&self) -> String {
+        let mut sanitized = self.clone();
+        if !sanitized.security.session_secret.is_empty() {
+            sanitized.security.session_secret = "********".to_string();
+        }
+        toml::to_string_pretty(&sanitized).unwrap_or_else(|_| "# Error serializing config".to_string())
     }
 }
+
+fn dirs_config_path() -> PathBuf {
+    if let Ok(home) = env::var("HOME") {
+        PathBuf::from(home).join(".config/aerofs/config.toml")
+    } else {
+        PathBuf::from("./config.toml")
+    }
+}
+
