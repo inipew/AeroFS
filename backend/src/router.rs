@@ -125,6 +125,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/ws", get(ws::ws_handler))
         .route("/api/v1/shares/public/{token}", get(crate::api::shares::public_get_share))
         .nest("/api/v1", api_v1)
+        .fallback(crate::static_files::static_handler)
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

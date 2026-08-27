@@ -148,3 +148,35 @@ async fn test_auth_and_file_api_flow() {
     let resp = app.clone().oneshot(del_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn test_embedded_static_assets_and_spa_fallback() {
+    let (app, _temp) = setup_test_app().await;
+
+    // 1. Test root "/" -> returns index.html with 200 OK and text/html
+    let req = Request::builder()
+        .uri("/")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    assert!(content_type.contains("text/html"));
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(body_str.contains("<!DOCTYPE html>") || body_str.contains("<html") || body_str.contains("AeroFS") || body_str.contains("id=\"app\""));
+
+    // 2. Test SPA fallback route "/browse/some/deep/folder" -> returns index.html with 200 OK
+    let req = Request::builder()
+        .uri("/browse/some/deep/folder")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    assert!(content_type.contains("text/html"));
+}

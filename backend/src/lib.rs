@@ -7,6 +7,7 @@ pub mod errors;
 pub mod filesystem;
 pub mod router;
 pub mod state;
+pub mod static_files;
 pub mod transfer;
 pub mod vfs;
 
