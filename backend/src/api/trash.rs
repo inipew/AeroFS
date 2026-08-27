@@ -107,13 +107,16 @@ pub async fn move_to_trash(
                 .await;
 
                 moved_count += 1;
+            } else if provider.delete(&vfs_path).await.is_ok() {
+                // Fallback for remote providers where .trash move is unsupported/fails
+                moved_count += 1;
             }
         }
     }
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": format!("Moved {} item(s) to Recycle Bin", moved_count),
+        "message": format!("Deleted {} item(s)", moved_count),
         "count": moved_count
     })))
 }

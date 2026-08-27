@@ -230,16 +230,36 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn delete(&self, path: &VfsPath) -> Result<(), VfsError> {
         let op_path = self.to_operator_path(path)?;
-        // P0 #6: Selective delete fallback
-        match self.operator.delete_with(&op_path).recursive(true).await {
+
+        // 1. Try standard delete
+        let delete_res = self.operator.delete(&op_path).await;
+        match delete_res {
             Ok(_) => Ok(()),
-            Err(e) if e.kind() == ErrorKind::Unsupported => {
-                self.operator
-                    .delete(&op_path)
-                    .await
-                    .map_err(|err| map_opendal_error(err, &format!("Failed to delete '{}'", path.path)))
+            Err(e) => {
+                // 2. If standard delete failed (e.g. FTP directory requiring trailing slash for rmdir)
+                let dir_op_path = format!("{}/", op_path);
+                if self.operator.delete(&dir_op_path).await.is_ok() {
+                    return Ok(());
+                }
+
+                // 3. If non-empty directory, recursively delete children
+                if let Ok(entries) = self.list(path).await {
+                    if !entries.is_empty() {
+                        for entry in entries {
+                            let child_vfs = VfsPath::new(&self.connection_id, &entry.path);
+                            let _ = Box::pin(self.delete(&child_vfs)).await;
+                        }
+                        if self.operator.delete(&dir_op_path).await.is_ok() {
+                            return Ok(());
+                        }
+                        if self.operator.delete(&op_path).await.is_ok() {
+                            return Ok(());
+                        }
+                    }
+                }
+
+                Err(map_opendal_error(e, &format!("Failed to delete '{}'", path.path)))
             }
-            Err(e) => Err(map_opendal_error(e, &format!("Failed to delete '{}'", path.path))),
         }
     }
 
@@ -248,16 +268,19 @@ impl FileSystem for OpenDalFileSystem {
         let from_path = self.to_operator_path(from)?;
         let to_path = self.to_operator_path(to)?;
 
-        self.operator
-            .rename(&from_path, &to_path)
-            .await
-            .map_err(|e| {
-                map_opendal_error(
-                    e,
-                    &format!("Failed to rename '{}' to '{}'", from.path, to.path),
-                )
-            })?;
-        Ok(())
+        // P0 #5: Selective rename fallback when native operator rename is unsupported (e.g. on FTP / S3)
+        match self.operator.rename(&from_path, &to_path).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                self.copy(from, to).await?;
+                self.delete(from).await?;
+                Ok(())
+            }
+            Err(e) => Err(map_opendal_error(
+                e,
+                &format!("Failed to rename '{}' to '{}'", from.path, to.path),
+            )),
+        }
     }
 
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, from = %from.path, to = %to.path))]

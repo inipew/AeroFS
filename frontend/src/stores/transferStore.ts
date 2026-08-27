@@ -9,6 +9,7 @@ export const useTransferStore = defineStore('transfer', () => {
   const isConnected = ref<boolean>(false);
   let socket: WebSocket | null = null;
   let reconnectTimer: any = null;
+  let pollInterval: any = null;
   let lastSequence = 0;
 
   const activeJobs = computed(() => {
@@ -18,6 +19,19 @@ export const useTransferStore = defineStore('transfer', () => {
   });
 
   const activeCount = computed(() => activeJobs.value.length);
+
+  // Background fallback poll while jobs are active
+  function startPollingIfNeeded() {
+    if (pollInterval) return;
+    pollInterval = setInterval(async () => {
+      if (activeCount.value > 0) {
+        await fetchJobs();
+      } else {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    }, 1000);
+  }
 
   async function fetchJobs() {
     try {
@@ -31,59 +45,70 @@ export const useTransferStore = defineStore('transfer', () => {
   function connectWs() {
     if (socket && socket.readyState === WebSocket.OPEN) return;
 
+    // Use current origin to preserve cookie & proxy across ports
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.port === '5173' ? '127.0.0.1:8080' : window.location.host;
-    const url = `${protocol}//${host}/api/v1/ws`;
+    const url = `${protocol}//${window.location.host}/api/v1/ws`;
 
-    socket = new WebSocket(url);
+    try {
+      socket = new WebSocket(url);
 
-    socket.onopen = () => {
-      isConnected.value = true;
-      lastSequence = 0;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-
-        // Sequence Gap Detection & Auto-Resync
-        if (typeof payload.sequence === 'number') {
-          if (lastSequence > 0 && payload.sequence > lastSequence + 1) {
-            console.warn(`WS sequence gap detected (${lastSequence} -> ${payload.sequence}). Re-syncing transfer state.`);
-            fetchJobs();
-          }
-          lastSequence = payload.sequence;
+      socket.onopen = () => {
+        isConnected.value = true;
+        lastSequence = 0;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
         }
+      };
 
-        if (
-          payload.type === 'transfer_progress' ||
-          payload.type === 'transfer_completed' ||
-          payload.type === 'transfer_failed'
-        ) {
-          const updatedJob: TransferJob = payload.data;
-          const idx = jobs.value.findIndex((j) => j.id === updatedJob.id);
-          if (idx >= 0) {
-            jobs.value[idx] = updatedJob;
-          } else {
-            jobs.value.unshift(updatedJob);
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+
+          // Sequence Gap Detection & Auto-Resync
+          if (typeof payload.sequence === 'number') {
+            if (lastSequence > 0 && payload.sequence > lastSequence + 1) {
+              console.warn(`WS sequence gap detected (${lastSequence} -> ${payload.sequence}). Re-syncing transfer state.`);
+              fetchJobs();
+            }
+            lastSequence = payload.sequence;
           }
+
+          if (
+            payload.type === 'transfer_progress' ||
+            payload.type === 'transfer_completed' ||
+            payload.type === 'transfer_failed'
+          ) {
+            const updatedJob: TransferJob = payload.data;
+            const idx = jobs.value.findIndex((j) => j.id === updatedJob.id);
+            if (idx >= 0) {
+              jobs.value[idx] = updatedJob;
+            } else {
+              jobs.value.unshift(updatedJob);
+            }
+          }
+        } catch (e) {
+          console.error('WS Parse Error', e);
         }
-      } catch (e) {
-        console.error('WS Parse Error', e);
-      }
-    };
+      };
 
-    socket.onclose = () => {
-      isConnected.value = false;
-      reconnectTimer = setTimeout(() => {
-        connectWs();
-      }, 3000);
-    };
+      socket.onclose = () => {
+        isConnected.value = false;
+        socket = null;
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectWs();
+          }, 3000);
+        }
+      };
 
-    socket.onerror = () => {
-      socket?.close();
-    };
+      socket.onerror = () => {
+        socket?.close();
+      };
+    } catch (err) {
+      console.error('WebSocket connection error', err);
+    }
   }
 
   async function submitTransfer(
@@ -103,6 +128,7 @@ export const useTransferStore = defineStore('transfer', () => {
       destination_path: destPath,
     });
     isDrawerOpen.value = true;
+    startPollingIfNeeded();
     await fetchJobs();
     return resp.data;
   }

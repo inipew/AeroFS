@@ -58,6 +58,20 @@ where
             }
         }
 
+        // 3. Try extracting from query params (e.g. for WebSocket connections)
+        if let Some(query) = parts.uri.query() {
+            for pair in query.split('&') {
+                let mut kv = pair.splitn(2, '=');
+                if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                    if k == "session_id" || k == "token" {
+                        if let Ok(Some(user)) = validate_session(&app_state.db, v).await {
+                            return Ok(AuthenticatedUser(user));
+                        }
+                    }
+                }
+            }
+        }
+
         Err(AuthError::SessionExpired.into())
     }
 }

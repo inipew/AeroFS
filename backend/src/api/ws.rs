@@ -29,33 +29,44 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: AuthenticatedUs
     // Spawn a task that sends broadcast events to the websocket client with permission scoping
     let mut send_task = tokio::spawn(async move {
         while let Ok(envelope) = rx.recv().await {
-            // Check event connection scope
-            let event_conn_id: Option<&str> = match &envelope.event {
-                WsEvent::TransferProgress(job) => Some(&job.source_connection_id),
-                WsEvent::TransferCompleted(job) => Some(&job.source_connection_id),
-                WsEvent::TransferFailed(job) => Some(&job.source_connection_id),
-                WsEvent::FileChange { connection_id, .. } => Some(connection_id.as_str()),
+            // Check event connection scope (source & destination for transfers)
+            let event_conn_ids: Vec<&str> = match &envelope.event {
+                WsEvent::TransferProgress(job)
+                | WsEvent::TransferCompleted(job)
+                | WsEvent::TransferFailed(job) => {
+                    vec![
+                        job.source_connection_id.as_str(),
+                        job.destination_connection_id.as_str(),
+                    ]
+                }
+                WsEvent::FileChange { connection_id, .. } => vec![connection_id.as_str()],
             };
 
             let is_authorized = if is_admin {
                 true
-            } else if let Some(conn_id) = event_conn_id {
-                if conn_id == "local" {
-                    true
-                } else {
-                    let has_perm: Option<(i64,)> = sqlx::query_as(
-                        "SELECT can_read FROM permissions WHERE user_id = ? AND connection_id = ?",
-                    )
-                    .bind(&user_id)
-                    .bind(conn_id)
-                    .fetch_optional(&db)
-                    .await
-                    .unwrap_or(None);
-
-                    has_perm.map(|p| p.0 != 0).unwrap_or(false)
-                }
             } else {
-                true
+                let mut auth = false;
+                for conn_id in event_conn_ids {
+                    if conn_id == "local" {
+                        auth = true;
+                        break;
+                    } else {
+                        let has_perm: Option<(i64,)> = sqlx::query_as(
+                            "SELECT can_read FROM permissions WHERE user_id = ? AND connection_id = ?",
+                        )
+                        .bind(&user_id)
+                        .bind(conn_id)
+                        .fetch_optional(&db)
+                        .await
+                        .unwrap_or(None);
+
+                        if has_perm.map(|p| p.0 != 0).unwrap_or(false) {
+                            auth = true;
+                            break;
+                        }
+                    }
+                }
+                auth
             };
 
             if is_authorized {

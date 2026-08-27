@@ -69,9 +69,11 @@
 import { ref } from 'vue';
 import { useAuthStore } from '../../stores/authStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useTransferStore } from '../../stores/transferStore';
 
 const authStore = useAuthStore();
 const workspaceStore = useWorkspaceStore();
+const transferStore = useTransferStore();
 
 const username = ref('admin');
 const password = ref('admin12345');
@@ -84,6 +86,8 @@ async function handleLogin() {
     password: password.value,
   });
   if (ok) {
+    transferStore.connectWs();
+    await transferStore.fetchJobs();
     await workspaceStore.fetchPanelEntries('left');
     if (workspaceStore.isDualPane) {
       await workspaceStore.fetchPanelEntries('right');
