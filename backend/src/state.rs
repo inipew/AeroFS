@@ -2,7 +2,11 @@ use crate::auth::credentials::{decrypt_secret, derive_master_key};
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::transfer::TransferManager;
-use crate::vfs::{FileSystem, FtpFileSystem, LocalFileSystem, SftpFileSystem};
+use crate::vfs::opendal::{
+    build_fs_operator, build_ftp_operator, build_s3_operator, build_sftp_operator,
+    OpenDalFileSystem,
+};
+use crate::vfs::FileSystem;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,7 +29,7 @@ impl AppState {
                 key TEXT PRIMARY KEY NOT NULL,
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            )"
+            )",
         )
         .execute(&db)
         .await;
@@ -64,7 +68,7 @@ impl AppState {
 
     pub async fn get_system_setting(&self, key: &str) -> Option<String> {
         let row: Option<(String,)> = sqlx::query_as(
-            "SELECT value FROM system_settings WHERE key = ?"
+            "SELECT value FROM system_settings WHERE key = ?",
         )
         .bind(key)
         .fetch_optional(&self.db)
@@ -78,7 +82,7 @@ impl AppState {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
         .bind(key)
         .bind(value)
@@ -93,16 +97,14 @@ impl AppState {
         // Ensure root directory exists
         tokio::fs::create_dir_all(&new_root).await?;
 
-        // Re-register local provider
-        let local_fs = Arc::new(LocalFileSystem::new(
-            "local",
-            new_root.clone(),
-            allow_symlinks,
-        ));
+        // Re-register local OpenDAL provider
+        let root_str = new_root.to_string_lossy().to_string();
+        let op = build_fs_operator(&root_str)?;
+        let local_fs = Arc::new(OpenDalFileSystem::new("local", op));
         self.register_provider("local".to_string(), local_fs).await;
 
         // Persist to database
-        self.set_system_setting("local_root", &new_root.to_string_lossy()).await?;
+        self.set_system_setting("local_root", &root_str).await?;
         self.set_system_setting("allow_symlinks", if allow_symlinks { "true" } else { "false" }).await?;
 
         tracing::info!("Updated and persisted Local Storage root path to: {:?}", new_root);
@@ -117,22 +119,15 @@ impl AppState {
             self.config.filesystem.default_local_root.clone()
         };
 
-        let allow_symlinks = if let Some(sym_setting) = self.get_system_setting("allow_symlinks").await {
-            sym_setting == "true"
-        } else {
-            self.config.security.allow_symlinks_outside_root
-        };
-
         // Ensure directory exists
         let _ = tokio::fs::create_dir_all(&local_root).await;
 
-        // Register default local provider
-        let local_fs = Arc::new(LocalFileSystem::new(
-            "local",
-            local_root,
-            allow_symlinks,
-        ));
-        self.register_provider("local".to_string(), local_fs).await;
+        // Register default local OpenDAL provider
+        let root_str = local_root.to_string_lossy().to_string();
+        if let Ok(op) = build_fs_operator(&root_str) {
+            let local_fs = Arc::new(OpenDalFileSystem::new("local", op));
+            self.register_provider("local".to_string(), local_fs).await;
+        }
 
         // Query database for other enabled connections
         let rows: Vec<(
@@ -168,40 +163,62 @@ impl AppState {
 
             match provider_type.as_str() {
                 "ftp" => {
-                    let ftp_fs = Arc::new(FtpFileSystem::new(
-                        &id,
-                        host.unwrap_or_default(),
-                        port.unwrap_or(21) as u16,
-                        username,
-                        decrypted_secret,
+                    let host_str = host.unwrap_or_else(|| "127.0.0.1".into());
+                    let port_num = port.unwrap_or(21) as u16;
+                    if let Ok(op) = build_ftp_operator(
+                        &host_str,
+                        port_num,
                         false,
-                        base_path,
-                    ));
-                    self.register_provider(id, ftp_fs).await;
+                        username.as_deref(),
+                        decrypted_secret.as_deref(),
+                        Some(&base_path),
+                    ) {
+                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
+                        self.register_provider(id, fs).await;
+                    }
                 }
                 "ftps" => {
-                    let ftps_fs = Arc::new(FtpFileSystem::new(
-                        &id,
-                        host.unwrap_or_default(),
-                        port.unwrap_or(990) as u16,
-                        username,
-                        decrypted_secret,
+                    let host_str = host.unwrap_or_else(|| "127.0.0.1".into());
+                    let port_num = port.unwrap_or(990) as u16;
+                    if let Ok(op) = build_ftp_operator(
+                        &host_str,
+                        port_num,
                         true,
-                        base_path,
-                    ));
-                    self.register_provider(id, ftps_fs).await;
+                        username.as_deref(),
+                        decrypted_secret.as_deref(),
+                        Some(&base_path),
+                    ) {
+                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
+                        self.register_provider(id, fs).await;
+                    }
                 }
                 "sftp" => {
-                    let sftp_fs = Arc::new(SftpFileSystem::new(
-                        &id,
-                        host.unwrap_or_default(),
-                        port.unwrap_or(22) as u16,
-                        username.unwrap_or_else(|| "root".to_string()),
-                        decrypted_secret,
+                    let host_str = host.unwrap_or_else(|| "127.0.0.1".into());
+                    let port_num = port.unwrap_or(22) as u16;
+                    if let Ok(op) = build_sftp_operator(
+                        &host_str,
+                        port_num,
+                        username.as_deref(),
+                        decrypted_secret.as_deref(),
+                        Some(&base_path),
+                    ) {
+                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
+                        self.register_provider(id, fs).await;
+                    }
+                }
+                "s3" => {
+                    let bucket = host.unwrap_or_else(|| "default-bucket".into());
+                    if let Ok(op) = build_s3_operator(
+                        &bucket,
                         None,
-                        base_path,
-                    ));
-                    self.register_provider(id, sftp_fs).await;
+                        None,
+                        username.as_deref(),
+                        decrypted_secret.as_deref(),
+                        Some(&base_path),
+                    ) {
+                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
+                        self.register_provider(id, fs).await;
+                    }
                 }
                 _ => {}
             }

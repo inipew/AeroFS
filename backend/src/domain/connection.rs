@@ -10,6 +10,7 @@ pub enum ProviderKind {
     Ftp,
     Ftps,
     Sftp,
+    S3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

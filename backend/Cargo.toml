@@ -46,7 +46,7 @@ libc = "0.2"
 
 # Database & SQLite
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
-suppaftp = { version = "10.0", default-features = false, features = ["tokio", "tokio-rustls-ring"] }
+opendal = { version = "0.58", features = ["services-fs", "services-s3", "services-ftp", "services-sftp"] }
 
 # Observability
 tracing = "0.1"

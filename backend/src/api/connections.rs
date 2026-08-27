@@ -4,7 +4,6 @@ use crate::auth::AuthenticatedUser;
 use crate::domain::{Capabilities, Connection, ConnectionStatus, ProviderKind};
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
-use crate::vfs::{FtpFileSystem, SftpFileSystem};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -24,7 +23,7 @@ pub struct CreateConnectionRequest {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub username: Option<String>,
-    pub secret: Option<String>, // password or private key
+    pub secret: Option<String>,
     pub base_path: Option<String>,
     pub read_only: Option<bool>,
 }
@@ -98,6 +97,7 @@ pub async fn list_connections(
             "ftp" => ProviderKind::Ftp,
             "ftps" => ProviderKind::Ftps,
             "sftp" => ProviderKind::Sftp,
+            "s3" => ProviderKind::S3,
             _ => ProviderKind::Local,
         };
 
@@ -145,6 +145,7 @@ pub async fn create_connection(
         ProviderKind::Ftp => "ftp",
         ProviderKind::Ftps => "ftps",
         ProviderKind::Sftp => "sftp",
+        ProviderKind::S3 => "s3",
         ProviderKind::Local => "local",
     };
 
@@ -198,43 +199,65 @@ pub async fn create_connection(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to commit connection transaction: {}", e))?;
 
-    // Register live provider in state
+    // Register live OpenDAL provider in state
     match payload.provider {
         ProviderKind::Ftp => {
-            let ftp_fs = Arc::new(FtpFileSystem::new(
-                &id,
-                payload.host.clone().unwrap_or_default(),
-                payload.port.unwrap_or(21),
-                payload.username.clone(),
-                payload.secret.clone(),
+            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let port = payload.port.unwrap_or(21);
+            if let Ok(op) = crate::vfs::opendal::build_ftp_operator(
+                &host,
+                port,
                 false,
-                base_path.clone(),
-            ));
-            state.register_provider(id.clone(), ftp_fs).await;
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            ) {
+                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
+                state.register_provider(id.clone(), fs).await;
+            }
         }
         ProviderKind::Ftps => {
-            let ftps_fs = Arc::new(FtpFileSystem::new(
-                &id,
-                payload.host.clone().unwrap_or_default(),
-                payload.port.unwrap_or(990),
-                payload.username.clone(),
-                payload.secret.clone(),
+            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let port = payload.port.unwrap_or(990);
+            if let Ok(op) = crate::vfs::opendal::build_ftp_operator(
+                &host,
+                port,
                 true,
-                base_path.clone(),
-            ));
-            state.register_provider(id.clone(), ftps_fs).await;
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            ) {
+                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
+                state.register_provider(id.clone(), fs).await;
+            }
         }
         ProviderKind::Sftp => {
-            let sftp_fs = Arc::new(SftpFileSystem::new(
-                &id,
-                payload.host.clone().unwrap_or_default(),
-                payload.port.unwrap_or(22),
-                payload.username.clone().unwrap_or_else(|| "root".to_string()),
-                payload.secret.clone(),
+            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let port = payload.port.unwrap_or(22);
+            if let Ok(op) = crate::vfs::opendal::build_sftp_operator(
+                &host,
+                port,
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            ) {
+                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
+                state.register_provider(id.clone(), fs).await;
+            }
+        }
+        ProviderKind::S3 => {
+            let bucket = payload.host.clone().unwrap_or_else(|| "default-bucket".into());
+            if let Ok(op) = crate::vfs::opendal::build_s3_operator(
+                &bucket,
                 None,
-                base_path.clone(),
-            ));
-            state.register_provider(id.clone(), sftp_fs).await;
+                None,
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            ) {
+                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
+                state.register_provider(id.clone(), fs).await;
+            }
         }
         _ => {}
     }
@@ -365,6 +388,7 @@ pub async fn get_connection(
         "ftp" => ProviderKind::Ftp,
         "ftps" => ProviderKind::Ftps,
         "sftp" => ProviderKind::Sftp,
+        "s3" => ProviderKind::S3,
         _ => ProviderKind::Local,
     };
 
