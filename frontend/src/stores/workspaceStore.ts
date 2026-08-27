@@ -47,8 +47,10 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
   const runtime = reactive<PanelRuntimeState>({
     entries: [] as FileEntry[],
     status: 'idle',
-    loading: false,
-    refreshing: false,
+    get loading() { return this.status === 'loading' || this.status === 'refreshing'; },
+    set loading(_v: boolean) {},
+    get refreshing() { return this.status === 'refreshing'; },
+    set refreshing(_v: boolean) {},
     error: null,
     initialized: false,
   });
@@ -91,11 +93,13 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     get searchQuery() { return view.searchQuery; },
     set searchQuery(val: string) { view.searchQuery = val; },
 
-    get loading() { return runtime.loading; },
-    set loading(val: boolean) { runtime.loading = val; },
+    get loading() { return runtime.status === 'loading' || runtime.status === 'refreshing'; },
+    set loading(_val: boolean) {},
 
     get error() { return runtime.error; },
     set error(val: string | null) { runtime.error = val; },
+
+    get stale() { return !!runtime.error && runtime.entries.length > 0; },
 
     get history() { return navigation.history; },
     set history(val: string[]) { navigation.history = val; },
@@ -111,27 +115,62 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
 }
 
 export const useWorkspaceStore = defineStore('workspace', () => {
-  // Load persistent session from localStorage
-  const leftConn = localStorage.getItem('fb:left:connectionId') || 'local';
-  const leftPath = localStorage.getItem('fb:left:path') || '/';
-  const leftView = (localStorage.getItem('fb:left:viewMode') as 'list' | 'grid') || 'grid';
-  const leftHidden = localStorage.getItem('fb:left:showHidden') === 'true';
+  // Load persistent session from localStorage (Pure versioned session)
+  let initialLayout: WorkspaceLayout = 'single';
+  let initialSplitRatio = 0.5;
+  let initialLeftConn = 'local';
+  let initialLeftPath = '/';
+  let initialLeftView: 'grid' | 'list' = 'grid';
+  let initialLeftHidden = false;
 
-  const rightConn = localStorage.getItem('fb:right:connectionId') || 'local';
-  const rightPath = localStorage.getItem('fb:right:path') || '/';
-  const rightView = (localStorage.getItem('fb:right:viewMode') as 'list' | 'grid') || 'grid';
-  const rightHidden = localStorage.getItem('fb:right:showHidden') === 'true';
+  let initialRightConn = 'local';
+  let initialRightPath = '/';
+  let initialRightView: 'grid' | 'list' = 'grid';
+  let initialRightHidden = false;
 
-  const leftPanel = ref<Panel>(createPanel('left', leftConn, leftPath));
-  leftPanel.value.view.viewMode = leftView;
-  leftPanel.value.view.showHidden = leftHidden;
+  try {
+    const rawV1 = localStorage.getItem('fb:workspace_v1');
+    if (rawV1) {
+      const parsed: PersistedWorkspace = JSON.parse(rawV1);
+      if (parsed.version === 1) {
+        initialLayout = parsed.layout || 'single';
+        initialSplitRatio = parsed.splitRatio || 0.5;
+        if (parsed.left) {
+          initialLeftConn = parsed.left.connectionId || 'local';
+          initialLeftPath = parsed.left.path || '/';
+          initialLeftView = parsed.left.viewMode || 'grid';
+          initialLeftHidden = !!parsed.left.showHidden;
+        }
+        if (parsed.right) {
+          initialRightConn = parsed.right.connectionId || 'local';
+          initialRightPath = parsed.right.path || '/';
+          initialRightView = parsed.right.viewMode || 'grid';
+          initialRightHidden = !!parsed.right.showHidden;
+        }
+      }
+    } else {
+      // Fallback for legacy keys and cleanup
+      if (localStorage.getItem('fb:isDualPane') === 'true') initialLayout = 'split';
+      initialLeftConn = localStorage.getItem('fb:left:connectionId') || 'local';
+      initialLeftPath = localStorage.getItem('fb:left:path') || '/';
+      initialRightConn = localStorage.getItem('fb:right:connectionId') || 'local';
+      initialRightPath = localStorage.getItem('fb:right:path') || '/';
+    }
+  } catch {
+    // ignore
+  }
 
-  const rightPanel = ref<Panel>(createPanel('right', rightConn, rightPath));
-  rightPanel.value.view.viewMode = rightView;
-  rightPanel.value.view.showHidden = rightHidden;
+  const leftPanel = ref<Panel>(createPanel('left', initialLeftConn, initialLeftPath));
+  leftPanel.value.view.viewMode = initialLeftView;
+  leftPanel.value.view.showHidden = initialLeftHidden;
 
-  const layout = ref<WorkspaceLayout>(localStorage.getItem('fb:isDualPane') === 'true' ? 'split' : 'single');
+  const rightPanel = ref<Panel>(createPanel('right', initialRightConn, initialRightPath));
+  rightPanel.value.view.viewMode = initialRightView;
+  rightPanel.value.view.showHidden = initialRightHidden;
+
+  const layout = ref<WorkspaceLayout>(initialLayout);
   const activePanelId = ref<PanelId>('left');
+  const splitRatio = ref<number>(initialSplitRatio);
   const clipboard = ref<WorkspaceClipboard | null>(null);
 
   // Request sequencing generation counters to avoid race conditions
@@ -142,25 +181,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     get: () => layout.value === 'split',
     set: (val: boolean) => {
       layout.value = val ? 'split' : 'single';
+      if (!val) {
+        activePanelId.value = 'left';
+      }
     },
   });
 
+  function setSplitRatio(ratio: number) {
+    splitRatio.value = Math.min(Math.max(ratio, 0.2), 0.8);
+    saveState();
+  }
+
   function saveState() {
-    localStorage.setItem('fb:isDualPane', isDualPane.value ? 'true' : 'false');
-    localStorage.setItem('fb:left:connectionId', leftPanel.value.location.connectionId);
-    localStorage.setItem('fb:left:path', leftPanel.value.location.path);
-    localStorage.setItem('fb:left:viewMode', leftPanel.value.view.viewMode);
-    localStorage.setItem('fb:left:showHidden', leftPanel.value.view.showHidden ? 'true' : 'false');
-
-    localStorage.setItem('fb:right:connectionId', rightPanel.value.location.connectionId);
-    localStorage.setItem('fb:right:path', rightPanel.value.location.path);
-    localStorage.setItem('fb:right:viewMode', rightPanel.value.view.viewMode);
-    localStorage.setItem('fb:right:showHidden', rightPanel.value.view.showHidden ? 'true' : 'false');
-
     const persisted: PersistedWorkspace = {
       version: 1,
       layout: layout.value,
       activePanel: activePanelId.value,
+      splitRatio: splitRatio.value,
       left: {
         connectionId: leftPanel.value.location.connectionId,
         path: leftPanel.value.location.path,
@@ -179,6 +216,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       },
     };
     localStorage.setItem('fb:workspace_v1', JSON.stringify(persisted));
+    localStorage.setItem('fb:isDualPane', isDualPane.value ? 'true' : 'false');
   }
 
   function getPanel(id: PanelId): Panel {
@@ -186,11 +224,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function setActivePanel(id: PanelId) {
-    activePanelId.value = id;
+    if (layout.value === 'single') {
+      activePanelId.value = 'left';
+    } else {
+      activePanelId.value = id;
+    }
   }
 
   function setDualPane(enable: boolean) {
     layout.value = enable ? 'split' : 'single';
+    if (!enable) {
+      activePanelId.value = 'left';
+    }
     saveState();
     if (enable && !rightPanel.value.runtime.initialized) {
       fetchPanelEntries('right');
@@ -224,12 +269,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveState();
   }
 
-  // --- NAVIGATION ENGINE ---
+  function swapPanels() {
+    const tempLeft = clonePanel(leftPanel.value, 'left');
+    leftPanel.value = clonePanel(rightPanel.value, 'left');
+    rightPanel.value = clonePanel(tempLeft, 'right');
+    saveState();
+  }
 
-  async function fetchPanelEntries(panelId: PanelId, path?: string) {
+  async function openInOtherPanel(sourcePanelId: PanelId, targetPath: string) {
+    const source = getPanel(sourcePanelId);
+    const targetId: PanelId = sourcePanelId === 'left' ? 'right' : 'left';
+    const target = getPanel(targetId);
+
+    if (!isDualPane.value) {
+      setDualPane(true);
+    }
+
+    target.location.connectionId = source.location.connectionId;
+    await navigateTo(targetId, targetPath);
+    setActivePanel(targetId);
+    saveState();
+  }
+
+  // --- TRANSACTIONAL NAVIGATION ENGINE ---
+
+  async function fetchPanelEntries(
+    panelId: PanelId,
+    targetPath?: string
+  ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
-    if (path) p.location.path = path;
-    p.runtime.loading = true;
+    const queryPath = targetPath !== undefined ? targetPath : p.location.path;
+
     p.runtime.status = p.runtime.initialized ? 'refreshing' : 'loading';
     p.runtime.error = null;
 
@@ -237,7 +307,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     try {
       const data = await listFilesApi(p.location.connectionId, {
-        path: p.location.path,
+        path: queryPath,
         show_hidden: p.view.showHidden,
         sort: p.view.sortField,
         order: p.view.sortOrder,
@@ -245,45 +315,56 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
       // Discard stale out-of-order response
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
-        return;
+        return { ok: false, error: 'Stale response discarded' };
       }
+
+      // TRANSACTIONAL COMMIT: commit path and entries only upon verified success!
+      p.location.path = data.path;
+      p.runtime.entries = data.entries;
 
       // Reconcile selection: preserve items that still exist
       const previousSelection = new Set(p.selection.paths);
-      p.runtime.entries = data.entries;
-      p.location.path = data.path;
       p.selection.paths = data.entries
         .map((e) => e.path)
         .filter((entryPath) => previousSelection.has(entryPath));
 
       p.runtime.status = 'idle';
+      p.runtime.error = null;
       p.runtime.initialized = true;
       saveState();
+      return { ok: true, path: data.path };
     } catch (err: any) {
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
-        return;
+        return { ok: false };
       }
       p.runtime.status = 'error';
       p.runtime.error = err.response?.data?.error?.message || 'Failed to list files';
-    } finally {
-      if (panelId === 'left' ? currentGen === leftRequestGen : currentGen === rightRequestGen) {
-        p.runtime.loading = false;
-        p.runtime.refreshing = false;
-      }
+      return { ok: false, error: p.runtime.error || undefined };
     }
   }
 
-  async function navigateTo(panelId: PanelId, targetPath: string, addToHistory: boolean = true) {
+  async function navigateTo(
+    panelId: PanelId,
+    targetPath: string,
+    addToHistory: boolean = true
+  ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
-    await fetchPanelEntries(panelId, targetPath);
+    const res = await fetchPanelEntries(panelId, targetPath);
+
+    if (!res.ok) {
+      const uiStore = useUiStore();
+      uiStore.showToast(res.error || 'Failed to open directory', 'error');
+      return res;
+    }
 
     if (addToHistory && p.location.path !== p.navigation.history[p.navigation.historyIndex]) {
-      // Truncate forward history on new navigation
+      // Truncate forward history on new verified navigation
       p.navigation.history = p.navigation.history.slice(0, p.navigation.historyIndex + 1);
       p.navigation.history.push(p.location.path);
       p.navigation.historyIndex = p.navigation.history.length - 1;
     }
     saveState();
+    return res;
   }
 
   async function navigatePanel(panelId: PanelId, targetPath: string, addToHistory: boolean = true) {
@@ -293,11 +374,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function switchPanelConnection(panelId: PanelId, connectionId: string, basePath: string = '/') {
     const p = getPanel(panelId);
     p.location.connectionId = connectionId;
-    p.location.path = basePath;
     p.navigation.history = [basePath];
     p.navigation.historyIndex = 0;
     p.runtime.initialized = false;
-    await fetchPanelEntries(panelId, basePath);
+    const res = await fetchPanelEntries(panelId, basePath);
+    if (!res.ok) {
+      // Still set base path fallback if fetch failed
+      p.location.path = basePath;
+    }
     saveState();
   }
 
@@ -471,17 +555,62 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await refreshAll();
   }
 
+  // --- WORKSPACE PRESETS ---
+
+  const presets = ref([
+    {
+      id: 'default-single',
+      name: 'Single Local Workspace',
+      description: 'Single full-width local storage panel',
+      layout: 'single' as const,
+      leftConn: 'local',
+      leftPath: '/',
+    },
+    {
+      id: 'dual-local',
+      name: 'Dual Local Split',
+      description: 'Side-by-side local panels for fast local organization',
+      layout: 'split' as const,
+      leftConn: 'local',
+      leftPath: '/',
+      rightConn: 'local',
+      rightPath: '/',
+    },
+  ]);
+
+  async function applyPreset(presetId: string) {
+    const preset = presets.value.find((p) => p.id === presetId);
+    if (!preset) return;
+    layout.value = preset.layout;
+    leftPanel.value.location.connectionId = preset.leftConn;
+    leftPanel.value.location.path = preset.leftPath;
+    await fetchPanelEntries('left');
+
+    if (preset.layout === 'split' && preset.rightConn) {
+      rightPanel.value.location.connectionId = preset.rightConn;
+      rightPanel.value.location.path = preset.rightPath || '/';
+      await fetchPanelEntries('right');
+    }
+    saveState();
+  }
+
   return {
     layout,
     isDualPane,
     activePanelId,
+    splitRatio,
     leftPanel,
     rightPanel,
     clipboard,
+    presets,
+    applyPreset,
     getPanel,
     setActivePanel,
     setDualPane,
+    setSplitRatio,
     closePanel,
+    swapPanels,
+    openInOtherPanel,
     fetchPanelEntries,
     navigateTo,
     navigatePanel,

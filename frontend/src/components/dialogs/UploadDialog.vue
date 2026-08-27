@@ -1,23 +1,94 @@
 <template>
   <div
     v-if="uiStore.isUploadOpen"
-    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs animate-in fade-in duration-150"
+    :class="[
+      'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs animate-in fade-in duration-150',
+      uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-4'
+    ]"
   >
-    <div class="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
-      <div class="flex items-center space-x-3 mb-3">
-        <div class="w-10 h-10 rounded-2xl bg-blue-600/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+    <div
+      :class="[
+        'bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 shadow-2xl p-6',
+        uiStore.isMobile ? 'w-full rounded-t-3xl rounded-b-none border-b-0 max-h-[85vh] pb-safe animate-in slide-in-from-bottom duration-200' : 'rounded-3xl max-w-md w-full'
+      ]"
+    >
+      <!-- Mobile Drag Indicator -->
+      <div v-if="uiStore.isMobile" class="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto -mt-2 mb-4"></div>
+
+      <div class="flex items-center space-x-3 mb-4">
+        <div class="w-10 h-10 rounded-2xl bg-blue-600/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
           <FbIcon name="upload" size="20px" />
         </div>
-        <div>
+        <div class="truncate flex-1">
           <h3 class="text-sm font-bold text-gray-900 dark:text-white">Upload Files</h3>
-          <p class="text-gray-500 dark:text-slate-400 text-xs font-mono truncate max-w-[250px]">
-            To {{ currentTargetDirectory }}
+          <p class="text-gray-500 dark:text-slate-400 text-xs font-mono truncate">
+            Target: {{ currentTargetDirectory }}
           </p>
         </div>
+        <button
+          v-if="uiStore.isMobile"
+          @click="uiStore.isUploadOpen = false"
+          class="p-1 text-gray-400 hover:text-gray-700 dark:hover:text-white text-base"
+        >
+          ✕
+        </button>
       </div>
 
-      <!-- Dropzone -->
+      <!-- Mobile Quick Upload Options (Files, Camera, Photos) -->
+      <div v-if="uiStore.isMobile" class="grid grid-cols-3 gap-2 mb-4">
+        <button
+          @click="fileInputRef?.click()"
+          class="flex flex-col items-center justify-center p-3 rounded-2xl bg-gray-50 dark:bg-slate-800/80 border border-gray-200 dark:border-slate-700 hover:bg-gray-100 transition cursor-pointer"
+        >
+          <span class="text-xl mb-1">📁</span>
+          <span class="font-semibold text-[11px] text-gray-800 dark:text-slate-200">Browse Files</span>
+        </button>
+
+        <button
+          @click="cameraInputRef?.click()"
+          class="flex flex-col items-center justify-center p-3 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 hover:bg-blue-100 transition cursor-pointer text-blue-600 dark:text-blue-400"
+        >
+          <span class="text-xl mb-1">📷</span>
+          <span class="font-bold text-[11px]">Take Photo</span>
+        </button>
+
+        <button
+          @click="mediaInputRef?.click()"
+          class="flex flex-col items-center justify-center p-3 rounded-2xl bg-gray-50 dark:bg-slate-800/80 border border-gray-200 dark:border-slate-700 hover:bg-gray-100 transition cursor-pointer"
+        >
+          <span class="text-xl mb-1">🖼️</span>
+          <span class="font-semibold text-[11px] text-gray-800 dark:text-slate-200">Gallery</span>
+        </button>
+      </div>
+
+      <!-- Hidden Input Elements -->
+      <input
+        ref="fileInputRef"
+        type="file"
+        multiple
+        class="hidden"
+        @change="handleFileChange"
+      />
+      <input
+        ref="cameraInputRef"
+        type="file"
+        accept="image/*,video/*"
+        capture="environment"
+        class="hidden"
+        @change="handleFileChange"
+      />
+      <input
+        ref="mediaInputRef"
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        class="hidden"
+        @change="handleFileChange"
+      />
+
+      <!-- Desktop Dropzone -->
       <div
+        v-if="!uiStore.isMobile"
         @dragover.prevent="isDragging = true"
         @dragleave.prevent="isDragging = false"
         @drop.prevent="handleDrop"
@@ -29,13 +100,6 @@
         ]"
         @click="fileInputRef?.click()"
       >
-        <input
-          ref="fileInputRef"
-          type="file"
-          multiple
-          class="hidden"
-          @change="handleFileChange"
-        />
         <div class="flex justify-center mb-2 text-blue-600 dark:text-blue-400">
           <FbIcon name="upload" size="28px" />
         </div>
@@ -43,7 +107,7 @@
         <p class="text-[11px] text-gray-500 dark:text-slate-500">Supports single and multiple file uploads</p>
       </div>
 
-      <!-- File List to Upload -->
+      <!-- Selected File List to Upload -->
       <div v-if="selectedFiles.length > 0" class="mb-4">
         <span class="text-[11px] text-gray-700 dark:text-slate-400 font-semibold mb-1 block">
           Selected ({{ selectedFiles.length }}):
@@ -62,7 +126,7 @@
 
       <!-- Progress Bar -->
       <div v-if="uploading" class="mb-4 space-y-1.5">
-        <div class="flex justify-between text-[11px] text-gray-600 dark:text-slate-400">
+        <div class="flex justify-between text-[11px] text-gray-600 dark:text-slate-400 font-mono">
           <span>Uploading...</span>
           <span>{{ progress }}%</span>
         </div>
@@ -79,7 +143,7 @@
           type="button"
           :disabled="uploading"
           @click="uiStore.isUploadOpen = false"
-          class="px-4 py-2 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer disabled:opacity-50"
+          class="px-4 py-2.5 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer disabled:opacity-50"
         >
           Cancel
         </button>
@@ -87,7 +151,7 @@
           type="button"
           :disabled="uploading || selectedFiles.length === 0"
           @click="startUpload"
-          class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs transition disabled:opacity-50 text-xs cursor-pointer flex items-center space-x-1.5"
+          class="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs transition disabled:opacity-50 text-xs cursor-pointer flex items-center space-x-1.5"
         >
           <span v-if="uploading" class="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
           <span>{{ uploading ? 'Uploading...' : 'Start Upload' }}</span>
@@ -98,84 +162,80 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { uploadFileApi } from '../../api/files';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { uploadFileApi } from '../../api/files';
 
-const workspaceStore = useWorkspaceStore();
 const uiStore = useUiStore();
+const workspaceStore = useWorkspaceStore();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const cameraInputRef = ref<HTMLInputElement | null>(null);
+const mediaInputRef = ref<HTMLInputElement | null>(null);
+
 const isDragging = ref(false);
 const selectedFiles = ref<File[]>([]);
 const uploading = ref(false);
 const progress = ref(0);
 
 const currentTargetDirectory = computed(() => {
-  const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
-  return activeP.path || '/';
+  const p = workspaceStore.getPanel(workspaceStore.activePanelId);
+  return p.path === '/' ? '/' : p.path;
 });
-
-watch(
-  () => uiStore.isUploadOpen,
-  (open) => {
-    if (open) {
-      selectedFiles.value = [];
-      progress.value = 0;
-      uploading.value = false;
-    }
-  }
-);
 
 function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement;
-  if (target.files) {
+  if (target.files && target.files.length > 0) {
     selectedFiles.value = Array.from(target.files);
   }
 }
 
 function handleDrop(e: DragEvent) {
   isDragging.value = false;
-  if (e.dataTransfer?.files) {
+  if (e.dataTransfer && e.dataTransfer.files.length > 0) {
     selectedFiles.value = Array.from(e.dataTransfer.files);
   }
 }
 
-async function startUpload() {
-  if (selectedFiles.value.length === 0) return;
-  uploading.value = true;
-  progress.value = 0;
-
-  try {
-    const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
-    const connId = activeP.connectionId;
-    const destPath = activeP.path;
-
-    for (let i = 0; i < selectedFiles.value.length; i++) {
-      await uploadFileApi(connId, destPath, selectedFiles.value[i], (p) => {
-        progress.value = Math.round(((i + p / 100) / selectedFiles.value.length) * 100);
-      });
-    }
-
-    uiStore.showToast(`Uploaded ${selectedFiles.value.length} file(s)`, 'success');
-    uiStore.isUploadOpen = false;
-
-    // Immediately reload entries!
-    await workspaceStore.refreshAll();
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Upload failed', 'error');
-  } finally {
-    uploading.value = false;
-  }
-}
-
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+  if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+async function startUpload() {
+  if (selectedFiles.value.length === 0) return;
+
+  uploading.value = true;
+  progress.value = 0;
+
+  const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
+  const connId = activeP.connectionId || 'local';
+  const targetFolder = activeP.path;
+
+  try {
+    for (let i = 0; i < selectedFiles.value.length; i++) {
+      const file = selectedFiles.value[i];
+      const targetPath = targetFolder === '/' ? `/${file.name}` : `${targetFolder}/${file.name}`;
+
+      await uploadFileApi(connId, targetPath, file, (p) => {
+        progress.value = Math.round(((i + p / 100) / selectedFiles.value.length) * 100);
+      });
+    }
+
+    uiStore.showToast(`Successfully uploaded ${selectedFiles.value.length} files`, 'success');
+    uiStore.isUploadOpen = false;
+    selectedFiles.value = [];
+    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+  } catch (err: any) {
+    uiStore.showToast(err.response?.data?.error?.message || 'Failed to upload files', 'error');
+  } finally {
+    uploading.value = false;
+    progress.value = 0;
+  }
 }
 </script>

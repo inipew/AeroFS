@@ -1,42 +1,150 @@
 <template>
-  <div class="h-screen w-screen flex bg-white dark:bg-[#0b0f19] text-gray-900 dark:text-slate-100 font-sans overflow-hidden">
-    <!-- Login Screen -->
-    <LoginModal v-if="!authStore.isChecking && !authStore.isAuthenticated" />
+  <div class="h-screen w-screen flex flex-col bg-white dark:bg-[#0b0f19] text-gray-800 dark:text-slate-100 font-sans antialiased overflow-hidden select-none">
+    <!-- Unauthenticated View: Fullscreen Auth Modal -->
+    <LoginModal v-if="!authStore.isAuthenticated && !authStore.isChecking" />
 
-    <!-- Main File Manager Workspace (Matching the-filebrowser layout) -->
-    <template v-else-if="authStore.isAuthenticated">
-      <!-- 1. Left Sidebar (Full Height) -->
+    <!-- Authenticated View: AeroFS Core Interface -->
+    <div v-else-if="authStore.isAuthenticated" class="flex h-full w-full overflow-hidden">
+      <!-- Full-Height Sidebar Navigation Drawer -->
       <AppSidebar
         @openConnectionDialog="isConnDialogOpen = true"
-        @openSettingsDialog="isSettingsDialogOpen = true"
         @openSharesDialog="isSharesDialogOpen = true"
         @openTrashDialog="isTrashDialogOpen = true"
-        @openStarredView="isStarredDialogOpen = true"
-        @openRecentView="handleRecentView"
+        @openStarredDialog="isStarredDialogOpen = true"
+        @openSettingsDialog="isSettingsDialogOpen = true"
+        @showRecent="handleRecentView"
       />
 
-      <!-- 2. Right Main Column (Header Toolbar + File Panels) -->
-      <div class="flex-1 flex flex-col h-screen overflow-hidden min-w-0 bg-white dark:bg-[#0b0f19]">
-        <!-- Top Toolbar with Breadcrumbs & Actions -->
+      <!-- Right Area: Universal Header + Dynamic Workspace Panels + Mobile Bottom Bar -->
+      <div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden">
+        <!-- Universal App Header (Breadcrumb, Search, Sort & Filter, New Button) -->
         <AppHeader
-          @openConnectionDialog="isConnDialogOpen = true"
           @openSearchDialog="isSearchDialogOpen = true"
+          @openConnectionDialog="isConnDialogOpen = true"
           @openAuditLogDialog="isSettingsDialogOpen = true"
         />
 
-        <!-- Main File Explorer View Area -->
-        <main
-          :class="[
-            'flex-1 flex overflow-hidden min-w-0 bg-white dark:bg-[#0b0f19]',
-            workspaceStore.isDualPane ? 'p-3 gap-3 bg-gray-100/60 dark:bg-[#060a12]' : 'p-0'
-          ]"
+        <!-- Mobile Dual-Pane Tab Switcher (When Dual Pane is Enabled on Mobile) -->
+        <div
+          v-if="uiStore.isMobile && workspaceStore.isDualPane"
+          class="flex items-center p-1.5 bg-gray-100 dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 text-xs font-semibold select-none shrink-0"
         >
-          <!-- Left Panel -->
-          <FilePanel panelId="left" />
+          <button
+            @click="workspaceStore.setActivePanel('left')"
+            :class="[
+              'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition truncate cursor-pointer',
+              workspaceStore.activePanelId === 'left'
+                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs'
+                : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <span>📁 Panel 1</span>
+            <span class="text-[10px] font-mono opacity-70 truncate max-w-[100px]">({{ workspaceStore.leftPanel.path }})</span>
+          </button>
 
-          <!-- Right Panel (when Dual Pane is enabled) -->
-          <FilePanel v-if="workspaceStore.isDualPane" panelId="right" />
+          <button
+            @click="workspaceStore.setActivePanel('right')"
+            :class="[
+              'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition truncate cursor-pointer',
+              workspaceStore.activePanelId === 'right'
+                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs'
+                : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <span>💾 Panel 2</span>
+            <span class="text-[10px] font-mono opacity-70 truncate max-w-[100px]">({{ workspaceStore.rightPanel.path }})</span>
+          </button>
+        </div>
+
+        <!-- Dynamic Workspace Shell (Continuous Surface) -->
+        <main
+          ref="mainContainerRef"
+          class="flex-1 flex overflow-hidden min-w-0 bg-white dark:bg-[#0b0f19] p-0"
+        >
+          <!-- MOBILE VIEW: 100% Full-Width Active Panel -->
+          <div v-if="uiStore.isMobile" class="w-full h-full flex flex-col min-w-0">
+            <FilePanel :panelId="workspaceStore.activePanelId" />
+          </div>
+
+          <!-- DESKTOP VIEW: Continuous Workspace Surface (Single or Split) -->
+          <template v-else>
+            <!-- Left Panel -->
+            <div
+              :style="{
+                width: workspaceStore.isDualPane ? `calc(${workspaceStore.splitRatio * 100}% - 3px)` : '100%'
+              }"
+              class="h-full flex flex-col min-w-[200px]"
+            >
+              <FilePanel panelId="left" />
+            </div>
+
+            <!-- Draggable Split Divider (Continuous 1px seam with subtle hover handle) -->
+            <div
+              v-if="workspaceStore.isDualPane"
+              @mousedown="startSplitResize"
+              class="w-1.5 relative flex items-center justify-center cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/30 group select-none transition shrink-0 bg-gray-200 dark:border-slate-800 bg-gray-100 dark:bg-[#070b14]"
+              title="Drag to resize panels"
+            >
+              <div class="w-0.5 h-10 bg-gray-300 dark:bg-slate-700 group-hover:bg-blue-500 rounded-full transition-colors"></div>
+            </div>
+
+            <!-- Right Panel (when Dual Pane is enabled) -->
+            <div
+              v-if="workspaceStore.isDualPane"
+              :style="{
+                width: `calc(${(1 - workspaceStore.splitRatio) * 100}% - 3px)`
+              }"
+              class="h-full flex flex-col min-w-[200px]"
+            >
+              <FilePanel panelId="right" />
+            </div>
+          </template>
         </main>
+
+        <!-- Mobile Bottom Navigation Bar (Thumb Zone) -->
+        <nav
+          v-if="uiStore.isMobile"
+          class="h-14 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-gray-200 dark:border-slate-800 px-4 flex items-center justify-around text-gray-500 dark:text-slate-400 text-[10px] font-semibold shrink-0 z-20 pb-safe select-none"
+        >
+          <button
+            @click="workspaceStore.setActivePanel('left')"
+            :class="[
+              'flex flex-col items-center space-y-1 transition cursor-pointer',
+              workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400 font-bold' : ''
+            ]"
+          >
+            <FbIcon name="folder" size="18px" />
+            <span>Files</span>
+          </button>
+
+          <button
+            @click="uiStore.isMobileSidebarOpen = true"
+            class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
+          >
+            <FbIcon name="share" size="18px" />
+            <span>Storage</span>
+          </button>
+
+          <button
+            @click="transferStore.isDrawerOpen = !transferStore.isDrawerOpen"
+            class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer relative"
+          >
+            <FbIcon name="refresh" size="18px" />
+            <span
+              v-if="transferStore.activeCount > 0"
+              class="absolute -top-1 right-2 w-2 h-2 rounded-full bg-blue-600 animate-pulse"
+            ></span>
+            <span>Transfers</span>
+          </button>
+
+          <button
+            @click="isSettingsDialogOpen = true"
+            class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
+          >
+            <FbIcon name="settings" size="18px" />
+            <span>Settings</span>
+          </button>
+        </nav>
       </div>
 
       <!-- Context Menu -->
@@ -75,28 +183,17 @@
       />
       <CodeEditorModal />
       <MediaViewerModal />
+      <CommandPaletteModal
+        @open-settings="isSettingsDialogOpen = true"
+        @open-connection-dialog="isConnDialogOpen = true"
+        @open-search-dialog="isSearchDialogOpen = true"
+      />
 
       <!-- Floating Transfer Engine Manager -->
       <TransferDrawer />
+    </div>
 
-      <!-- Toast Notifications -->
-      <div class="fixed bottom-4 right-4 z-50 flex flex-col space-y-2 pointer-events-none">
-        <div
-          v-for="toast in uiStore.toasts"
-          :key="toast.id"
-          :class="[
-            'px-4 py-2.5 rounded-xl shadow-xl text-xs font-medium border pointer-events-auto transition-all animate-in slide-in-from-bottom-2',
-            toast.type === 'success' ? 'bg-emerald-50 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200' : '',
-            toast.type === 'error' ? 'bg-red-50 dark:bg-red-950 border-red-300 dark:border-red-700 text-red-800 dark:text-red-200' : '',
-            toast.type === 'info' ? 'bg-gray-900 text-white border-gray-800' : '',
-          ]"
-        >
-          {{ toast.message }}
-        </div>
-      </div>
-    </template>
-
-    <!-- Initial Loading Screen -->
+    <!-- Initial App Booting Screen -->
     <div v-else class="h-full w-full flex items-center justify-center bg-white dark:bg-slate-950 text-gray-400 text-xs">
       <div class="flex flex-col items-center space-y-2">
         <div class="animate-spin rounded-full h-8 w-8 border-2 border-blue-600 border-t-transparent"></div>
@@ -108,17 +205,20 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import FbIcon from './components/common/FbIcon.vue';
 import { useAuthStore } from './stores/authStore';
 import { useConnectionStore } from './stores/connectionStore';
 import { useWorkspaceStore } from './stores/workspaceStore';
 import { useTransferStore } from './stores/transferStore';
 import { useFileStore } from './stores/fileStore';
 import { useUiStore } from './stores/uiStore';
+import type { FileEntry } from './types/vfs';
 
 import AppHeader from './components/layout/AppHeader.vue';
 import AppSidebar from './components/layout/AppSidebar.vue';
 import FilePanel from './components/browser/FilePanel.vue';
 import ContextMenu from './components/browser/ContextMenu.vue';
+import CommandPaletteModal from './components/dialogs/CommandPaletteModal.vue';
 import CreateDialog from './components/dialogs/CreateDialog.vue';
 import RenameDialog from './components/dialogs/RenameDialog.vue';
 import DeleteDialog from './components/dialogs/DeleteDialog.vue';
@@ -144,6 +244,9 @@ const transferStore = useTransferStore();
 const fileStore = useFileStore();
 const uiStore = useUiStore();
 
+const mainContainerRef = ref<HTMLElement | null>(null);
+let isResizingSplit = false;
+
 const isConnDialogOpen = ref(false);
 const isSearchDialogOpen = ref(false);
 const isSettingsDialogOpen = ref(false);
@@ -159,6 +262,32 @@ const propsTargetPath = ref('/');
 const shareTargetConnection = ref('local');
 const shareTargetPath = ref('/');
 const archiveSelectedPaths = ref<string[]>([]);
+
+function startSplitResize(e: MouseEvent) {
+  e.preventDefault();
+  isResizingSplit = true;
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  window.addEventListener('mousemove', onSplitResizeMove);
+  window.addEventListener('mouseup', stopSplitResize);
+}
+
+function onSplitResizeMove(e: MouseEvent) {
+  if (!isResizingSplit || !mainContainerRef.value) return;
+  const rect = mainContainerRef.value.getBoundingClientRect();
+  const ratio = (e.clientX - rect.left) / rect.width;
+  workspaceStore.setSplitRatio(ratio);
+}
+
+function stopSplitResize() {
+  if (isResizingSplit) {
+    isResizingSplit = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', onSplitResizeMove);
+    window.removeEventListener('mouseup', stopSplitResize);
+  }
+}
 
 function handleOpenArchive(paths: string[]) {
   archiveSelectedPaths.value = paths;
@@ -179,7 +308,7 @@ function handleOpenCreateShare(payload: { connectionId: string; path: string }) 
 
 function handleRecentView() {
   const panel = workspaceStore.getPanel(workspaceStore.activePanelId);
-  panel.entries.sort((a, b) => {
+  panel.entries.sort((a: FileEntry, b: FileEntry) => {
     const timeA = a.modified_at ? new Date(a.modified_at).getTime() : 0;
     const timeB = b.modified_at ? new Date(b.modified_at).getTime() : 0;
     return timeB - timeA;
@@ -191,14 +320,21 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   const target = e.target as HTMLElement;
   const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 
-  // 1. Ctrl+K / Cmd+K: Search
+  // 1. Ctrl+K / Cmd+K: Universal Command Palette
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    uiStore.toggleCommandPalette();
+    return;
+  }
+
+  // 1b. Ctrl+F / Cmd+F: Search Dialog
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
     e.preventDefault();
     isSearchDialogOpen.value = !isSearchDialogOpen.value;
     return;
   }
 
-  // 1b. Ctrl+H / Cmd+H: Toggle Hidden files
+  // 1c. Ctrl+H / Cmd+H: Toggle Hidden files
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'h') {
     e.preventDefault();
     workspaceStore.toggleShowHidden(workspaceStore.activePanelId);
@@ -217,11 +353,21 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // 3. F2: Rename selected item
+  // 3. Swap Panels (Alt+S or Ctrl+Shift+Tab)
+  if ((e.altKey && e.key.toLowerCase() === 's') || ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Tab')) {
+    e.preventDefault();
+    if (workspaceStore.isDualPane) {
+      workspaceStore.swapPanels();
+      uiStore.showToast('Panels swapped', 'info');
+    }
+    return;
+  }
+
+  // 4. F2: Rename selected item
   if (e.key === 'F2') {
     e.preventDefault();
     if (activeP.selectedEntries.length === 1) {
-      const selectedEntry = activeP.entries.find((entry) => entry.path === activeP.selectedEntries[0]);
+      const selectedEntry = activeP.entries.find((entry: FileEntry) => entry.path === activeP.selectedEntries[0]);
       if (selectedEntry) {
         fileStore.currentConnectionId = activeP.connectionId;
         fileStore.currentPath = activeP.path;
@@ -231,7 +377,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // 4. Delete: Delete selected items
+  // 5. Delete: Delete selected items
   if (e.key === 'Delete') {
     e.preventDefault();
     if (activeP.selectedEntries.length > 0) {
@@ -242,10 +388,10 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // 5. Ctrl+A: Select All
+  // 6. Ctrl+A: Select All
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
     e.preventDefault();
-    activeP.selectedEntries = activeP.entries.map((entry) => entry.path);
+    activeP.selectedEntries = activeP.entries.map((entry: FileEntry) => entry.path);
     return;
   }
 }
@@ -266,5 +412,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeydown);
+  stopSplitResize();
 });
 </script>

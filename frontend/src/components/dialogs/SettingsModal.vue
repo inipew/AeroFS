@@ -170,6 +170,45 @@
 
           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
             <div>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">File List Density</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Row height and information density in List view.</p>
+            </div>
+            <div class="flex items-center space-x-1 bg-white dark:bg-slate-800 p-1 rounded-xl border border-gray-200 dark:border-slate-700">
+              <button
+                type="button"
+                @click="uiStore.setListDensity('comfortable')"
+                :class="[
+                  'px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer',
+                  uiStore.listDensity === 'comfortable' ? 'bg-blue-600 text-white shadow-xs' : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
+                ]"
+              >
+                Comfortable
+              </button>
+              <button
+                type="button"
+                @click="uiStore.setListDensity('compact')"
+                :class="[
+                  'px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer',
+                  uiStore.listDensity === 'compact' ? 'bg-blue-600 text-white shadow-xs' : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
+                ]"
+              >
+                Compact
+              </button>
+              <button
+                type="button"
+                @click="uiStore.setListDensity('dense')"
+                :class="[
+                  'px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer',
+                  uiStore.listDensity === 'dense' ? 'bg-blue-600 text-white shadow-xs' : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
+                ]"
+              >
+                Dense
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
+            <div>
               <p class="font-bold text-gray-900 dark:text-white text-xs">Remember Last Directories</p>
               <p class="text-[11px] text-gray-500 dark:text-slate-400">Automatically restore the last opened folder path upon reconnection.</p>
             </div>

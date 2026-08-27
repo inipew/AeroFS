@@ -43,6 +43,15 @@ export const useConnectionStore = defineStore('connection', () => {
     connections.value = connections.value.filter((c) => c.id !== id);
   }
 
+  function isReadOnly(id: string): boolean {
+    const conn = getConnection(id);
+    return !!conn?.read_only;
+  }
+
+  function canWrite(id: string): boolean {
+    return !isReadOnly(id);
+  }
+
   return {
     connections,
     activeConnectionId,
@@ -50,5 +59,7 @@ export const useConnectionStore = defineStore('connection', () => {
     getConnection,
     addConnection,
     removeConnection,
+    isReadOnly,
+    canWrite,
   };
 });

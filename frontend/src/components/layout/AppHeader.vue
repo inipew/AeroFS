@@ -1,9 +1,29 @@
 <template>
-  <header class="h-16 bg-white dark:bg-[#0b0f19] border-b border-gray-200 dark:border-slate-800/80 px-6 flex items-center justify-between text-gray-800 dark:text-slate-100 select-none sticky top-0 z-20 overflow-visible">
+  <header class="h-14 md:h-16 bg-white dark:bg-[#0b0f19] border-b border-gray-200 dark:border-slate-800/80 px-3 md:px-6 flex items-center justify-between text-gray-800 dark:text-slate-100 select-none sticky top-0 z-20 overflow-visible">
     <!-- Left: Breadcrumbs Bar (Clean, Unclipped Dropdown) -->
-    <div class="flex items-center space-x-1 max-w-[55vw] text-base font-medium shrink min-w-0 py-1">
+    <div class="flex items-center space-x-1 max-w-[55vw] md:max-w-[50vw] text-sm md:text-base font-medium shrink min-w-0 py-1">
+      <!-- Mobile Back / Up to Parent Folder Button -->
+      <button
+        v-if="uiStore.isMobile && activePanel.path !== '/'"
+        @click="workspaceStore.navigateUp(workspaceStore.activePanelId)"
+        class="p-1.5 -ml-1 mr-0.5 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer shrink-0 font-bold"
+        title="Back to parent folder (Up)"
+      >
+        <FbIcon name="chevron-left" size="20px" />
+      </button>
+
+      <!-- Mobile Sidebar Drawer Toggle Button -->
+      <button
+        v-if="uiStore.isMobile"
+        @click="uiStore.isMobileSidebarOpen = true"
+        class="p-1.5 mr-1 text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-white rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0"
+        title="Open Navigation Drawer"
+      >
+        <FbIcon name="menu" size="18px" />
+      </button>
+
       <!-- Clean Root Breadcrumb + Dropdown Trigger -->
-      <div class="relative shrink-0 flex items-center">
+      <div ref="sourceMenuRef" class="relative shrink-0 flex items-center">
         <!-- Root Navigation Button -->
         <button
           @click="workspaceStore.navigatePanel(workspaceStore.activePanelId, '/')"
@@ -20,7 +40,7 @@
             size="16px"
             :class="activePanel.path === '/' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-slate-500'"
           />
-          <span class="truncate">{{ activeSourceName }}</span>
+          <span class="truncate max-w-[100px] sm:max-w-[180px]">{{ activeSourceName }}</span>
         </button>
 
         <!-- Dropdown Chevron Button -->
@@ -88,37 +108,154 @@
         </div>
       </div>
 
-      <!-- Breadcrumbs Segments -->
-      <template v-for="(crumb, idx) in breadcrumbs" :key="crumb.path">
-        <span class="text-gray-400 dark:text-slate-600 px-0.5 shrink-0">
-          <FbIcon name="chevron-right" size="14px" />
+      <!-- Desktop Breadcrumbs Segments -->
+      <template v-if="!uiStore.isMobile">
+        <template v-for="(crumb, idx) in breadcrumbs" :key="crumb.path">
+          <span class="text-gray-400 dark:text-slate-600 px-0.5 shrink-0">
+            <FbIcon name="chevron-right" size="14px" />
+          </span>
+          <button
+            @click="workspaceStore.navigatePanel(workspaceStore.activePanelId, crumb.path)"
+            :class="[
+              'px-1.5 py-1 rounded-lg transition truncate shrink min-w-0 max-w-[140px] sm:max-w-[200px]',
+              idx === breadcrumbs.length - 1
+                ? 'text-gray-950 dark:text-white font-bold cursor-default pointer-events-none'
+                : 'text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 cursor-pointer'
+            ]"
+            :title="crumb.name"
+          >
+            {{ crumb.name }}
+          </button>
+        </template>
+      </template>
+      <!-- Mobile Clean Last Folder Segment -->
+      <template v-else-if="breadcrumbs.length > 0">
+        <span class="text-gray-400 dark:text-slate-600 px-0.5 shrink-0">/</span>
+        <span class="text-gray-950 dark:text-white font-bold truncate max-w-[120px]">
+          {{ breadcrumbs[breadcrumbs.length - 1].name }}
         </span>
-        <button
-          @click="workspaceStore.navigatePanel(workspaceStore.activePanelId, crumb.path)"
-          :class="[
-            'px-1.5 py-1 rounded-lg transition truncate shrink min-w-0 max-w-[140px] sm:max-w-[200px]',
-            idx === breadcrumbs.length - 1
-              ? 'text-gray-950 dark:text-white font-bold cursor-default pointer-events-none'
-              : 'text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 cursor-pointer'
-          ]"
-          :title="crumb.name"
-        >
-          {{ crumb.name }}
-        </button>
       </template>
     </div>
 
-    <!-- Right: Toolbar Controls (Search, View Mode, Sort & Filter, Select, Dual Pane, + New) -->
-    <div class="flex items-center space-x-2 shrink-0">
-      <!-- Search Input Box (Pill shape with ⌘K badge) -->
+    <!-- MOBILE TOOLBAR (Search, List/Grid, + New, ⋮ More) -->
+    <div v-if="uiStore.isMobile" class="flex items-center space-x-1 shrink-0">
+      <!-- Search Button -->
       <button
         @click="emit('openSearchDialog')"
+        class="p-2 rounded-xl text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+        title="Search"
+      >
+        <FbIcon name="search" size="18px" />
+      </button>
+
+      <!-- View Switcher Toggle Button -->
+      <button
+        @click="toggleMobileViewMode"
+        class="p-2 rounded-xl text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+        :title="activePanel.viewMode === 'grid' ? 'Switch to List View' : 'Switch to Grid View'"
+      >
+        <FbIcon :name="activePanel.viewMode === 'grid' ? 'list' : 'grid'" size="18px" />
+      </button>
+
+      <!-- Mobile + New Dropdown -->
+      <div ref="newMenuRef" class="relative">
+        <button
+          @click="isNewMenuOpen = !isNewMenuOpen"
+          class="bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded-xl shadow-xs transition cursor-pointer flex items-center justify-center"
+          title="New Item / Upload"
+        >
+          <FbIcon name="plus" size="16px" />
+        </button>
+
+        <div
+          v-if="isNewMenuOpen"
+          @click="isNewMenuOpen = false"
+          class="absolute right-0 mt-2 w-44 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
+        >
+          <button
+            @click="openNew('file')"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="new-file" size="16px" class="text-blue-600" />
+            <span>New File</span>
+          </button>
+          <button
+            @click="openNew('directory')"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="new-folder" size="16px" class="text-amber-500" />
+            <span>New Folder</span>
+          </button>
+          <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+          <button
+            @click="openUpload"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="upload" size="16px" class="text-emerald-500" />
+            <span>Upload File</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Mobile More Menu Button (⋮) -->
+      <div ref="mobileMoreRef" class="relative">
+        <button
+          @click="isMobileMoreOpen = !isMobileMoreOpen"
+          class="p-2 rounded-xl text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer font-bold text-base flex items-center justify-center"
+          title="More actions"
+        >
+          <span>⋮</span>
+        </button>
+
+        <div
+          v-if="isMobileMoreOpen"
+          @click="isMobileMoreOpen = false"
+          class="absolute right-0 mt-2 w-52 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
+        >
+          <button
+            @click="isSortMenuOpen = true"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="sort" size="16px" class="text-blue-500" />
+            <span>Sort & Filter...</span>
+          </button>
+          <button
+            @click="toggleHidden"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="eye" size="16px" class="text-gray-500" />
+            <span>{{ activePanel.showHidden ? 'Hide Dotfiles' : 'Show Dotfiles' }}</span>
+          </button>
+          <button
+            @click="toggleSelectAll"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="select-all" size="16px" class="text-indigo-500" />
+            <span>{{ activePanel.selectedEntries.length > 0 ? 'Deselect All' : 'Select All' }}</span>
+          </button>
+          <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+          <button
+            @click="workspaceStore.setDualPane(!workspaceStore.isDualPane)"
+            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+          >
+            <FbIcon name="panel-right" size="16px" class="text-emerald-500" />
+            <span>{{ workspaceStore.isDualPane ? 'Disable Dual Pane' : 'Enable Dual Pane' }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DESKTOP TOOLBAR CONTROLS -->
+    <div v-else class="flex items-center space-x-2 shrink-0">
+      <!-- Command Palette Search Trigger (Pill shape with ⌘K badge) -->
+      <button
+        @click="uiStore.toggleCommandPalette()"
         class="bg-white dark:bg-slate-900/90 hover:bg-gray-50 dark:hover:bg-slate-800/80 border border-gray-200 dark:border-slate-800 px-3.5 py-2 rounded-xl text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 flex items-center space-x-2.5 text-xs transition shadow-xs w-48 sm:w-56 justify-between cursor-pointer"
-        title="Search files (Ctrl+K / Cmd+K)"
+        title="Command Palette (Ctrl+K / Cmd+K)"
       >
         <div class="flex items-center space-x-2">
           <FbIcon name="search" size="16px" class="text-gray-400" />
-          <span class="text-gray-400 font-normal">Search...</span>
+          <span class="text-gray-400 font-normal">Command palette...</span>
         </div>
         <kbd class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-[10px] text-gray-500 dark:text-slate-400 border border-gray-200 dark:border-slate-700 font-mono">⌘K</kbd>
       </button>
@@ -155,7 +292,7 @@
       </div>
 
       <!-- Interactive Sort & Filter Dropdown Popover -->
-      <div class="relative">
+      <div ref="sortMenuRef" class="relative">
         <button
           @click="isSortMenuOpen = !isSortMenuOpen"
           :class="[
@@ -219,7 +356,7 @@
                     : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
                 ]"
               >
-                Ascending ↑
+                Ascending
               </button>
               <button
                 @click="setSortOrder('desc')"
@@ -230,23 +367,23 @@
                     : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
                 ]"
               >
-                Descending ↓
+                Descending
               </button>
             </div>
           </div>
 
           <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
 
-          <!-- SECTION 3: QUICK FILTER TYPE -->
+          <!-- SECTION 3: FILTER BY TYPE -->
           <div>
-            <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider flex items-center justify-between">
-              <span>FILTER CATEGORY</span>
+            <div class="px-2 py-1 flex items-center justify-between text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+              <span>FILTER BY TYPE</span>
               <button
                 v-if="activePanel.filterType && activePanel.filterType !== 'all'"
                 @click="setFilterType('all')"
-                class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer lowercase text-[10px] font-semibold"
+                class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
               >
-                Reset All
+                Reset
               </button>
             </div>
             <div class="space-y-0.5 max-h-40 overflow-y-auto">
@@ -314,8 +451,18 @@
         <FbIcon name="panel-right" size="18px" />
       </button>
 
+      <!-- Swap Panels Button (Active when Dual Pane is enabled) -->
+      <button
+        v-if="workspaceStore.isDualPane"
+        @click="workspaceStore.swapPanels()"
+        class="p-2 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-gray-600 dark:text-slate-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+        title="Swap Left & Right Panels (Alt+S)"
+      >
+        <FbIcon name="refresh" size="18px" />
+      </button>
+
       <!-- Primary Action Button: + New Dropdown -->
-      <div class="relative">
+      <div ref="newMenuRef" class="relative">
         <button
           @click="isNewMenuOpen = !isNewMenuOpen"
           class="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold px-4 py-2 rounded-xl flex items-center space-x-1.5 text-sm shadow-xs transition cursor-pointer"
@@ -361,8 +508,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { useConnectionStore } from '../../stores/connectionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useConnectionStore } from '../../stores/connectionStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useUiStore } from '../../stores/uiStore';
 
@@ -372,31 +519,15 @@ const emit = defineEmits<{
   (e: 'openAuditLogDialog'): void;
 }>();
 
-const connStore = useConnectionStore();
 const workspaceStore = useWorkspaceStore();
+const connStore = useConnectionStore();
 const fileStore = useFileStore();
 const uiStore = useUiStore();
 
-const isNewMenuOpen = ref(false);
 const isSourceMenuOpen = ref(false);
 const isSortMenuOpen = ref(false);
-
-const sortFields = [
-  { id: 'name', label: 'Name' },
-  { id: 'size', label: 'File Size' },
-  { id: 'modified', label: 'Modified Date' },
-  { id: 'type', label: 'File Type / Ext' },
-];
-
-const filterOptions = [
-  { id: 'all', label: 'All Items', icon: '📁' },
-  { id: 'folders', label: 'Folders Only', icon: '📂' },
-  { id: 'images', label: 'Images / Photos', icon: '🖼️' },
-  { id: 'videos', label: 'Videos & Movies', icon: '🎬' },
-  { id: 'audio', label: 'Music & Audio', icon: '🎵' },
-  { id: 'code', label: 'Documents & Code', icon: '📝' },
-  { id: 'archives', label: 'Archives (Zip/Tar)', icon: '📦' },
-];
+const isNewMenuOpen = ref(false);
+const isMobileMoreOpen = ref(false);
 
 const activePanel = computed(() => workspaceStore.getPanel(workspaceStore.activePanelId));
 
@@ -405,35 +536,47 @@ const activeConnection = computed(() => {
 });
 
 const activeSourceName = computed(() => {
-  return activeConnection.value ? activeConnection.value.name : 'Local Storage';
+  if (activeConnection.value) {
+    return activeConnection.value.name;
+  }
+  return activePanel.value.connectionId === 'local' ? 'Local Storage' : activePanel.value.connectionId;
 });
 
 const breadcrumbs = computed(() => {
-  const parts = activePanel.value.path.split('/').filter(Boolean);
-  const crumbs: { name: string; path: string }[] = [];
-  let current = '';
-
-  for (const part of parts) {
-    current += `/${part}`;
-    crumbs.push({ name: part, path: current });
-  }
-
-  // Handle truncation with ... if more than 3 segments
-  if (crumbs.length > 3) {
-    const lastThree = crumbs.slice(-3);
-    return [
-      { name: '...', path: crumbs[crumbs.length - 4].path },
-      ...lastThree,
-    ];
-  }
-
-  return crumbs;
+  const p = activePanel.value.path;
+  if (!p || p === '/') return [];
+  const parts = p.split('/').filter(Boolean);
+  let currentPath = '';
+  return parts.map((part) => {
+    currentPath += '/' + part;
+    return { name: part, path: currentPath };
+  });
 });
 
-function handleSelectSource(connId: string) {
-  fileStore.currentConnectionId = connId;
-  workspaceStore.switchPanelConnection(workspaceStore.activePanelId, connId, '/');
+const sortFields = [
+  { id: 'name', label: 'Name' },
+  { id: 'size', label: 'Size' },
+  { id: 'modified', label: 'Last Modified' },
+];
+
+const filterOptions = [
+  { id: 'all', label: 'All Files', icon: '📁' },
+  { id: 'documents', label: 'Documents', icon: '📄' },
+  { id: 'images', label: 'Images & Photos', icon: '🖼️' },
+  { id: 'videos', label: 'Videos & Movies', icon: '🎥' },
+  { id: 'audio', label: 'Audio & Music', icon: '🎵' },
+  { id: 'archives', label: 'Archives (Zip/Tar)', icon: '📦' },
+  { id: 'code', label: 'Code & Scripts', icon: '💻' },
+];
+
+function handleSelectSource(connectionId: string) {
   isSourceMenuOpen.value = false;
+  workspaceStore.switchPanelConnection(workspaceStore.activePanelId, connectionId, '/');
+}
+
+function toggleMobileViewMode() {
+  activePanel.value.viewMode = activePanel.value.viewMode === 'grid' ? 'list' : 'grid';
+  workspaceStore.saveState();
 }
 
 function setSortField(field: string) {
@@ -477,16 +620,24 @@ function openUpload() {
   uiStore.openUpload();
 }
 
+const sourceMenuRef = ref<HTMLElement | null>(null);
+const sortMenuRef = ref<HTMLElement | null>(null);
+const newMenuRef = ref<HTMLElement | null>(null);
+const mobileMoreRef = ref<HTMLElement | null>(null);
+
 function handleOutsideClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (isNewMenuOpen.value && !target.closest('.relative')) {
-    isNewMenuOpen.value = false;
-  }
-  if (isSourceMenuOpen.value && !target.closest('.relative')) {
+  const target = e.target as Node;
+  if (isSourceMenuOpen.value && sourceMenuRef.value && !sourceMenuRef.value.contains(target)) {
     isSourceMenuOpen.value = false;
   }
-  if (isSortMenuOpen.value && !target.closest('.relative')) {
+  if (isSortMenuOpen.value && sortMenuRef.value && !sortMenuRef.value.contains(target)) {
     isSortMenuOpen.value = false;
+  }
+  if (isNewMenuOpen.value && newMenuRef.value && !newMenuRef.value.contains(target)) {
+    isNewMenuOpen.value = false;
+  }
+  if (isMobileMoreOpen.value && mobileMoreRef.value && !mobileMoreRef.value.contains(target)) {
+    isMobileMoreOpen.value = false;
   }
 }
 

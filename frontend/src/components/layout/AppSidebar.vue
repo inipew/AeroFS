@@ -1,8 +1,18 @@
 <template>
+  <!-- Mobile Backdrop Overlay -->
+  <div
+    v-if="uiStore.isMobile && uiStore.isMobileSidebarOpen"
+    @click="uiStore.isMobileSidebarOpen = false"
+    class="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 animate-in fade-in duration-200"
+  ></div>
+
+  <!-- Sidebar Component (Desktop Sticky Column vs Mobile Slide-Over Drawer) -->
   <aside
     :class="[
-      'h-screen bg-gray-50/80 dark:bg-[#090d16] border-r border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between transition-all duration-200 select-none z-30',
-      isCollapsed ? 'w-16' : 'w-64'
+      'bg-gray-50/95 dark:bg-[#090d16] border-r border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between transition-all duration-200 select-none shrink-0',
+      uiStore.isMobile
+        ? (uiStore.isMobileSidebarOpen ? 'fixed inset-y-0 left-0 z-50 w-72 shadow-2xl animate-in slide-in-from-left duration-200' : 'hidden')
+        : (isCollapsed ? 'h-full w-16 z-30' : 'h-full w-64 z-30')
     ]"
   >
     <!-- Top Branding & Navigation Items -->
@@ -19,8 +29,17 @@
           </span>
         </div>
 
-        <!-- Sidebar Collapse Toggle Button -->
+        <!-- Close Button on Mobile vs Collapse Button on Desktop -->
         <button
+          v-if="uiStore.isMobile"
+          @click="uiStore.isMobileSidebarOpen = false"
+          class="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer font-bold text-sm"
+          title="Close Navigation Drawer"
+        >
+          ✕
+        </button>
+        <button
+          v-else
           @click="isCollapsed = !isCollapsed"
           class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
           title="Toggle Sidebar"
@@ -36,7 +55,7 @@
             SOURCES
           </span>
           <button
-            @click="emit('openConnectionDialog')"
+            @click="emit('openConnectionDialog'); if (uiStore.isMobile) uiStore.isMobileSidebarOpen = false;"
             class="text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
             title="Add Storage Connection"
           >
@@ -52,21 +71,20 @@
             :key="conn.id"
             @click="selectConnection(conn.id)"
             :class="[
-              'w-full flex items-center px-3 py-2.5 rounded-xl text-sm transition cursor-pointer group relative',
+              'flex items-center rounded-xl transition cursor-pointer',
+              isCollapsed ? 'justify-center p-2.5' : 'px-3 py-2.5 min-h-[44px] space-x-3',
               isActiveConnection(conn.id)
-                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold shadow-xs ring-1 ring-blue-500/20'
-                : 'text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 font-medium'
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold ring-1 ring-blue-500/20'
+                : 'text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60'
             ]"
+            :title="conn.name"
           >
             <FbIcon
               :name="conn.provider === 'local' ? 'folder' : 'share'"
               size="18px"
-              :class="[
-                'shrink-0',
-                isActiveConnection(conn.id) ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-slate-400 group-hover:text-gray-600 dark:group-hover:text-slate-200'
-              ]"
+              :class="isActiveConnection(conn.id) ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-slate-400 shrink-0'"
             />
-            <span v-if="!isCollapsed" class="ml-3 truncate flex-1 text-left">
+            <span v-if="!isCollapsed" class="text-sm truncate flex-1 font-medium">
               {{ conn.name }}
             </span>
             <span
@@ -80,10 +98,10 @@
       </div>
 
       <!-- Quick Links Section (Recent, Starred, Shares, Trash) -->
-      <div class="space-y-0.5">
+      <div class="space-y-1">
         <button
-          @click="emit('openRecentView')"
-          class="w-full flex items-center px-3 py-2 rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
+          @click="emit('openRecentView'); if (uiStore.isMobile) uiStore.isMobileSidebarOpen = false;"
+          class="w-full flex items-center px-3 py-2.5 min-h-[44px] rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
           title="Recent Files"
         >
           <FbIcon name="clock" size="18px" class="text-gray-500 dark:text-slate-400 group-hover:text-gray-700 dark:group-hover:text-slate-200 shrink-0" />
@@ -91,8 +109,8 @@
         </button>
 
         <button
-          @click="emit('openStarredView')"
-          class="w-full flex items-center px-3 py-2 rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
+          @click="emit('openStarredView'); if (uiStore.isMobile) uiStore.isMobileSidebarOpen = false;"
+          class="w-full flex items-center px-3 py-2.5 min-h-[44px] rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
           title="Starred Bookmarks"
         >
           <FbIcon name="star" size="18px" class="text-gray-500 dark:text-slate-400 group-hover:text-gray-700 dark:group-hover:text-slate-200 shrink-0" />
@@ -100,8 +118,8 @@
         </button>
 
         <button
-          @click="emit('openSharesDialog')"
-          class="w-full flex items-center px-3 py-2 rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
+          @click="emit('openSharesDialog'); if (uiStore.isMobile) uiStore.isMobileSidebarOpen = false;"
+          class="w-full flex items-center px-3 py-2.5 min-h-[44px] rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
           title="Active Shares"
         >
           <FbIcon name="users" size="18px" class="text-gray-500 dark:text-slate-400 group-hover:text-gray-700 dark:group-hover:text-slate-200 shrink-0" />
@@ -109,8 +127,8 @@
         </button>
 
         <button
-          @click="emit('openTrashDialog')"
-          class="w-full flex items-center px-3 py-2 rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
+          @click="emit('openTrashDialog'); if (uiStore.isMobile) uiStore.isMobileSidebarOpen = false;"
+          class="w-full flex items-center px-3 py-2.5 min-h-[44px] rounded-xl text-sm font-medium text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60 transition group text-left cursor-pointer"
           title="Trash / Recycle Bin"
         >
           <FbIcon name="trash" size="18px" class="text-gray-500 dark:text-slate-400 group-hover:text-gray-700 dark:group-hover:text-slate-200 shrink-0" />
@@ -251,6 +269,7 @@ import { useConnectionStore } from '../../stores/connectionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useThemeStore } from '../../stores/themeStore';
+import { useUiStore } from '../../stores/uiStore';
 import { apiClient } from '../../api/client';
 
 const emit = defineEmits<{
@@ -267,6 +286,7 @@ const connStore = useConnectionStore();
 const workspaceStore = useWorkspaceStore();
 const fileStore = useFileStore();
 const themeStore = useThemeStore();
+const uiStore = useUiStore();
 
 const isCollapsed = ref(false);
 
@@ -331,6 +351,9 @@ function isActiveConnection(id: string): boolean {
 function selectConnection(id: string) {
   fileStore.currentConnectionId = id;
   workspaceStore.switchPanelConnection(workspaceStore.activePanelId, id, '/');
+  if (uiStore.isMobile) {
+    uiStore.isMobileSidebarOpen = false;
+  }
 }
 
 function toggleTheme() {

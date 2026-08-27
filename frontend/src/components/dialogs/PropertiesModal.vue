@@ -1,13 +1,24 @@
 <template>
   <div
     v-if="isOpen"
-    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 select-none font-sans text-xs animate-in fade-in duration-150"
+    :class="[
+      'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs animate-in fade-in duration-150',
+      uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-3 sm:p-6'
+    ]"
     @click="isOpen = false"
   >
     <div
-      class="bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-lg w-full flex flex-col shadow-2xl overflow-hidden max-h-[85vh]"
+      :class="[
+        'bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 flex flex-col shadow-2xl overflow-hidden',
+        uiStore.isMobile
+          ? 'w-full rounded-t-3xl rounded-b-none border-b-0 max-h-[85vh] pb-safe animate-in slide-in-from-bottom duration-200'
+          : 'max-w-lg w-full rounded-3xl max-h-[85vh]'
+      ]"
       @click.stop
     >
+      <!-- Mobile Drag Indicator -->
+      <div v-if="uiStore.isMobile" class="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-1"></div>
+
       <!-- Modal Header -->
       <div class="h-14 bg-gray-50 dark:bg-[#090d16] border-b border-gray-200 dark:border-slate-800 px-6 flex items-center justify-between text-xs shrink-0">
         <div class="flex items-center space-x-3 truncate">

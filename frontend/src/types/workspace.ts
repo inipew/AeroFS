@@ -61,6 +61,7 @@ export interface Panel {
   searchQuery: string;
   loading: boolean;
   error: string | null;
+  stale?: boolean;
   history: string[];
   historyIndex: number;
   initialized: boolean;
@@ -89,6 +90,7 @@ export interface PersistedWorkspace {
   version: 1;
   layout: WorkspaceLayout;
   activePanel: PanelId;
+  splitRatio?: number;
   left: PersistedPanelLocation;
   right: PersistedPanelLocation;
 }

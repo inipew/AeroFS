@@ -148,11 +148,50 @@ export const useUiStore = defineStore('ui', () => {
     };
   }
 
+  const isMobile = ref<boolean>(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  const isMobileSidebarOpen = ref<boolean>(false);
+  const isCommandPaletteOpen = ref<boolean>(false);
+  const listDensity = ref<'comfortable' | 'compact' | 'dense'>(
+    (typeof localStorage !== 'undefined' && (localStorage.getItem('fb:ui:density') as any)) || 'compact'
+  );
+
+  function setListDensity(density: 'comfortable' | 'compact' | 'dense') {
+    listDensity.value = density;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('fb:ui:density', density);
+    }
+  }
+
+  function toggleCommandPalette() {
+    isCommandPaletteOpen.value = !isCommandPaletteOpen.value;
+  }
+
+  function openContextMenuForTouch(
+    item: FileEntry | null = null,
+    connectionId: string = 'local',
+    panelId: 'left' | 'right' = 'left'
+  ) {
+    contextMenu.value = {
+      visible: true,
+      x: typeof window !== 'undefined' ? window.innerWidth / 2 : 0,
+      y: typeof window !== 'undefined' ? window.innerHeight / 2 : 0,
+      item,
+      connectionId,
+      panelId,
+    };
+  }
+
   function closeContextMenu() {
     contextMenu.value.visible = false;
   }
 
   return {
+    isMobile,
+    isMobileSidebarOpen,
+    isCommandPaletteOpen,
+    listDensity,
+    setListDensity,
+    toggleCommandPalette,
     isCreateOpen,
     createType,
     isRenameOpen,
@@ -181,6 +220,7 @@ export const useUiStore = defineStore('ui', () => {
     openMediaViewer,
     navigateMedia,
     openContextMenu,
+    openContextMenuForTouch,
     closeContextMenu,
   };
 });
