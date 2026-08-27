@@ -1,0 +1,56 @@
+[package]
+name = "backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async Runtime & Utilities
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "codec"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Web Framework & Tower Middleware
+axum = { version = "0.8", features = ["ws", "multipart", "macros"] }
+tower = { version = "0.5", features = ["util", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-full", "fs"] }
+
+# Serialization & OpenAPI
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+utoipa = { version = "5.3", features = ["axum_extras", "chrono", "uuid"] }
+
+# Error Handling & Types
+thiserror = "2.0"
+anyhow = "1.0"
+uuid = { version = "1.12", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Security & Cryptography
+argon2 = "0.5"
+aes-gcm = "0.10"
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+base64 = "0.22"
+
+# Filesystem, Compression, Search & MIME
+mime_guess = "2.0"
+tempfile = "3.17"
+notify = "8.0"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1.0"
+regex = "1.11"
+libc = "0.2"
+
+# Database & SQLite
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
+suppaftp = { version = "10.0", default-features = false, features = ["tokio", "tokio-rustls-ring"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+tempfile = "3.17"

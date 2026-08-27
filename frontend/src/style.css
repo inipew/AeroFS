@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #ffffff;
+  --sidebar: #fbfbfb;
+  --surface: #ffffff;
+  --text: #111827;
+  --dim: #4b5563;
+  --faint: #9ca3af;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --hover: #f3f4f6;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --sel: #eff6ff;
+  --sel-border: #bfdbfe;
+}
+
+:root.dark,
+html.dark {
+  --bg: #0b0f19;
+  --sidebar: #090d16;
+  --surface: #111827;
+  --text: #f9fafb;
+  --dim: #9ca3af;
+  --faint: #6b7280;
+  --border: #1f2937;
+  --border-strong: #374151;
+  --hover: #1f2937;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --sel: #1e3a8a33;
+  --sel-border: #3b82f666;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    @apply antialiased overflow-hidden select-none font-sans text-sm;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Sleek modern scrollbars for main containers */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.25);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.45);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+  }
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
+
+.dark * {
+  scrollbar-color: rgba(148, 163, 184, 0.18) transparent;
+}
+
+/* Hide scrollbar utility */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

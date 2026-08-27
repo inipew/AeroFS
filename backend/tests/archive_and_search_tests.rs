@@ -1,0 +1,149 @@
+use axum::{
+    body::{to_bytes, Body},
+    http::{header, Request, StatusCode},
+};
+use backend::{config::AppConfig, create_router, db::init_db, AppState};
+use serde_json::{json, Value};
+use tempfile::tempdir;
+use tower::ServiceExt;
+
+async fn setup_app() -> (axum::Router, String, tempfile::TempDir) {
+    let temp = tempdir().unwrap();
+    let db_path = temp.path().join("archive_test.db");
+    let storage_dir = temp.path().join("storage");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+
+    // Create some nested test files for search and archive
+    let sub = storage_dir.join("documents");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("report.txt"), b"Quarterly Financial Report").unwrap();
+    std::fs::write(sub.join("notes.md"), b"# Markdown Notes").unwrap();
+    std::fs::write(storage_dir.join("root.txt"), b"Root Level File").unwrap();
+
+    let mut config = AppConfig::default();
+    config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    config.filesystem.default_local_root = storage_dir;
+
+    let db = init_db(&config.database.url).await.unwrap();
+    let state = AppState::new_with_db(config, db).await;
+    let app = create_router(state);
+
+    // Login as admin
+    let login_req = Request::builder()
+        .uri("/api/v1/auth/login")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": "admin", "password": "admin12345" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(login_req).await.unwrap();
+    let cookie_header = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let cookie = cookie_header.split(';').next().unwrap().to_string();
+
+    (app, cookie, temp)
+}
+
+#[tokio::test]
+async fn test_archive_compress_extract_and_search() {
+    let (app, cookie, _temp) = setup_app().await;
+
+    // 1. Recursive Search for "report" -> must find /documents/report.txt
+    let search_req = Request::builder()
+        .uri("/api/v1/connections/local/search?query=report")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(search_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let results: Value = serde_json::from_slice(&body).unwrap();
+    let results_arr = results.as_array().unwrap();
+    assert_eq!(results_arr.len(), 1);
+    assert_eq!(results_arr[0]["name"], "report.txt");
+
+    // 2. Compress files into a ZIP archive
+    let compress_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/compress")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "base_path": "/",
+                "relative_paths": ["/documents/report.txt", "/root.txt"],
+                "destination_file": "/backup.zip",
+                "format": "zip"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(compress_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // 3. Extract the ZIP archive into /extracted
+    let extract_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/extract")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "archive_path": "/backup.zip",
+                "destination_dir": "/extracted",
+                "format": "zip"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(extract_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 4. Verify extracted files via Search
+    let search_ext_req = Request::builder()
+        .uri("/api/v1/connections/local/search?path=/extracted&query=report")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(search_ext_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let results: Value = serde_json::from_slice(&body).unwrap();
+    let results_arr = results.as_array().unwrap();
+    assert!(!results_arr.is_empty());
+
+    // 5. Query Audit Logs (Admin only)
+    let audit_req = Request::builder()
+        .uri("/api/v1/audit-logs")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(audit_req).await.unwrap();
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    if status != StatusCode::OK {
+        eprintln!("Audit log response error: {}", String::from_utf8_lossy(&body));
+    }
+    assert_eq!(status, StatusCode::OK);
+    let logs: Value = serde_json::from_slice(&body).unwrap();
+    let logs_arr = logs.as_array().unwrap();
+    assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_COMPRESS"));
+    assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_EXTRACT"));
+}
