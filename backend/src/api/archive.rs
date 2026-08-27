@@ -149,3 +149,116 @@ pub async fn extract_archive_endpoint(
         }),
     ))
 }
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ListArchiveQuery {
+    pub archive_path: String,
+    pub subpath: Option<String>,
+}
+
+/// List virtual directory contents inside an archive without full extraction
+pub async fn list_virtual_archive_endpoint(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+    _user: AuthenticatedUser,
+    axum::extract::Query(query): axum::extract::Query<ListArchiveQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let provider = state
+        .get_provider(&connection_id)
+        .await
+        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+
+    let archive_vfs = VfsPath::new(&connection_id, &query.archive_path);
+    let subpath = query.subpath.unwrap_or_default();
+
+    let entries = crate::filesystem::archive::list_virtual_archive_entries(&provider, &archive_vfs, &subpath).await?;
+    Ok((StatusCode::OK, Json(entries)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ReadArchiveQuery {
+    pub archive_path: String,
+    pub entry_path: String,
+}
+
+/// Stream or download a single entry directly from an archive
+pub async fn read_virtual_archive_entry_endpoint(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+    _user: AuthenticatedUser,
+    axum::extract::Query(query): axum::extract::Query<ReadArchiveQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let provider = state
+        .get_provider(&connection_id)
+        .await
+        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+
+    let archive_vfs = VfsPath::new(&connection_id, &query.archive_path);
+    let (file_name, bytes) = crate::filesystem::archive::read_virtual_archive_entry(&provider, &archive_vfs, &query.entry_path).await?;
+
+    let mime_type = mime_guess::from_path(&file_name)
+        .first_or_octet_stream()
+        .to_string();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        mime_type.parse().unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!("inline; filename=\"{}\"", file_name).parse().unwrap_or_else(|_| axum::http::HeaderValue::from_static("inline")),
+    );
+
+    Ok((StatusCode::OK, headers, bytes))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ExtractSelectedRequest {
+    pub archive_path: String,
+    pub destination_dir: String,
+    pub entries: Vec<String>,
+}
+
+/// Extract specific selected entries from an archive into a destination directory
+pub async fn extract_selected_archive_endpoint(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+    user: AuthenticatedUser,
+    Json(payload): Json<ExtractSelectedRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let provider = state
+        .get_provider(&connection_id)
+        .await
+        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+
+    let archive_vfs = VfsPath::new(&connection_id, &payload.archive_path);
+    let count = crate::filesystem::archive::extract_selected_archive_entries(
+        &provider,
+        &archive_vfs,
+        &payload.destination_dir,
+        &payload.entries,
+    )
+    .await?;
+
+    crate::auth::record_audit_log(
+        &state.db,
+        Some(&user.id),
+        "ARCHIVE_EXTRACT_SELECTED",
+        Some(&connection_id),
+        Some(&archive_vfs.path),
+        "SUCCESS",
+        None,
+        Some(&format!("Extracted {} selected item(s) to {}", count, payload.destination_dir)),
+    )
+    .await;
+
+    Ok((
+        StatusCode::OK,
+        Json(ArchiveResponse {
+            success: true,
+            message: format!("Extracted {} selected item(s) to {}", count, payload.destination_dir),
+            entries_count: Some(count),
+        }),
+    ))
+}

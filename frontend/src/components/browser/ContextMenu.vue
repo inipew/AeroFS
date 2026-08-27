@@ -72,6 +72,15 @@
           <span>📝 Edit in Code Editor</span>
         </button>
 
+        <!-- Browse Archive Contents (Virtual Archive) -->
+        <button
+          v-if="isArchive(uiStore.contextMenu.item.name)"
+          @click="handleOpenArchiveViewer"
+          class="w-full text-left px-3.5 py-2 hover:bg-amber-500 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-600 dark:text-amber-400 font-semibold cursor-pointer"
+        >
+          <span>📦 Browse Archive Contents</span>
+        </button>
+
         <button
           @click="handleOpen"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
@@ -241,6 +250,7 @@ const emit = defineEmits<{
   (e: 'openArchiveDialog', paths: string[]): void;
   (e: 'openCreateShareDialog', payload: { connectionId: string; path: string }): void;
   (e: 'openPropertiesDialog', payload: { connectionId: string; path: string }): void;
+  (e: 'openArchiveViewer', payload: { connectionId: string; path: string }): void;
 }>();
 
 const fileStore = useFileStore();
@@ -321,6 +331,17 @@ async function handleEditInEditor() {
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Failed to open file in editor', 'error');
   }
+}
+
+function handleOpenArchiveViewer() {
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const connId = activeConnectionId.value;
+  uiStore.closeContextMenu();
+  emit('openArchiveViewer', {
+    connectionId: connId,
+    path: item.path,
+  });
 }
 
 function handleToggleStar() {

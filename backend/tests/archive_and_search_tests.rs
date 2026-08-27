@@ -111,6 +111,54 @@ async fn test_archive_compress_extract_and_search() {
     let resp = app.clone().oneshot(extract_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // 3b. Virtual Archive Browsing (plan/17.md) - list entries without full extraction
+    let entries_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/entries?archive_path=/backup.zip")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(entries_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let entries_json: Value = serde_json::from_slice(&body).unwrap();
+    let entries_arr = entries_json.as_array().unwrap();
+    assert!(entries_arr.iter().any(|e| e["name"] == "documents" && e["kind"] == "directory"));
+    assert!(entries_arr.iter().any(|e| e["name"] == "root.txt" && e["kind"] == "file"));
+
+    // 3c. Virtual Archive Single Entry Read / Stream (plan/17.md)
+    let read_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/read?archive_path=/backup.zip&entry_path=root.txt")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(read_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(body.as_ref(), b"Root Level File");
+
+    // 3d. Virtual Archive Selective Extract (plan/17.md)
+    let sel_extract_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/extract-selected")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "archive_path": "/backup.zip",
+                "destination_dir": "/selective_extracted",
+                "entries": ["root.txt"]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(sel_extract_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
     // 4. Verify extracted files via Search
     let search_ext_req = Request::builder()
         .uri("/api/v1/connections/local/search?path=/extracted&query=report")
@@ -146,4 +194,5 @@ async fn test_archive_compress_extract_and_search() {
     let logs_arr = logs.as_array().unwrap();
     assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_COMPRESS"));
     assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_EXTRACT"));
+    assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_EXTRACT_SELECTED"));
 }

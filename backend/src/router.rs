@@ -89,6 +89,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/{id}/upload", post(files::upload_file))
         .route("/{id}/archive/compress", post(archive::compress_files))
         .route("/{id}/archive/extract", post(archive::extract_archive_endpoint))
+        .route("/{id}/archive/entries", get(archive::list_virtual_archive_endpoint))
+        .route("/{id}/archive/read", get(archive::read_virtual_archive_entry_endpoint))
+        .route("/{id}/archive/extract-selected", post(archive::extract_selected_archive_endpoint))
         .route("/{id}/search", get(search::search_files));
 
     let transfer_routes = Router::new()

@@ -63,7 +63,7 @@
         >
           <!-- MOBILE VIEW: 100% Full-Width Active Panel -->
           <div v-if="uiStore.isMobile" class="w-full h-full flex flex-col min-w-0">
-            <FilePanel :panelId="workspaceStore.activePanelId" />
+            <FilePanel :panelId="workspaceStore.activePanelId" @open-archive-viewer="handleOpenArchiveViewer" />
           </div>
 
           <!-- DESKTOP VIEW: Continuous Workspace Surface (Single or Split) -->
@@ -75,7 +75,7 @@
               }"
               class="h-full flex flex-col min-w-[200px]"
             >
-              <FilePanel panelId="left" />
+              <FilePanel panelId="left" @open-archive-viewer="handleOpenArchiveViewer" />
             </div>
 
             <!-- Draggable Split Divider (Continuous 1px seam with subtle hover handle) -->
@@ -96,7 +96,7 @@
               }"
               class="h-full flex flex-col min-w-[200px]"
             >
-              <FilePanel panelId="right" />
+              <FilePanel panelId="right" @open-archive-viewer="handleOpenArchiveViewer" />
             </div>
           </template>
         </main>
@@ -152,6 +152,7 @@
         @openArchiveDialog="handleOpenArchive"
         @openCreateShareDialog="handleOpenCreateShare"
         @openPropertiesDialog="handleOpenProperties"
+        @openArchiveViewer="handleOpenArchiveViewer"
       />
 
       <!-- Dialogs & Modals -->
@@ -165,6 +166,11 @@
         :connectionId="fileStore.currentConnectionId"
         :basePath="fileStore.currentPath"
         :selectedPaths="archiveSelectedPaths"
+      />
+      <ArchiveViewerModal
+        v-model="isArchiveViewerOpen"
+        :connectionId="archiveViewerConnectionId"
+        :archivePath="archiveViewerPath"
       />
       <SearchModal v-model="isSearchDialogOpen" />
       <SettingsModal v-model="isSettingsDialogOpen" />
@@ -225,6 +231,7 @@ import DeleteDialog from './components/dialogs/DeleteDialog.vue';
 import UploadDialog from './components/dialogs/UploadDialog.vue';
 import ConnectionDialog from './components/dialogs/ConnectionDialog.vue';
 import ArchiveDialog from './components/dialogs/ArchiveDialog.vue';
+import ArchiveViewerModal from './components/dialogs/ArchiveViewerModal.vue';
 import SearchModal from './components/dialogs/SearchModal.vue';
 import SettingsModal from './components/dialogs/SettingsModal.vue';
 import SharesModal from './components/dialogs/SharesModal.vue';
@@ -256,6 +263,15 @@ const isStarredDialogOpen = ref(false);
 const isPropertiesDialogOpen = ref(false);
 const isCreateShareDialogOpen = ref(false);
 const isArchiveDialogOpen = ref(false);
+const isArchiveViewerOpen = ref(false);
+const archiveViewerConnectionId = ref('local');
+const archiveViewerPath = ref('');
+
+function handleOpenArchiveViewer(payload: { connectionId: string; path: string }) {
+  archiveViewerConnectionId.value = payload.connectionId;
+  archiveViewerPath.value = payload.path;
+  isArchiveViewerOpen.value = true;
+}
 
 const propsTargetConnection = ref('local');
 const propsTargetPath = ref('/');

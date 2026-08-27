@@ -649,6 +649,10 @@ const props = defineProps<{
   panelId: 'left' | 'right';
 }>();
 
+const emit = defineEmits<{
+  (e: 'openArchiveViewer', payload: { connectionId: string; path: string }): void;
+}>();
+
 const workspaceStore = useWorkspaceStore();
 const connStore = useConnectionStore();
 const fileStore = useFileStore();
@@ -828,11 +832,31 @@ function isAudio(entry: FileEntry): boolean {
   return ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg'].includes(ext);
 }
 
+function isArchiveFile(entry: { name: string }): boolean {
+  const name = entry.name.toLowerCase();
+  return (
+    name.endsWith('.zip') ||
+    name.endsWith('.tar') ||
+    name.endsWith('.tar.gz') ||
+    name.endsWith('.tgz') ||
+    name.endsWith('.tar.bz2') ||
+    name.endsWith('.tbz2') ||
+    name.endsWith('.tar.xz') ||
+    name.endsWith('.txz') ||
+    name.endsWith('.7z') ||
+    name.endsWith('.rar') ||
+    name.endsWith('.gz') ||
+    name.endsWith('.bz2') ||
+    name.endsWith('.xz')
+  );
+}
+
 function isCode(entry: FileEntry): boolean {
   return isTextOrCode(entry);
 }
 
 function isTextOrCode(entry: FileEntry): boolean {
+  if (isArchiveFile(entry)) return false;
   if (entry.name.startsWith('.')) return true; // All dotfiles are editable config/code/text!
   const ext = getFileExt(entry);
   const textExts = [
@@ -843,7 +867,7 @@ function isTextOrCode(entry: FileEntry): boolean {
     'lock', 'mod', 'sum', 'gradle', 'service', 'gitignore', 'gitattributes', 'npmrc',
     'bashrc', 'profile', 'zshrc', 'vimrc', 'eslintrc', 'prettierrc'
   ];
-  return textExts.includes(ext) || ext === '';
+  return textExts.includes(ext);
 }
 
 function getFileExt(entry: FileEntry): string {
@@ -1012,14 +1036,27 @@ async function handleEntryDoubleClick(entry: FileEntry) {
     return;
   }
 
+  // 1. Archive files -> ALWAYS open in Archive Explorer directly!
+  if (isArchiveFile(entry)) {
+    emit('openArchiveViewer', {
+      connectionId: panel.value.connectionId,
+      path: entry.path,
+    });
+    return;
+  }
+
+  // 2. Media files -> Open in Media Viewer Modal
   const ext = getFileExt(entry);
   const isMedia = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif', 'mp4', 'webm', 'mov', 'mkv', 'avi', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg'].includes(ext);
   const url = getDownloadUrl(panel.value.connectionId, entry.path);
 
   if (isMedia) {
     uiStore.openMediaViewer(entry.name, url, entry, displayedFiles.value, panel.value.connectionId);
-  } else {
-    // Open in Code Editor for dotfiles, text files, and configs
+    return;
+  }
+
+  // 3. Text, config, code, dotfiles -> Open in Code Editor Modal
+  if (isTextOrCode(entry)) {
     try {
       fileStore.currentConnectionId = panel.value.connectionId;
       const resp = await apiClient.get(`/connections/${panel.value.connectionId}/files/content`, {
@@ -1030,6 +1067,8 @@ async function handleEntryDoubleClick(entry: FileEntry) {
     } catch {
       window.open(url, '_blank');
     }
+  } else {
+    window.open(url, '_blank');
   }
 }
 
