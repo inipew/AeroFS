@@ -6,14 +6,17 @@ export interface ListFilesParams {
   show_hidden?: boolean;
   sort?: string;
   order?: 'asc' | 'desc';
+  signal?: AbortSignal;
 }
 
 export async function listFilesApi(
   connectionId: string,
   params: ListFilesParams = {}
 ): Promise<DirectoryListing> {
+  const { signal, ...queryParams } = params;
   const resp = await apiClient.get<DirectoryListing>(`/connections/${connectionId}/files`, {
-    params,
+    params: queryParams,
+    signal,
   });
   return resp.data;
 }

@@ -803,10 +803,8 @@ const displayedFiles = computed(() => {
 });
 
 const isAllSelected = computed(() => {
-  return (
-    displayedEntries.value.length > 0 &&
-    panel.value.selectedEntries.length === displayedEntries.value.length
-  );
+  if (displayedEntries.value.length === 0) return false;
+  return displayedEntries.value.every((e) => panel.value.selectedEntries.includes(e.path));
 });
 
 onMounted(async () => {
@@ -1016,11 +1014,16 @@ function handleEntryClick(e: MouseEvent, entry: FileEntry) {
 
   const currentIndex = displayedEntries.value.findIndex((item: FileEntry) => item.path === entry.path);
 
-  if (e.shiftKey && lastClickedIndex !== -1 && currentIndex !== -1) {
-    const start = Math.min(lastClickedIndex, currentIndex);
-    const end = Math.max(lastClickedIndex, currentIndex);
+  if (e.shiftKey && currentIndex !== -1) {
+    const anchor = lastClickedIndex !== -1 ? lastClickedIndex : 0;
+    const start = Math.min(anchor, currentIndex);
+    const end = Math.max(anchor, currentIndex);
     const rangePaths = displayedEntries.value.slice(start, end + 1).map((item: FileEntry) => item.path);
-    panel.value.selectedEntries = Array.from(new Set([...panel.value.selectedEntries, ...rangePaths]));
+    if (e.ctrlKey || e.metaKey) {
+      panel.value.selectedEntries = Array.from(new Set([...panel.value.selectedEntries, ...rangePaths]));
+    } else {
+      panel.value.selectedEntries = rangePaths;
+    }
   } else if (e.ctrlKey || e.metaKey) {
     if (panel.value.selectedEntries.includes(entry.path)) {
       panel.value.selectedEntries = panel.value.selectedEntries.filter((p: string) => p !== entry.path);

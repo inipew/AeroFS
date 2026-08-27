@@ -173,9 +173,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const splitRatio = ref<number>(initialSplitRatio);
   const clipboard = ref<WorkspaceClipboard | null>(null);
 
-  // Request sequencing generation counters to avoid race conditions
+  // Request sequencing generation counters and AbortControllers to avoid race conditions
   let leftRequestGen = 0;
   let rightRequestGen = 0;
+  let leftAbortController: AbortController | null = null;
+  let rightAbortController: AbortController | null = null;
 
   const isDualPane = computed<boolean>({
     get: () => layout.value === 'split',
@@ -305,12 +307,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     const currentGen = panelId === 'left' ? ++leftRequestGen : ++rightRequestGen;
 
+    // Abort previous in-flight request for this panel
+    if (panelId === 'left') {
+      if (leftAbortController) leftAbortController.abort();
+      leftAbortController = new AbortController();
+    } else {
+      if (rightAbortController) rightAbortController.abort();
+      rightAbortController = new AbortController();
+    }
+    const signal = (panelId === 'left' ? leftAbortController! : rightAbortController!).signal;
+
     try {
       const data = await listFilesApi(p.location.connectionId, {
         path: queryPath,
         show_hidden: p.view.showHidden,
         sort: p.view.sortField,
         order: p.view.sortOrder,
+        signal,
       });
 
       // Discard stale out-of-order response
@@ -334,6 +347,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       saveState();
       return { ok: true, path: data.path };
     } catch (err: any) {
+      if (err.name === 'CanceledError' || err.name === 'AbortError' || err.code === 'ERR_CANCELED') {
+        return { ok: false, error: 'Aborted' };
+      }
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
         return { ok: false };
       }

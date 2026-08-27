@@ -249,6 +249,7 @@ import { useTransferStore } from './stores/transferStore';
 import { useFileStore } from './stores/fileStore';
 import { useUiStore } from './stores/uiStore';
 import { initializeCommandRegistry, commandRegistry } from './services/commandRegistry';
+import { PreviewResolver } from './services/previewResolver';
 import type { FileEntry } from './types/vfs';
 
 import AppHeader from './components/layout/AppHeader.vue';
@@ -389,8 +390,22 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // If inside editor modal or typing in input, don't trigger file manager shortcuts
-  if (isInput || uiStore.isEditorOpen) return;
+  // If typing in input or any modal is open, don't trigger file manager workspace shortcuts
+  const isAnyModalOpen =
+    uiStore.isEditorOpen ||
+    uiStore.isMediaViewerOpen ||
+    isConnDialogOpen.value ||
+    isArchiveDialogOpen.value ||
+    isArchiveViewerOpen.value ||
+    isSearchDialogOpen.value ||
+    isSettingsDialogOpen.value ||
+    isSharesDialogOpen.value ||
+    isTrashDialogOpen.value ||
+    isStarredDialogOpen.value ||
+    isPropertiesDialogOpen.value ||
+    isCreateShareDialogOpen.value;
+
+  if (isInput || isAnyModalOpen) return;
 
   const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
 
@@ -466,6 +481,79 @@ function handleGlobalKeydown(e: KeyboardEvent) {
       e.preventDefault();
       activeP.selectedEntries = [];
       uiStore.closeContextMenu();
+      return;
+    }
+  }
+
+  // 10. Desktop-Grade Keyboard Navigation (Arrows, Shift+Arrows, Enter, Space, Home, End)
+  if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(e.key)) {
+    const visibleEntries = activeP.entries.filter(
+      (ent: FileEntry) => activeP.showHidden || (!ent.is_hidden && !ent.name.startsWith('.'))
+    );
+    if (visibleEntries.length === 0) return;
+
+    const lastSelectedPath = activeP.selectedEntries[activeP.selectedEntries.length - 1];
+    const currentIndex = visibleEntries.findIndex((ent: FileEntry) => ent.path === lastSelectedPath);
+
+    if (e.key === 'Home') {
+      e.preventDefault();
+      activeP.selectedEntries = [visibleEntries[0].path];
+      return;
+    }
+    if (e.key === 'End') {
+      e.preventDefault();
+      activeP.selectedEntries = [visibleEntries[visibleEntries.length - 1].path];
+      return;
+    }
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (currentIndex !== -1) {
+        const path = visibleEntries[currentIndex].path;
+        if (activeP.selectedEntries.includes(path)) {
+          activeP.selectedEntries = activeP.selectedEntries.filter((p: string) => p !== path);
+        } else {
+          activeP.selectedEntries.push(path);
+        }
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (currentIndex !== -1) {
+        const entry = visibleEntries[currentIndex];
+        if (entry.kind === 'directory') {
+          workspaceStore.navigatePanel(workspaceStore.activePanelId, entry.path);
+        } else {
+          const resolution = PreviewResolver.resolve(
+            entry,
+            activeP.connectionId,
+            visibleEntries.filter((ent: FileEntry) => ent.kind === 'file')
+          );
+          resolution.open();
+        }
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = currentIndex < visibleEntries.length - 1 ? currentIndex + 1 : 0;
+      const nextEntry = visibleEntries[nextIndex];
+      if (e.shiftKey) {
+        activeP.selectedEntries = Array.from(new Set([...activeP.selectedEntries, nextEntry.path]));
+      } else {
+        activeP.selectedEntries = [nextEntry.path];
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : visibleEntries.length - 1;
+      const prevEntry = visibleEntries[prevIndex];
+      if (e.shiftKey) {
+        activeP.selectedEntries = Array.from(new Set([...activeP.selectedEntries, prevEntry.path]));
+      } else {
+        activeP.selectedEntries = [prevEntry.path];
+      }
       return;
     }
   }
