@@ -5,7 +5,7 @@ import { getDownloadUrl } from '../api/files';
 
 export interface ToastMessage {
   id: string;
-  type: 'success' | 'error' | 'info';
+  type: 'success' | 'error' | 'info' | 'warning';
   message: string;
 }
 
@@ -54,7 +54,7 @@ export const useUiStore = defineStore('ui', () => {
 
   const toasts = ref<ToastMessage[]>([]);
 
-  function showToast(message: string, type: 'success' | 'error' | 'info' = 'info') {
+  function showToast(message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') {
     const id = Math.random().toString(36).substring(2, 9);
     toasts.value.push({ id, message, type });
     setTimeout(() => {

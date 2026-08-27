@@ -32,6 +32,7 @@ pub struct Capabilities {
     pub permissions: bool,
     pub watch: bool,
     pub checksum: bool,
+    pub range_read: bool,
 }
 
 impl Capabilities {
@@ -59,6 +60,7 @@ impl Capabilities {
             permissions: true,
             watch: true,
             checksum: true,
+            range_read: true,
         }
     }
 

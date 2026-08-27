@@ -140,4 +140,31 @@ async fn test_opendal_s3_capabilities() {
     // P2 #1: S3 specific capabilities
     assert_eq!(caps.checksum, true);
     assert_eq!(caps.server_side_copy, true);
+    assert_eq!(caps.range_read, true);
 }
+
+#[tokio::test]
+async fn test_opendal_read_range() {
+    let temp = tempdir().unwrap();
+    let root_str = temp.path().to_string_lossy().to_string();
+    let op = build_fs_operator(&root_str).unwrap();
+    let vfs = OpenDalFileSystem::new("test_conn", op);
+
+    let file_path = VfsPath::new("test_conn", "/sample.bin");
+    let content = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let cursor = std::io::Cursor::new(content.to_vec());
+    vfs.write_stream(&file_path, Box::new(cursor)).await.unwrap();
+
+    // 1. Read slice from offset 10 with length 5 (expecting "ABCDE")
+    let mut reader = vfs.read_range(&file_path, 10, 5).await.unwrap();
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).await.unwrap();
+    assert_eq!(buf, b"ABCDE");
+
+    // 2. Read tail from offset 30 with length 10 (expecting "UVWXYZ", 6 bytes)
+    let mut reader2 = vfs.read_range(&file_path, 30, 10).await.unwrap();
+    let mut buf2 = Vec::new();
+    reader2.read_to_end(&mut buf2).await.unwrap();
+    assert_eq!(buf2, b"UVWXYZ");
+}
+

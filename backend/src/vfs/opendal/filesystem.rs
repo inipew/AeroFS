@@ -175,6 +175,39 @@ impl FileSystem for OpenDalFileSystem {
         Ok(Box::new(async_reader))
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path, offset = %offset, length = %length))]
+    async fn read_range(&self, path: &VfsPath, offset: u64, length: u64) -> Result<AsyncReadBox, VfsError> {
+        let op_path = self.to_operator_path(path)?;
+        let meta = self
+            .operator
+            .stat(&op_path)
+            .await
+            .map_err(|e| map_opendal_error(e, &format!("Failed to stat '{}'", path.path)))?;
+
+        let file_size = meta.content_length();
+        if offset >= file_size {
+            return Ok(Box::new(std::io::Cursor::new(Vec::new())));
+        }
+
+        let end = offset.saturating_add(length).min(file_size);
+        let reader = self
+            .operator
+            .reader(&op_path)
+            .await
+            .map_err(|e| map_opendal_error(e, &format!("Failed to open range reader for '{}'", path.path)))?;
+
+        let stream = reader
+            .into_bytes_stream(offset..end)
+            .await
+            .map_err(|e| map_opendal_error(e, &format!("Failed to open bytes range stream for '{}'", path.path)))?
+            .map(|res| {
+                res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            });
+
+        let async_reader = tokio_util::io::StreamReader::new(stream);
+        Ok(Box::new(async_reader))
+    }
+
     #[tracing::instrument(skip(self, input), fields(conn = %self.connection_id, path = %path.path))]
     async fn write_stream(&self, path: &VfsPath, mut input: AsyncReadBox) -> Result<(), VfsError> {
         let op_path = self.to_operator_path(path)?;
@@ -246,13 +279,19 @@ impl FileSystem for OpenDalFileSystem {
                     return Ok(());
                 }
 
-                // 3. If non-empty directory, recursively delete children with fail-fast error propagation
+                // 3. If non-empty directory, recursively delete children with bounded concurrency (16 workers)
                 if let Ok(entries) = self.list(path).await {
                     if !entries.is_empty() {
-                        for entry in entries {
+                        use futures::StreamExt;
+                        let stream = futures::stream::iter(entries.into_iter().map(|entry| {
                             let child_vfs = VfsPath::new(&self.connection_id, &entry.path);
-                            Box::pin(self.delete(&child_vfs)).await?;
+                            async move { Box::pin(self.delete(&child_vfs)).await }
+                        }));
+                        let mut buffered = stream.buffer_unordered(16);
+                        while let Some(res) = buffered.next().await {
+                            res?;
                         }
+
                         if self.operator.delete(&dir_op_path).await.is_ok() {
                             return Ok(());
                         }

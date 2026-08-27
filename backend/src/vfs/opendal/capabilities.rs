@@ -51,5 +51,6 @@ pub fn map_opendal_capabilities_for_scheme(cap: opendal::Capability, scheme: &st
         permissions,
         watch: false,
         checksum,
+        range_read: cap.read,
     }
 }

@@ -163,14 +163,39 @@
         <FbIcon name="chevron-right" size="20px" class="group-hover:translate-x-0.5 transition transform" />
       </button>
 
+      <!-- 0. ERROR FALLBACK (Unsupported Codec / Load Failure) -->
+      <div
+        v-if="playbackError"
+        class="text-center text-slate-400 space-y-4 max-w-md p-8 bg-slate-900/90 border border-slate-800 rounded-3xl backdrop-blur-md shadow-2xl animate-in zoom-in-95 duration-150"
+      >
+        <div class="w-16 h-16 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center text-2xl mx-auto border border-amber-500/20">
+          ⚠️
+        </div>
+        <div>
+          <h3 class="text-base font-bold text-white mb-1">Playback Unsupported in Browser</h3>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            This media codec or format cannot be decoded natively by your browser. You can download the file to open it in a local media player (e.g. VLC).
+          </p>
+        </div>
+        <a
+          :href="uiStore.mediaViewerUrl"
+          download
+          class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl font-bold inline-flex items-center space-x-2 shadow-lg transition cursor-pointer"
+        >
+          <FbIcon name="download" size="16px" />
+          <span>Download {{ uiStore.mediaViewerTitle }}</span>
+        </a>
+      </div>
+
       <!-- 1. IMAGE VIEWER -->
       <div
-        v-if="mediaType === 'image'"
+        v-else-if="mediaType === 'image'"
         class="w-full h-full flex items-center justify-center overflow-hidden cursor-grab active:cursor-grabbing"
       >
         <img
           :src="uiStore.mediaViewerUrl"
           :alt="uiStore.mediaViewerTitle"
+          @error="playbackError = true"
           :style="{
             transform: `scale(${zoomLevel}) rotate(${rotation}deg) translate(${panX}px, ${panY}px)`,
             transition: isPanning ? 'none' : 'transform 0.15s ease-out'
@@ -188,6 +213,7 @@
           controls
           autoplay
           playsinline
+          @error="playbackError = true"
           class="max-w-full max-h-[82vh] rounded-xl shadow-2xl bg-black"
         ></video>
       </div>
@@ -212,6 +238,7 @@
           :src="uiStore.mediaViewerUrl"
           controls
           autoplay
+          @error="playbackError = true"
           class="w-full rounded-xl"
         ></audio>
       </div>
@@ -255,6 +282,7 @@ const startMouseY = ref<number>(0);
 
 const isSpeedMenuOpen = ref<boolean>(false);
 const playbackSpeed = ref<number>(1.0);
+const playbackError = ref<boolean>(false);
 
 const currentIndex = computed(() => {
   if (!uiStore.mediaViewerFile || uiStore.mediaViewerList.length === 0) return 0;
@@ -408,6 +436,7 @@ watch(
   () => {
     resetImageTransform();
     playbackSpeed.value = 1.0;
+    playbackError.value = false;
   }
 );
 

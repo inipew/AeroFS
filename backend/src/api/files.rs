@@ -228,47 +228,9 @@ pub async fn get_file_content(
                 if start <= end && start < file_size {
                     let chunk_len = end - start + 1;
 
-                    // Fast path for Local Storage with zero-copy async file seek
-                    if connection_id == "local" {
-                        let root = if let Some(custom) = state.get_system_setting("local_root").await {
-                            std::path::PathBuf::from(custom)
-                        } else {
-                            state.config.filesystem.default_local_root.clone()
-                        };
-                        if let Ok(safe_path) = crate::filesystem::safepath::SafePath::resolve(&root, &vfs_path.path, state.config.security.allow_symlinks_outside_root) {
-                            if let Ok(mut file) = tokio::fs::File::open(safe_path.absolute()).await {
-                                use tokio::io::AsyncSeekExt;
-                                if file.seek(std::io::SeekFrom::Start(start)).await.is_ok() {
-                                    let limited = tokio::io::AsyncReadExt::take(file, chunk_len);
-                                    let body = Body::from_stream(ReaderStream::new(limited));
-
-                                    resp_headers.insert(CONTENT_LENGTH, chunk_len.to_string().parse().unwrap());
-                                    resp_headers.insert(
-                                        header::CONTENT_RANGE,
-                                        format!("bytes {}-{}/{}", start, end, file_size).parse().unwrap(),
-                                    );
-                                    return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body));
-                                }
-                            }
-                        }
-                    }
-
-                    // Generic stream range fallback
-                    let mut stream = provider.read_stream(&vfs_path).await?;
-                    if start > 0 {
-                        use tokio::io::AsyncReadExt;
-                        let mut to_discard = start;
-                        let mut buf = vec![0u8; 65536];
-                        while to_discard > 0 {
-                            let n = std::cmp::min(to_discard as usize, buf.len());
-                            let read = stream.read(&mut buf[..n]).await.unwrap_or(0);
-                            if read == 0 { break; }
-                            to_discard -= read as u64;
-                        }
-                    }
-
-                    let limited = tokio::io::AsyncReadExt::take(stream, chunk_len);
-                    let body = Body::from_stream(ReaderStream::new(limited));
+                    // True O(1) range read via provider.read_range
+                    let stream = provider.read_range(&vfs_path, start, chunk_len).await?;
+                    let body = Body::from_stream(ReaderStream::new(stream));
 
                     resp_headers.insert(CONTENT_LENGTH, chunk_len.to_string().parse().unwrap());
                     resp_headers.insert(
@@ -322,8 +284,21 @@ pub async fn update_file_content(
         }
     }
 
-    let cursor = Cursor::new(payload.content.into_bytes());
-    provider.write_stream(&vfs_path, Box::new(cursor)).await?;
+    // Atomic write safety: write to temporary path first then rename to prevent corrupt target on disconnect
+    let bytes = payload.content.into_bytes();
+    let tmp_vfs = VfsPath::new(&connection_id, format!("{}.aerofs.tmp", vfs_path.path));
+    let cursor = Cursor::new(bytes.clone());
+
+    if provider.write_stream(&tmp_vfs, Box::new(cursor)).await.is_ok() {
+        if provider.rename(&tmp_vfs, &vfs_path).await.is_err() {
+            let fallback = Cursor::new(bytes);
+            provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+            let _ = provider.delete(&tmp_vfs).await;
+        }
+    } else {
+        let fallback = Cursor::new(bytes);
+        provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+    }
 
     crate::auth::record_audit_log(
         &state.db,
@@ -340,6 +315,7 @@ pub async fn update_file_content(
     // Get fresh ETag after write
     let new_meta = provider.stat(&vfs_path).await?;
     let mut resp_headers = HeaderMap::new();
+    resp_headers.insert("access-control-expose-headers", "ETag".parse().unwrap());
     if let Ok(val) = new_meta.etag.parse() {
         resp_headers.insert(header::ETAG, val);
     }
@@ -497,7 +473,7 @@ pub async fn upload_file(
     let mut dest_dir = "/".to_string();
     let mut uploaded_files = Vec::new();
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("Multipart parse error: {}", e)))?
@@ -516,14 +492,33 @@ pub async fn upload_file(
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             );
 
-            let bytes = field.bytes().await.map_err(|e| {
-                AppError::BadRequest(format!("Failed to read upload data: {}", e))
-            })?;
+            // Bounded 64 KiB asynchronous duplex pipe with zero whole-file RAM buffering
+            let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
+            let write_handle = tokio::spawn({
+                let provider = provider.clone();
+                let target_path = target_path.clone();
+                async move {
+                    provider.write_stream(&target_path, Box::new(duplex_reader)).await
+                }
+            });
 
-            let cursor = Cursor::new(bytes);
-            provider
-                .write_stream(&target_path, Box::new(cursor))
-                .await?;
+            use tokio::io::AsyncWriteExt;
+            while let Some(chunk) = field
+                .chunk()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Upload stream error: {}", e)))?
+            {
+                duplex_writer
+                    .write_all(&chunk)
+                    .await
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed writing upload chunk: {}", e)))?;
+            }
+            drop(duplex_writer);
+
+            write_handle
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e)))?
+                .map_err(AppError::from)?;
 
             uploaded_files.push(target_path.path);
         }
@@ -664,13 +659,13 @@ pub async fn get_storage_info(
 
         return Ok(Json(StorageInfoResponse {
             source_name: "Local Storage".to_string(),
-            source_size_formatted: "125 GiB".to_string(),
+            source_size_formatted: "Local".to_string(),
             disk_label: "Disk".to_string(),
-            disk_usage_text: "63% · 244 GiB".to_string(),
-            used_percent: 63,
-            total_bytes: 262000000000,
-            used_bytes: 165000000000,
-            free_bytes: 97000000000,
+            disk_usage_text: "Available".to_string(),
+            used_percent: 0,
+            total_bytes: 0,
+            used_bytes: 0,
+            free_bytes: 0,
         }));
     }
 
@@ -691,7 +686,7 @@ pub async fn get_storage_info(
             source_size_formatted: format!("{} Remote", provider.to_uppercase()),
             disk_label: format!("{}:{}", host_str, port_str),
             disk_usage_text: "Connected · Online".to_string(),
-            used_percent: 45,
+            used_percent: 0,
             total_bytes: 0,
             used_bytes: 0,
             free_bytes: 0,
@@ -703,7 +698,7 @@ pub async fn get_storage_info(
         source_size_formatted: "Remote".to_string(),
         disk_label: "Network".to_string(),
         disk_usage_text: "Connected".to_string(),
-        used_percent: 50,
+        used_percent: 0,
         total_bytes: 0,
         used_bytes: 0,
         free_bytes: 0,
@@ -731,11 +726,7 @@ async fn calculate_dir_size_fast(dir: &std::path::Path) -> u64 {
             }
         }
     }
-    if total_size == 0 {
-        125 * 1024 * 1024 * 1024
-    } else {
-        total_size
-    }
+    total_size
 }
 
 fn format_bytes_str(bytes: u64) -> String {

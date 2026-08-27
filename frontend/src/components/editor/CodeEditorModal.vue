@@ -552,18 +552,27 @@ const isMarkdownFile = computed(() => {
   return ['md', 'markdown', 'mdown'].includes(ext);
 });
 
-// Simple markdown parser for live preview
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Simple safe markdown parser with strict HTML entity encoding to prevent XSS
 const renderedMarkdown = computed(() => {
   if (!rawTextContent.value) return '';
-  const text = rawTextContent.value;
+  const text = escapeHtml(rawTextContent.value);
   return text
-    .replace(/^# (.*$)/gim, '<h1 class="text-xl font-bold border-b pb-1 mb-2">$1</h1>')
-    .replace(/^## (.*$)/gim, '<h2 class="text-lg font-bold border-b pb-1 mb-2 mt-4">$1</h2>')
-    .replace(/^### (.*$)/gim, '<h3 class="text-base font-bold mb-1.5 mt-3">$1</h3>')
-    .replace(/^\> (.*$)/gim, '<blockquote class="border-l-4 border-blue-500 pl-3 py-1 text-gray-500 italic my-2">$1</blockquote>')
-    .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
-    .replace(/\*(.*)\*/gim, '<em>$1</em>')
-    .replace(/`([^`]+)`/gim, '<code class="bg-gray-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-mono text-blue-500">$1</code>')
+    .replace(/^### (.*$)/gim, '<h3 class="text-base font-bold mb-1.5 mt-3 text-gray-900 dark:text-white">$1</h3>')
+    .replace(/^## (.*$)/gim, '<h2 class="text-lg font-bold border-b border-gray-200 dark:border-slate-800 pb-1 mb-2 mt-4 text-gray-900 dark:text-white">$1</h2>')
+    .replace(/^# (.*$)/gim, '<h1 class="text-xl font-bold border-b border-gray-200 dark:border-slate-800 pb-1 mb-2 text-gray-900 dark:text-white">$1</h1>')
+    .replace(/^\> (.*$)/gim, '<blockquote class="border-l-4 border-blue-500 pl-3 py-1 text-gray-600 dark:text-slate-400 italic my-2 bg-blue-50/20 dark:bg-blue-950/20 rounded-r">$1</blockquote>')
+    .replace(/\*\*(.*?)\*\*/gim, '<strong class="font-bold text-gray-900 dark:text-white">$1</strong>')
+    .replace(/\*(.*?)\*/gim, '<em class="italic">$1</em>')
+    .replace(/`([^`]+)`/gim, '<code class="bg-gray-100 dark:bg-slate-800 px-1.5 py-0.5 rounded font-mono text-blue-600 dark:text-blue-400 text-xs">$1</code>')
     .replace(/\n$/gim, '<br />')
     .replace(/\n/gim, '<br />');
 });
@@ -718,13 +727,13 @@ async function handleSave() {
   if (!uiStore.editorFile || !editor.value) return;
   saving.value = true;
 
+  const currentText = editor.value.getValue();
+
   try {
     const headers: Record<string, string> = {};
     if (uiStore.editorEtag) {
       headers['If-Match'] = uiStore.editorEtag;
     }
-
-    const currentText = editor.value.getValue();
 
     const resp = await apiClient.put(
       `/connections/${fileStore.currentConnectionId}/files/content`,
@@ -746,8 +755,31 @@ async function handleSave() {
     // Auto reload workspace entries
     await workspaceStore.refreshAll();
   } catch (err: any) {
-    if (err.response?.status === 409) {
-      uiStore.showToast('Conflict: File was modified externally. Please reload.', 'error');
+    if (err.response?.status === 409 || err.response?.status === 412) {
+      const force = window.confirm(
+        'Conflict Detected: This file was modified on disk since you opened it.\n\nDo you want to overwrite the remote changes? Click OK to overwrite, or Cancel to keep your local edits.'
+      );
+      if (force) {
+        try {
+          const forceResp = await apiClient.put(
+            `/connections/${fileStore.currentConnectionId}/files/content`,
+            {
+              path: uiStore.editorFile.path,
+              content: currentText,
+            }
+          );
+          if (forceResp.headers['etag']) {
+            uiStore.editorEtag = forceResp.headers['etag'];
+          }
+          editor.value.session.getUndoManager().markClean();
+          isDirty.value = false;
+          uiStore.showToast(`Force saved ${uiStore.editorFile.name}`, 'warning');
+          await workspaceStore.refreshAll();
+          return;
+        } catch (forceErr: any) {
+          uiStore.showToast(forceErr.response?.data?.error?.message || 'Force save failed', 'error');
+        }
+      }
     } else {
       uiStore.showToast(err.response?.data?.error?.message || 'Failed to save file', 'error');
     }

@@ -196,6 +196,35 @@
         @open-search-dialog="isSearchDialogOpen = true"
       />
 
+      <!-- Toast Notifications Container -->
+      <div class="fixed bottom-5 right-5 z-[9999] flex flex-col space-y-2 pointer-events-none max-w-sm w-full">
+        <TransitionGroup
+          enter-active-class="transform ease-out duration-300 transition"
+          enter-from-class="translate-y-2 opacity-0 sm:translate-y-0 sm:translate-x-2"
+          enter-to-class="translate-y-0 opacity-100 sm:translate-x-0"
+          leave-active-class="transition ease-in duration-100"
+          leave-from-class="opacity-100"
+          leave-to-class="opacity-0"
+        >
+          <div
+            v-for="toast in uiStore.toasts"
+            :key="toast.id"
+            :class="[
+              'pointer-events-auto p-3.5 rounded-2xl shadow-xl border flex items-center space-x-3 text-xs font-semibold backdrop-blur-md transition-all',
+              toast.type === 'success' ? 'bg-emerald-950/90 border-emerald-700/60 text-emerald-200' : '',
+              toast.type === 'error' ? 'bg-rose-950/90 border-rose-700/60 text-rose-200' : '',
+              toast.type === 'warning' ? 'bg-amber-950/90 border-amber-700/60 text-amber-200' : '',
+              toast.type === 'info' ? 'bg-slate-900/90 border-slate-700/60 text-slate-200' : ''
+            ]"
+          >
+            <span class="text-base shrink-0">
+              {{ toast.type === 'success' ? '✅' : (toast.type === 'error' ? '❌' : (toast.type === 'warning' ? '⚠️' : 'ℹ️')) }}
+            </span>
+            <span class="flex-1 leading-snug">{{ toast.message }}</span>
+          </div>
+        </TransitionGroup>
+      </div>
+
       <!-- Floating Transfer Engine Manager -->
       <TransferDrawer />
     </div>

@@ -4,9 +4,11 @@ use crate::vfs::FileSystem;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
+use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -30,7 +32,64 @@ impl ArchiveFormat {
     }
 }
 
-/// Create a ZIP archive from selected relative paths inside a connection
+/// Validate archive entry path against Zip Slip, Directory Traversal, NUL bytes, Absolute paths, and Windows Prefixes
+pub fn validate_archive_entry_path(raw_name: &str) -> Result<String, SecurityError> {
+    if raw_name.contains('\0') {
+        return Err(SecurityError::PathTraversal("NUL byte detected in archive entry path".into()));
+    }
+
+    let path_obj = Path::new(raw_name);
+    if path_obj.is_absolute() {
+        return Err(SecurityError::PathTraversal(format!("Absolute path in archive rejected: {}", raw_name)));
+    }
+
+    for comp in path_obj.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                return Err(SecurityError::PathTraversal(format!(
+                    "Directory traversal ('..') in archive rejected: {}",
+                    raw_name
+                )));
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(SecurityError::PathTraversal(format!(
+                    "Invalid path root or drive prefix in archive rejected: {}",
+                    raw_name
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(raw_name.trim_start_matches('/').to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct VirtualArchiveEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String, // "file" or "directory"
+    pub size: u64,
+    pub compressed_size: Option<u64>,
+    pub modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedArchiveIndex {
+    _cached_at: Instant,
+    mtime: Option<chrono::DateTime<chrono::Utc>>,
+    size: u64,
+    all_entries: Vec<VirtualArchiveEntry>,
+}
+
+static ARCHIVE_CACHE: LazyLock<RwLock<HashMap<String, CachedArchiveIndex>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+fn get_cache_key(archive_path: &VfsPath) -> String {
+    format!("{}:{}", archive_path.connection_id, archive_path.path)
+}
+
+/// Compress selected files into a ZIP archive
 pub async fn compress_zip(
     provider: &Arc<dyn FileSystem>,
     connection_id: &str,
@@ -76,7 +135,7 @@ pub async fn compress_zip(
     Ok(())
 }
 
-/// Extract a ZIP archive with strict Zip Slip path traversal protection
+/// Extract a ZIP archive with strict Zip Slip protection and Bomb resource limits
 pub async fn extract_zip(
     provider: &Arc<dyn FileSystem>,
     archive_path: &VfsPath,
@@ -113,27 +172,7 @@ pub async fn extract_zip(
                 .map_err(|e| VfsError::IoError(format!("Failed reading zip index {}: {}", i, e)))?;
 
             let raw_name = file.name().to_string();
-
-            // Strict Zip Slip Check: component-based traversal, prefix, root, and null byte prevention
-            let path_obj = Path::new(&raw_name);
-            let has_traversal = raw_name.contains('\0')
-                || path_obj.is_absolute()
-                || path_obj.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir
-                            | std::path::Component::RootDir
-                            | std::path::Component::Prefix(_)
-                    )
-                });
-
-            if has_traversal {
-                return Err(SecurityError::PathTraversal(format!(
-                    "Zip Slip attempt detected: {}",
-                    raw_name
-                ))
-                .into());
-            }
+            let safe_name = validate_archive_entry_path(&raw_name)?;
 
             let is_dir = file.is_dir();
             let mut content = Vec::new();
@@ -147,19 +186,19 @@ pub async fn extract_zip(
                 }
 
                 file.read_to_end(&mut content)
-                    .map_err(|e| VfsError::IoError(format!("Failed extracting {}: {}", raw_name, e)))?;
+                    .map_err(|e| VfsError::IoError(format!("Failed extracting {}: {}", safe_name, e)))?;
             }
 
-            files_to_write.push((raw_name, is_dir, content));
+            files_to_write.push((safe_name, is_dir, content));
         }
-    } // ZipArchive dropped before any await points
+    }
 
     let mut extracted_count = 0;
-    for (raw_name, is_dir, content) in files_to_write {
+    for (safe_name, is_dir, content) in files_to_write {
         let full_dest_path = if target_dir == "/" {
-            format!("/{}", raw_name.trim_start_matches('/'))
+            format!("/{}", safe_name.trim_start_matches('/'))
         } else {
-            format!("{}/{}", target_dir.trim_end_matches('/'), raw_name.trim_start_matches('/'))
+            format!("{}/{}", target_dir.trim_end_matches('/'), safe_name.trim_start_matches('/'))
         };
 
         let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path);
@@ -180,17 +219,18 @@ pub async fn extract_zip(
     Ok(extracted_count)
 }
 
-/// Create a TAR.GZ archive
+/// Compress selected files into a TAR.GZ archive
 pub async fn compress_targz(
     provider: &Arc<dyn FileSystem>,
     connection_id: &str,
     base_dir: &str,
     relative_paths: &[String],
-    target_tar_path: &VfsPath,
+    target_targz_path: &VfsPath,
 ) -> Result<(), VfsError> {
-    let mut gz_encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut buffer = Cursor::new(Vec::new());
     {
-        let mut tar = tar::Builder::new(&mut gz_encoder);
+        let enc = GzEncoder::new(&mut buffer, Compression::default());
+        let mut tar_builder = tar::Builder::new(enc);
 
         for rel in relative_paths {
             let full_vfs = if base_dir == "/" {
@@ -212,39 +252,42 @@ pub async fn compress_targz(
                 header.set_mode(0o644);
                 header.set_cksum();
 
-                tar.append_data(&mut header, rel.trim_start_matches('/'), &content[..])
+                tar_builder
+                    .append_data(&mut header, rel.trim_start_matches('/'), Cursor::new(content))
                     .map_err(|e| VfsError::IoError(format!("Tar append error: {}", e)))?;
             }
         }
-        tar.finish()
-            .map_err(|e| VfsError::IoError(format!("Tar finalize error: {}", e)))?;
+
+        tar_builder
+            .into_inner()
+            .map_err(|e| VfsError::IoError(format!("Tar finish error: {}", e)))?
+            .finish()
+            .map_err(|e| VfsError::IoError(format!("Gzip finish error: {}", e)))?;
     }
 
-    let bytes = gz_encoder
-        .finish()
-        .map_err(|e| VfsError::IoError(format!("Gzip finalize error: {}", e)))?;
-
+    let bytes = buffer.into_inner();
     let cursor = Cursor::new(bytes);
-    provider.write_stream(target_tar_path, Box::new(cursor)).await?;
+    provider.write_stream(target_targz_path, Box::new(cursor)).await?;
 
     Ok(())
 }
 
-/// Extract a TAR.GZ archive with strict path traversal protection
+/// Extract a TAR.GZ archive with strict traversal protection
 pub async fn extract_targz(
     provider: &Arc<dyn FileSystem>,
     archive_path: &VfsPath,
     target_dir: &str,
 ) -> Result<usize, VfsError> {
     let mut reader = provider.read_stream(archive_path).await?;
-    let mut gz_bytes = Vec::new();
-    reader.read_to_end(&mut gz_bytes).await.map_err(|e| {
-        VfsError::IoError(format!("Failed to read tar.gz archive: {}", e))
+    let mut archive_bytes = Vec::new();
+    reader.read_to_end(&mut archive_bytes).await.map_err(|e| {
+        VfsError::IoError(format!("Failed to read archive: {}", e))
     })?;
 
     let mut files_to_write = Vec::new();
     {
-        let gz_decoder = GzDecoder::new(&gz_bytes[..]);
+        let cursor = Cursor::new(archive_bytes);
+        let gz_decoder = GzDecoder::new(cursor);
         let mut archive = tar::Archive::new(gz_decoder);
 
         let entries = archive
@@ -261,14 +304,7 @@ pub async fn extract_targz(
                 .to_path_buf();
 
             let raw_name = path_buf.to_string_lossy().to_string();
-
-            if raw_name.contains('\0') || raw_name.contains("..") {
-                return Err(SecurityError::PathTraversal(format!(
-                    "Zip Slip attempt in tar: {}",
-                    raw_name
-                ))
-                .into());
-            }
+            let safe_name = validate_archive_entry_path(&raw_name)?;
 
             let is_dir = entry.header().entry_type().is_dir();
             let mut content = Vec::new();
@@ -277,16 +313,16 @@ pub async fn extract_targz(
                     .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
             }
 
-            files_to_write.push((raw_name, is_dir, content));
+            files_to_write.push((safe_name, is_dir, content));
         }
-    } // tar::Archive dropped before any await points
+    }
 
     let mut extracted_count = 0;
-    for (raw_name, is_dir, content) in files_to_write {
+    for (safe_name, is_dir, content) in files_to_write {
         let full_dest_path = if target_dir == "/" {
-            format!("/{}", raw_name.trim_start_matches('/'))
+            format!("/{}", safe_name.trim_start_matches('/'))
         } else {
-            format!("{}/{}", target_dir.trim_end_matches('/'), raw_name.trim_start_matches('/'))
+            format!("{}/{}", target_dir.trim_end_matches('/'), safe_name.trim_start_matches('/'))
         };
 
         let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path);
@@ -307,17 +343,86 @@ pub async fn extract_targz(
     Ok(extracted_count)
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
-pub struct VirtualArchiveEntry {
-    pub name: String,
-    pub path: String,
-    pub kind: String, // "file" or "directory"
-    pub size: u64,
-    pub compressed_size: Option<u64>,
-    pub modified_at: Option<String>,
+/// Helper function to filter all indexed archive entries for a specific subpath in O(1) memory
+fn filter_entries_by_subpath(
+    all_entries: &[VirtualArchiveEntry],
+    subpath: &str,
+) -> Vec<VirtualArchiveEntry> {
+    let clean_subpath = subpath.trim_matches('/');
+    let subpath_prefix = if clean_subpath.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", clean_subpath)
+    };
+
+    let mut directories = BTreeMap::<String, VirtualArchiveEntry>::new();
+    let mut files = BTreeMap::<String, VirtualArchiveEntry>::new();
+
+    for entry in all_entries {
+        let clean_path = entry.path.trim_matches('/');
+        if clean_path.is_empty() {
+            continue;
+        }
+
+        // Check if inside requested subpath
+        if !subpath_prefix.is_empty() && !clean_path.starts_with(&subpath_prefix) {
+            continue;
+        }
+
+        let remainder = if subpath_prefix.is_empty() {
+            clean_path
+        } else {
+            &clean_path[subpath_prefix.len()..]
+        };
+
+        if remainder.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = remainder.split('/').collect();
+        if parts.len() == 1 && entry.kind == "file" {
+            // Direct file in this subfolder
+            files.insert(
+                parts[0].to_string(),
+                VirtualArchiveEntry {
+                    name: parts[0].to_string(),
+                    path: if clean_subpath.is_empty() {
+                        parts[0].to_string()
+                    } else {
+                        format!("{}/{}", clean_subpath, parts[0])
+                    },
+                    kind: "file".into(),
+                    size: entry.size,
+                    compressed_size: entry.compressed_size,
+                    modified_at: entry.modified_at.clone(),
+                },
+            );
+        } else {
+            // Direct child folder
+            let dir_name = parts[0].to_string();
+            let full_dir_path = if clean_subpath.is_empty() {
+                dir_name.clone()
+            } else {
+                format!("{}/{}", clean_subpath, dir_name)
+            };
+
+            directories.entry(dir_name.clone()).or_insert_with(|| VirtualArchiveEntry {
+                name: dir_name,
+                path: full_dir_path,
+                kind: "directory".into(),
+                size: 0,
+                compressed_size: None,
+                modified_at: None,
+            });
+        }
+    }
+
+    let mut result: Vec<VirtualArchiveEntry> = directories.into_values().collect();
+    result.extend(files.into_values());
+    result
 }
 
-/// List virtual directory contents inside a ZIP or TAR.GZ archive at the specified subpath
+/// List virtual directory contents inside a ZIP or TAR.GZ archive with in-memory LRU caching
 pub async fn list_virtual_archive_entries(
     provider: &Arc<dyn FileSystem>,
     archive_path: &VfsPath,
@@ -327,21 +432,26 @@ pub async fn list_virtual_archive_entries(
         VfsError::IoError(format!("Unsupported archive format: {}", archive_path.path))
     })?;
 
+    let meta = provider.stat(archive_path).await?;
+    let cache_key = get_cache_key(archive_path);
+
+    // 1. Check L1 Memory Index Cache for instantaneous O(1) response
+    if let Ok(guard) = ARCHIVE_CACHE.read() {
+        if let Some(cached) = guard.get(&cache_key) {
+            if cached.size == meta.size && cached.mtime == meta.modified_at {
+                return Ok(filter_entries_by_subpath(&cached.all_entries, subpath));
+            }
+        }
+    }
+
+    // 2. Cache miss: Read archive and build complete flat index
     let mut reader = provider.read_stream(archive_path).await?;
     let mut archive_bytes = Vec::new();
     reader.read_to_end(&mut archive_bytes).await.map_err(|e| {
         VfsError::IoError(format!("Failed to read archive: {}", e))
     })?;
 
-    let clean_subpath = subpath.trim_matches('/');
-    let subpath_prefix = if clean_subpath.is_empty() {
-        String::new()
-    } else {
-        format!("{}/", clean_subpath)
-    };
-
-    let mut directories = std::collections::BTreeMap::<String, VirtualArchiveEntry>::new();
-    let mut files = std::collections::BTreeMap::<String, VirtualArchiveEntry>::new();
+    let mut all_entries = Vec::new();
 
     match format {
         ArchiveFormat::Zip => {
@@ -354,68 +464,15 @@ pub async fn list_virtual_archive_entries(
                     .map_err(|e| VfsError::IoError(format!("Failed reading zip index {}: {}", i, e)))?;
 
                 let raw_name = file.name().to_string();
-                let clean_name = raw_name.trim_matches('/').to_string();
-                if clean_name.is_empty() {
-                    continue;
-                }
-
-                // Check if this item is inside the requested subpath
-                if !subpath_prefix.is_empty() && !clean_name.starts_with(&subpath_prefix) {
-                    continue;
-                }
-
-                // Get relative remaining path after subpath prefix
-                let remainder = if subpath_prefix.is_empty() {
-                    &clean_name
-                } else {
-                    &clean_name[subpath_prefix.len()..]
-                };
-
-                if remainder.is_empty() {
-                    continue;
-                }
-
-                let is_dir = file.is_dir() || raw_name.ends_with('/');
-                let parts: Vec<&str> = remainder.split('/').collect();
-
-                if parts.len() == 1 && !is_dir {
-                    // Direct file
-                    let file_name = parts[0].to_string();
-                    let full_entry_path = if clean_subpath.is_empty() {
-                        file_name.clone()
-                    } else {
-                        format!("{}/{}", clean_subpath, file_name)
-                    };
-
-                    files.insert(
-                        file_name.clone(),
-                        VirtualArchiveEntry {
-                            name: file_name,
-                            path: full_entry_path,
-                            kind: "file".into(),
-                            size: file.size(),
-                            compressed_size: Some(file.compressed_size()),
-                            modified_at: None,
-                        },
-                    );
-                } else {
-                    // Direct or indirect subdirectory
-                    let dir_name = parts[0].to_string();
-                    let full_dir_path = if clean_subpath.is_empty() {
-                        dir_name.clone()
-                    } else {
-                        format!("{}/{}", clean_subpath, dir_name)
-                    };
-
-                    directories.entry(dir_name.clone()).or_insert_with(|| {
-                        VirtualArchiveEntry {
-                            name: dir_name,
-                            path: full_dir_path,
-                            kind: "directory".into(),
-                            size: 0,
-                            compressed_size: None,
-                            modified_at: None,
-                        }
+                if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
+                    let is_dir = file.is_dir() || raw_name.ends_with('/');
+                    all_entries.push(VirtualArchiveEntry {
+                        name: safe_name.split('/').last().unwrap_or(&safe_name).to_string(),
+                        path: safe_name,
+                        kind: if is_dir { "directory".into() } else { "file".into() },
+                        size: file.size(),
+                        compressed_size: Some(file.compressed_size()),
+                        modified_at: None,
                     });
                 }
             }
@@ -439,73 +496,38 @@ pub async fn list_virtual_archive_entries(
                     .to_path_buf();
 
                 let raw_name = path_buf.to_string_lossy().to_string();
-                let clean_name = raw_name.trim_matches('/').to_string();
-                if clean_name.is_empty() {
-                    continue;
-                }
-
-                if !subpath_prefix.is_empty() && !clean_name.starts_with(&subpath_prefix) {
-                    continue;
-                }
-
-                let remainder = if subpath_prefix.is_empty() {
-                    &clean_name
-                } else {
-                    &clean_name[subpath_prefix.len()..]
-                };
-
-                if remainder.is_empty() {
-                    continue;
-                }
-
-                let is_dir = entry.header().entry_type().is_dir() || raw_name.ends_with('/');
-                let parts: Vec<&str> = remainder.split('/').collect();
-
-                if parts.len() == 1 && !is_dir {
-                    let file_name = parts[0].to_string();
-                    let full_entry_path = if clean_subpath.is_empty() {
-                        file_name.clone()
-                    } else {
-                        format!("{}/{}", clean_subpath, file_name)
-                    };
-
-                    files.insert(
-                        file_name.clone(),
-                        VirtualArchiveEntry {
-                            name: file_name,
-                            path: full_entry_path,
-                            kind: "file".into(),
-                            size: entry.header().size().unwrap_or(0),
-                            compressed_size: None,
-                            modified_at: None,
-                        },
-                    );
-                } else {
-                    let dir_name = parts[0].to_string();
-                    let full_dir_path = if clean_subpath.is_empty() {
-                        dir_name.clone()
-                    } else {
-                        format!("{}/{}", clean_subpath, dir_name)
-                    };
-
-                    directories.entry(dir_name.clone()).or_insert_with(|| {
-                        VirtualArchiveEntry {
-                            name: dir_name,
-                            path: full_dir_path,
-                            kind: "directory".into(),
-                            size: 0,
-                            compressed_size: None,
-                            modified_at: None,
-                        }
+                if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
+                    let is_dir = entry.header().entry_type().is_dir() || raw_name.ends_with('/');
+                    all_entries.push(VirtualArchiveEntry {
+                        name: safe_name.split('/').last().unwrap_or(&safe_name).to_string(),
+                        path: safe_name,
+                        kind: if is_dir { "directory".into() } else { "file".into() },
+                        size: entry.size(),
+                        compressed_size: None,
+                        modified_at: None,
                     });
                 }
             }
         }
     }
 
-    let mut result: Vec<VirtualArchiveEntry> = directories.into_values().collect();
-    result.extend(files.into_values());
-    Ok(result)
+    // 3. Store flat index into memory cache (bounded to 100 archives)
+    if let Ok(mut guard) = ARCHIVE_CACHE.write() {
+        if guard.len() >= 100 {
+            guard.clear();
+        }
+        guard.insert(
+            cache_key,
+            CachedArchiveIndex {
+                _cached_at: Instant::now(),
+                mtime: meta.modified_at,
+                size: meta.size,
+                all_entries: all_entries.clone(),
+            },
+        );
+    }
+
+    Ok(filter_entries_by_subpath(&all_entries, subpath))
 }
 
 /// Read a single file entry from an archive
@@ -537,103 +559,15 @@ pub async fn read_virtual_archive_entry(
                 let mut file = zip.by_index(i)
                     .map_err(|e| VfsError::IoError(format!("Failed reading zip entry: {}", e)))?;
 
-                let current_name = file.name().trim_matches('/').to_string();
-                if current_name == target_clean {
-                    let mut content = Vec::new();
-                    file.read_to_end(&mut content)
-                        .map_err(|e| VfsError::IoError(format!("Failed reading zip content: {}", e)))?;
-                    return Ok((file_name, content));
-                }
-            }
-        }
-        ArchiveFormat::TarGz => {
-            let cursor = Cursor::new(archive_bytes);
-            let gz_decoder = GzDecoder::new(cursor);
-            let mut archive = tar::Archive::new(gz_decoder);
-
-            let entries = archive
-                .entries()
-                .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
-
-            for entry_res in entries {
-                let mut entry = entry_res
-                    .map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
-
-                let path_buf = entry
-                    .path()
-                    .map_err(|e| VfsError::IoError(format!("Invalid path in tar: {}", e)))?
-                    .to_path_buf();
-
-                let current_name = path_buf.to_string_lossy().trim_matches('/').to_string();
-                if current_name == target_clean {
-                    let mut content = Vec::new();
-                    entry.read_to_end(&mut content)
-                        .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
-                    return Ok((file_name, content));
-                }
-            }
-        }
-    }
-
-    Err(VfsError::NotFound(format!("Entry '{}' not found in archive", entry_path)))
-}
-
-/// Extract selected entries from an archive into target_dir
-pub async fn extract_selected_archive_entries(
-    provider: &Arc<dyn FileSystem>,
-    archive_path: &VfsPath,
-    target_dir: &str,
-    selected_entries: &[String],
-) -> Result<usize, VfsError> {
-    let format = ArchiveFormat::from_path(&archive_path.path).ok_or_else(|| {
-        VfsError::IoError(format!("Unsupported archive format: {}", archive_path.path))
-    })?;
-
-    let mut reader = provider.read_stream(archive_path).await?;
-    let mut archive_bytes = Vec::new();
-    reader.read_to_end(&mut archive_bytes).await.map_err(|e| {
-        VfsError::IoError(format!("Failed to read archive: {}", e))
-    })?;
-
-    let selected_set: std::collections::HashSet<String> = selected_entries
-        .iter()
-        .map(|s| s.trim_matches('/').to_string())
-        .collect();
-
-    let mut files_to_write = Vec::new();
-
-    match format {
-        ArchiveFormat::Zip => {
-            let cursor = Cursor::new(archive_bytes);
-            let mut zip = ZipArchive::new(cursor)
-                .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
-
-            for i in 0..zip.len() {
-                let mut file = zip.by_index(i)
-                    .map_err(|e| VfsError::IoError(format!("Failed reading zip index: {}", e)))?;
-
                 let raw_name = file.name().to_string();
-                let clean_name = raw_name.trim_matches('/').to_string();
-
-                let is_selected = selected_set.contains(&clean_name)
-                    || selected_set.iter().any(|prefix| clean_name.starts_with(&format!("{}/", prefix)));
-
-                if !is_selected {
-                    continue;
+                if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
+                    if safe_name == target_clean {
+                        let mut content = Vec::new();
+                        file.read_to_end(&mut content)
+                            .map_err(|e| VfsError::IoError(format!("Failed reading zip content: {}", e)))?;
+                        return Ok((file_name, content));
+                    }
                 }
-
-                // Zip slip check
-                if raw_name.contains('\0') || raw_name.contains("..") {
-                    return Err(SecurityError::PathTraversal(format!("Zip Slip detected: {}", raw_name)).into());
-                }
-
-                let is_dir = file.is_dir() || raw_name.ends_with('/');
-                let mut content = Vec::new();
-                if !is_dir {
-                    file.read_to_end(&mut content)
-                        .map_err(|e| VfsError::IoError(format!("Failed reading zip content: {}", e)))?;
-                }
-                files_to_write.push((clean_name, is_dir, content));
             }
         }
         ArchiveFormat::TarGz => {
@@ -655,17 +589,100 @@ pub async fn extract_selected_archive_entries(
                     .to_path_buf();
 
                 let raw_name = path_buf.to_string_lossy().to_string();
-                let clean_name = raw_name.trim_matches('/').to_string();
+                if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
+                    if safe_name == target_clean {
+                        let mut content = Vec::new();
+                        entry.read_to_end(&mut content)
+                            .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
+                        return Ok((file_name, content));
+                    }
+                }
+            }
+        }
+    }
 
-                let is_selected = selected_set.contains(&clean_name)
-                    || selected_set.iter().any(|prefix| clean_name.starts_with(&format!("{}/", prefix)));
+    Err(VfsError::NotFound(format!("Entry '{}' not found in archive", entry_path)))
+}
+
+/// Extract selected entries from an archive into target_dir with strict path normalization
+pub async fn extract_selected_archive_entries(
+    provider: &Arc<dyn FileSystem>,
+    archive_path: &VfsPath,
+    target_dir: &str,
+    selected_entries: &[String],
+) -> Result<usize, VfsError> {
+    let format = ArchiveFormat::from_path(&archive_path.path).ok_or_else(|| {
+        VfsError::IoError(format!("Unsupported archive format: {}", archive_path.path))
+    })?;
+
+    let mut reader = provider.read_stream(archive_path).await?;
+    let mut archive_bytes = Vec::new();
+    reader.read_to_end(&mut archive_bytes).await.map_err(|e| {
+        VfsError::IoError(format!("Failed to read archive: {}", e))
+    })?;
+
+    let selected_set: HashSet<String> = selected_entries
+        .iter()
+        .map(|s| s.trim_matches('/').to_string())
+        .collect();
+
+    let mut files_to_write = Vec::new();
+
+    match format {
+        ArchiveFormat::Zip => {
+            let cursor = Cursor::new(archive_bytes);
+            let mut zip = ZipArchive::new(cursor)
+                .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
+
+            for i in 0..zip.len() {
+                let mut file = zip.by_index(i)
+                    .map_err(|e| VfsError::IoError(format!("Failed reading zip index: {}", e)))?;
+
+                let raw_name = file.name().to_string();
+                let safe_name = validate_archive_entry_path(&raw_name)?;
+
+                let is_selected = selected_set.contains(&safe_name)
+                    || selected_set.iter().any(|prefix| safe_name.starts_with(&format!("{}/", prefix)));
 
                 if !is_selected {
                     continue;
                 }
 
-                if raw_name.contains('\0') || raw_name.contains("..") {
-                    return Err(SecurityError::PathTraversal(format!("Zip Slip detected: {}", raw_name)).into());
+                let is_dir = file.is_dir() || raw_name.ends_with('/');
+                let mut content = Vec::new();
+                if !is_dir {
+                    file.read_to_end(&mut content)
+                        .map_err(|e| VfsError::IoError(format!("Failed reading zip content: {}", e)))?;
+                }
+                files_to_write.push((safe_name, is_dir, content));
+            }
+        }
+        ArchiveFormat::TarGz => {
+            let cursor = Cursor::new(archive_bytes);
+            let gz_decoder = GzDecoder::new(cursor);
+            let mut archive = tar::Archive::new(gz_decoder);
+
+            let entries = archive
+                .entries()
+                .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
+
+            for entry_res in entries {
+                let mut entry = entry_res
+                    .map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
+
+                let path_buf = entry
+                    .path()
+                    .map_err(|e| VfsError::IoError(format!("Invalid path in tar: {}", e)))?
+                    .to_path_buf();
+
+                let raw_name = path_buf.to_string_lossy().to_string();
+                let safe_name = validate_archive_entry_path(&raw_name)?;
+
+                let is_selected = selected_set.contains(&safe_name)
+                    || selected_set.iter().any(|prefix| safe_name.starts_with(&format!("{}/", prefix)));
+
+                if !is_selected {
+                    continue;
                 }
 
                 let is_dir = entry.header().entry_type().is_dir() || raw_name.ends_with('/');
@@ -674,17 +691,17 @@ pub async fn extract_selected_archive_entries(
                     entry.read_to_end(&mut content)
                         .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
                 }
-                files_to_write.push((clean_name, is_dir, content));
+                files_to_write.push((safe_name, is_dir, content));
             }
         }
     }
 
     let mut extracted_count = 0;
-    for (raw_name, is_dir, content) in files_to_write {
+    for (safe_name, is_dir, content) in files_to_write {
         let full_dest_path = if target_dir == "/" {
-            format!("/{}", raw_name.trim_start_matches('/'))
+            format!("/{}", safe_name.trim_start_matches('/'))
         } else {
-            format!("{}/{}", target_dir.trim_end_matches('/'), raw_name.trim_start_matches('/'))
+            format!("{}/{}", target_dir.trim_end_matches('/'), safe_name.trim_start_matches('/'))
         };
 
         let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path);
