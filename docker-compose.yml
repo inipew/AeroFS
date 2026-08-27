@@ -1,0 +1,22 @@
+services:
+  webfilemanager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webfilemanager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_SERVER__PORT=8080
+      - APP_DATABASE__URL=sqlite:///app/data/filemanager.db?mode=rwc
+      - APP_FILESYSTEM__DEFAULT_LOCAL_ROOT=/app/storage
+      - APP_SECURITY__SESSION_SECRET=production_secret_key_change_me_before_deploying
+      - RUST_LOG=backend=info,tower_http=info
+    volumes:
+      - filemanager_data:/app/data
+      - filemanager_storage:/app/storage
+
+volumes:
+  filemanager_data:
+  filemanager_storage:

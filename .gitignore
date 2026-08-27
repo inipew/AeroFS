@@ -1,0 +1,18 @@
+# Rust / Backend Build Artifacts
+/backend/target/
+/backend/filemanager.db
+/backend/filemanager.db-shm
+/backend/filemanager.db-wal
+/backend/.trash/
+
+# Node / Frontend Build Artifacts
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+
+# IDE and OS
+.DS_Store
+.vscode/
+.idea/
+*.log
+plan
