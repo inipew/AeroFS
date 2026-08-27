@@ -24,36 +24,52 @@
           @openAuditLogDialog="isSettingsDialogOpen = true"
         />
 
-        <!-- Mobile Dual-Pane Tab Switcher (When Dual Pane is Enabled on Mobile) -->
+        <!-- Mobile Dual-Pane Modern Segmented Control (When Dual Pane is Enabled on Mobile) -->
         <div
           v-if="uiStore.isMobile && workspaceStore.isDualPane"
-          class="flex items-center p-1.5 bg-gray-100 dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 text-xs font-semibold select-none shrink-0"
+          class="px-2.5 py-1.5 bg-gray-50/95 dark:bg-[#070a12]/95 border-b border-gray-200/80 dark:border-slate-800/80 backdrop-blur-md flex items-center select-none shrink-0"
         >
-          <button
-            @click="workspaceStore.setActivePanel('left')"
-            :class="[
-              'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition truncate cursor-pointer',
-              workspaceStore.activePanelId === 'left'
-                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs'
-                : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
-            ]"
-          >
-            <span>📁 Panel 1</span>
-            <span class="text-[10px] font-mono opacity-70 truncate max-w-[100px]">({{ workspaceStore.leftPanel.path }})</span>
-          </button>
+          <div class="w-full flex items-center p-1 bg-gray-200/70 dark:bg-slate-900/90 rounded-2xl border border-gray-200/70 dark:border-slate-800/80 shadow-2xs">
+            <!-- Left Panel Tab -->
+            <button
+              @click="workspaceStore.setActivePanel('left')"
+              :class="[
+                'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition-all text-xs font-semibold cursor-pointer truncate',
+                workspaceStore.activePanelId === 'left'
+                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs ring-1 ring-blue-500/20'
+                  : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 hover:bg-white/30 dark:hover:bg-slate-800/40'
+              ]"
+            >
+              <FbIcon
+                :name="workspaceStore.leftPanel.connectionId === 'local' ? 'folder' : 'share'"
+                size="14px"
+                :class="workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'"
+              />
+              <span class="truncate max-w-[100px]">{{ leftConnName }}</span>
+              <span class="text-[10px] font-mono opacity-60 truncate max-w-[65px]">/{{ getPanelDisplayPath(workspaceStore.leftPanel.path) }}</span>
+              <span v-if="workspaceStore.activePanelId === 'left'" class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+            </button>
 
-          <button
-            @click="workspaceStore.setActivePanel('right')"
-            :class="[
-              'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition truncate cursor-pointer',
-              workspaceStore.activePanelId === 'right'
-                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs'
-                : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
-            ]"
-          >
-            <span>💾 Panel 2</span>
-            <span class="text-[10px] font-mono opacity-70 truncate max-w-[100px]">({{ workspaceStore.rightPanel.path }})</span>
-          </button>
+            <!-- Right Panel Tab -->
+            <button
+              @click="workspaceStore.setActivePanel('right')"
+              :class="[
+                'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition-all text-xs font-semibold cursor-pointer truncate',
+                workspaceStore.activePanelId === 'right'
+                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs ring-1 ring-blue-500/20'
+                  : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 hover:bg-white/30 dark:hover:bg-slate-800/40'
+              ]"
+            >
+              <FbIcon
+                :name="workspaceStore.rightPanel.connectionId === 'local' ? 'folder' : 'share'"
+                size="14px"
+                :class="workspaceStore.activePanelId === 'right' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'"
+              />
+              <span class="truncate max-w-[100px]">{{ rightConnName }}</span>
+              <span class="text-[10px] font-mono opacity-60 truncate max-w-[65px]">/{{ getPanelDisplayPath(workspaceStore.rightPanel.path) }}</span>
+              <span v-if="workspaceStore.activePanelId === 'right'" class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+            </button>
+          </div>
         </div>
 
         <!-- Dynamic Workspace Shell (Continuous Surface) -->
@@ -61,9 +77,20 @@
           ref="mainContainerRef"
           class="flex-1 flex overflow-hidden min-w-0 bg-white dark:bg-[#0b0f19] p-0"
         >
-          <!-- MOBILE VIEW: 100% Full-Width Active Panel -->
-          <div v-if="uiStore.isMobile" class="w-full h-full flex flex-col min-w-0">
-            <FilePanel :panelId="workspaceStore.activePanelId" @open-archive-viewer="handleOpenArchiveViewer" />
+          <!-- MOBILE VIEW: 100% Full-Width Active Panel with Touch Swipe Gestures -->
+          <div
+            v-if="uiStore.isMobile"
+            class="w-full h-full flex flex-col min-w-0 overflow-hidden"
+            @touchstart.passive="handleTouchStart"
+            @touchend="handleTouchEnd"
+          >
+            <Transition :name="slideTransition" mode="out-in">
+              <FilePanel
+                :key="workspaceStore.activePanelId"
+                :panelId="workspaceStore.activePanelId"
+                @open-archive-viewer="handleOpenArchiveViewer"
+              />
+            </Transition>
           </div>
 
           <!-- DESKTOP VIEW: Continuous Workspace Surface (Single or Split) -->
@@ -240,7 +267,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import FbIcon from './components/common/FbIcon.vue';
 import { useAuthStore } from './stores/authStore';
 import { useConnectionStore } from './stores/connectionStore';
@@ -283,6 +310,22 @@ const workspaceStore = useWorkspaceStore();
 const transferStore = useTransferStore();
 const fileStore = useFileStore();
 const uiStore = useUiStore();
+
+const leftConnName = computed(() => {
+  const conn = connStore.connections.find((c) => c.id === workspaceStore.leftPanel.connectionId);
+  return conn?.name || (workspaceStore.leftPanel.connectionId === 'local' ? 'Local' : workspaceStore.leftPanel.connectionId);
+});
+
+const rightConnName = computed(() => {
+  const conn = connStore.connections.find((c) => c.id === workspaceStore.rightPanel.connectionId);
+  return conn?.name || (workspaceStore.rightPanel.connectionId === 'local' ? 'Local' : workspaceStore.rightPanel.connectionId);
+});
+
+function getPanelDisplayPath(path: string): string {
+  if (!path || path === '/') return '';
+  const parts = path.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : '';
+}
 
 const mainContainerRef = ref<HTMLElement | null>(null);
 let isResizingSplit = false;
@@ -559,6 +602,42 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+let touchStartX = 0;
+let touchStartY = 0;
+
+function handleTouchStart(e: TouchEvent) {
+  if (!uiStore.isMobile || !workspaceStore.isDualPane) return;
+  if (e.touches.length > 0) {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }
+}
+
+function handleTouchEnd(e: TouchEvent) {
+  if (!uiStore.isMobile || !workspaceStore.isDualPane) return;
+  if (e.changedTouches.length > 0) {
+    const touchEndX = e.changedTouches[0].clientX;
+    const touchEndY = e.changedTouches[0].clientY;
+    const dx = touchEndX - touchStartX;
+    const dy = touchEndY - touchStartY;
+
+    // Minimum swipe threshold 45px, predominantly horizontal
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      if (dx < 0 && workspaceStore.activePanelId === 'left') {
+        // Swipe Left -> switch to Right Panel
+        workspaceStore.setActivePanel('right');
+      } else if (dx > 0 && workspaceStore.activePanelId === 'right') {
+        // Swipe Right -> switch to Left Panel
+        workspaceStore.setActivePanel('left');
+      }
+    }
+  }
+}
+
+const slideTransition = computed(() => {
+  return workspaceStore.activePanelId === 'right' ? 'panel-slide-left' : 'panel-slide-right';
+});
+
 onMounted(async () => {
   initializeCommandRegistry();
   window.addEventListener('keydown', handleGlobalKeydown);
@@ -579,3 +658,30 @@ onUnmounted(() => {
   stopSplitResize();
 });
 </script>
+
+<style scoped>
+.panel-slide-left-enter-active,
+.panel-slide-left-leave-active,
+.panel-slide-right-enter-active,
+.panel-slide-right-leave-active {
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.panel-slide-left-enter-from {
+  opacity: 0;
+  transform: translateX(40px);
+}
+.panel-slide-left-leave-to {
+  opacity: 0;
+  transform: translateX(-40px);
+}
+
+.panel-slide-right-enter-from {
+  opacity: 0;
+  transform: translateX(-40px);
+}
+.panel-slide-right-leave-to {
+  opacity: 0;
+  transform: translateX(40px);
+}
+</style>

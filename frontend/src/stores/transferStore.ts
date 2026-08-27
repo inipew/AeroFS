@@ -215,15 +215,25 @@ export const useTransferStore = defineStore('transfer', () => {
     );
   }
 
-  function removeJob(jobId: string) {
+  async function removeJob(jobId: string) {
     jobs.value = jobs.value.filter((j) => j.id !== jobId);
     delete speedMetrics.value[jobId];
+    try {
+      await apiClient.post(`/transfers/${jobId}/dismiss`);
+    } catch (err) {
+      console.error('Failed to dismiss transfer on server', err);
+    }
   }
 
-  function clearFinished() {
+  async function clearFinished() {
     jobs.value = jobs.value.filter(
       (j) => j.status === 'running' || j.status === 'queued'
     );
+    try {
+      await apiClient.post('/transfers/clear-finished');
+    } catch (err) {
+      console.error('Failed to clear finished transfers on server', err);
+    }
   }
 
   async function refreshJobs() {

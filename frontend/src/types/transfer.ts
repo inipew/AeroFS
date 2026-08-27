@@ -4,6 +4,7 @@ export type TransferStatus = 'queued' | 'running' | 'completed' | 'failed' | 'ca
 
 export interface TransferJob {
   id: string;
+  user_id?: string;
   name: string;
   transfer_type: TransferType;
   source_connection_id: string;
@@ -15,7 +16,9 @@ export interface TransferJob {
   total_bytes: number;
   speed_bytes_per_sec: number;
   eta_seconds?: number;
+  checksum?: string;
   error_message?: string;
+  dismissed_at?: string;
   created_at: string;
   updated_at: string;
 }

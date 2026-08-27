@@ -4,6 +4,7 @@ use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -80,6 +81,7 @@ impl TransferStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferJob {
     pub id: String,
+    pub user_id: Option<String>,
     pub name: String,
     pub transfer_type: TransferType,
     pub source_connection_id: String,
@@ -93,6 +95,7 @@ pub struct TransferJob {
     pub eta_seconds: Option<u64>,
     pub checksum: Option<String>,
     pub error_message: Option<String>,
+    pub dismissed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -329,6 +332,7 @@ impl TransferManager {
 
     pub async fn submit_job(
         &self,
+        user_id: Option<String>,
         name: String,
         transfer_type: TransferType,
         source_connection_id: String,
@@ -341,6 +345,7 @@ impl TransferManager {
 
         let job = TransferJob {
             id: id.clone(),
+            user_id,
             name,
             transfer_type,
             source_connection_id,
@@ -354,6 +359,7 @@ impl TransferManager {
             eta_seconds: None,
             checksum: None,
             error_message: None,
+            dismissed_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -382,17 +388,40 @@ impl TransferManager {
         Ok(id)
     }
 
-    pub async fn list_jobs(&self) -> Vec<TransferJob> {
+    pub async fn list_jobs(&self, user_id: Option<&str>, is_admin: bool, include_dismissed: bool) -> Vec<TransferJob> {
         let map = self.jobs.read().await;
-        let mut list: Vec<TransferJob> = map.values().cloned().collect();
+        let mut list: Vec<TransferJob> = map
+            .values()
+            .filter(|j| {
+                if !include_dismissed && j.dismissed_at.is_some() {
+                    return false;
+                }
+                if is_admin {
+                    return true;
+                }
+                match (&j.user_id, user_id) {
+                    (Some(owner), Some(uid)) => owner == uid,
+                    (None, _) => true,
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect();
         list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         list
     }
 
-    pub async fn cancel_job(&self, id: &str) -> bool {
+    pub async fn cancel_job(&self, id: &str, user_id: Option<&str>, is_admin: bool) -> Result<bool, String> {
         let updated_job = {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
+                if !is_admin {
+                    if let (Some(owner), Some(uid)) = (&job.user_id, user_id) {
+                        if owner != uid {
+                            return Err("Permission denied: cannot cancel another user's transfer".into());
+                        }
+                    }
+                }
                 if job.status == TransferStatus::Queued
                     || job.status == TransferStatus::Running
                     || job.status == TransferStatus::CancellationRequested
@@ -415,10 +444,77 @@ impl TransferManager {
                 &self.sequence_counter,
                 WsEvent::TransferFailed(job),
             );
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
+    }
+
+    pub async fn dismiss_job(&self, id: &str, user_id: Option<&str>, is_admin: bool) -> Result<bool, String> {
+        let updated_job = {
+            let mut map = self.jobs.write().await;
+            if let Some(job) = map.get_mut(id) {
+                if !is_admin {
+                    if let (Some(owner), Some(uid)) = (&job.user_id, user_id) {
+                        if owner != uid {
+                            return Err("Permission denied: cannot dismiss another user's transfer".into());
+                        }
+                    }
+                }
+                job.dismissed_at = Some(Utc::now());
+                job.updated_at = Utc::now();
+                Some(job.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(job) = updated_job {
+            let _ = Self::save_job_to_db(&self.db, &job).await;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn clear_finished_jobs(&self, user_id: Option<&str>, is_admin: bool) -> Result<usize, String> {
+        let now = Utc::now();
+        let mut count = 0;
+        let mut jobs_to_persist = Vec::new();
+
+        {
+            let mut map = self.jobs.write().await;
+            for job in map.values_mut() {
+                if job.dismissed_at.is_none()
+                    && (job.status == TransferStatus::Completed
+                        || job.status == TransferStatus::Failed
+                        || job.status == TransferStatus::Cancelled)
+                {
+                    let is_owner = if is_admin {
+                        true
+                    } else {
+                        match (&job.user_id, user_id) {
+                            (Some(owner), Some(uid)) => owner == uid,
+                            (None, _) => true,
+                            _ => false,
+                        }
+                    };
+
+                    if is_owner {
+                        job.dismissed_at = Some(now);
+                        job.updated_at = now;
+                        jobs_to_persist.push(job.clone());
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        for j in &jobs_to_persist {
+            let _ = Self::save_job_to_db(&self.db, j).await;
+        }
+
+        Ok(count)
     }
 
     /// Execute transfer with exponential backoff retry for transient network hiccups
@@ -820,28 +916,11 @@ impl TransferManager {
 
     /// Load transfer jobs from SQLite
     async fn load_jobs_from_db(db: &DbPool) -> anyhow::Result<Vec<TransferJob>> {
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            i64,
-            i64,
-            i64,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            String,
-            String,
-        )> = sqlx::query_as(
-            "SELECT id, name, transfer_type, source_connection_id, source_path,
+        let rows = sqlx::query(
+            "SELECT id, user_id, name, transfer_type, source_connection_id, source_path,
                     destination_connection_id, destination_path, status,
                     transferred_bytes, total_bytes, speed_bytes_per_sec,
-                    eta_seconds, checksum, error_message, created_at, updated_at
+                    eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
              FROM transfer_jobs
              ORDER BY created_at DESC
              LIMIT 100",
@@ -851,28 +930,50 @@ impl TransferManager {
 
         let mut jobs = Vec::new();
         for r in rows {
-            let created_at = DateTime::parse_from_rfc3339(&r.14)
+            let id: String = r.get("id");
+            let user_id: Option<String> = r.get("user_id");
+            let name: String = r.get("name");
+            let transfer_type_str: String = r.get("transfer_type");
+            let source_connection_id: String = r.get("source_connection_id");
+            let source_path: String = r.get("source_path");
+            let destination_connection_id: String = r.get("destination_connection_id");
+            let destination_path: String = r.get("destination_path");
+            let status_str: String = r.get("status");
+            let transferred_bytes: i64 = r.get("transferred_bytes");
+            let total_bytes: i64 = r.get("total_bytes");
+            let speed_bytes_per_sec: i64 = r.get("speed_bytes_per_sec");
+            let eta_seconds: Option<i64> = r.get("eta_seconds");
+            let checksum: Option<String> = r.get("checksum");
+            let error_message: Option<String> = r.get("error_message");
+            let dismissed_at_str: Option<String> = r.get("dismissed_at");
+            let created_at_str: String = r.get("created_at");
+            let updated_at_str: String = r.get("updated_at");
+
+            let dismissed_at = dismissed_at_str.and_then(|d| DateTime::parse_from_rfc3339(&d).ok().map(|dt| dt.with_timezone(&Utc)));
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            let updated_at = DateTime::parse_from_rfc3339(&r.15)
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
             jobs.push(TransferJob {
-                id: r.0,
-                name: r.1,
-                transfer_type: TransferType::from_str(&r.2),
-                source_connection_id: r.3,
-                source_path: r.4,
-                destination_connection_id: r.5,
-                destination_path: r.6,
-                status: TransferStatus::from_str(&r.7),
-                transferred_bytes: r.8 as u64,
-                total_bytes: r.9 as u64,
-                speed_bytes_per_sec: r.10 as u64,
-                eta_seconds: r.11.map(|e| e as u64),
-                checksum: r.12,
-                error_message: r.13,
+                id,
+                user_id,
+                name,
+                transfer_type: TransferType::from_str(&transfer_type_str),
+                source_connection_id,
+                source_path,
+                destination_connection_id,
+                destination_path,
+                status: TransferStatus::from_str(&status_str),
+                transferred_bytes: transferred_bytes as u64,
+                total_bytes: total_bytes as u64,
+                speed_bytes_per_sec: speed_bytes_per_sec as u64,
+                eta_seconds: eta_seconds.map(|e| e as u64),
+                checksum,
+                error_message,
+                dismissed_at,
                 created_at,
                 updated_at,
             });
@@ -885,14 +986,15 @@ impl TransferManager {
     async fn save_job_to_db(db: &DbPool, job: &TransferJob) -> anyhow::Result<()> {
         let created_at = job.created_at.to_rfc3339();
         let updated_at = job.updated_at.to_rfc3339();
+        let dismissed_at = job.dismissed_at.map(|d| d.to_rfc3339());
 
         sqlx::query(
             "INSERT INTO transfer_jobs (
-                id, name, transfer_type, source_connection_id, source_path,
+                id, user_id, name, transfer_type, source_connection_id, source_path,
                 destination_connection_id, destination_path, status,
                 transferred_bytes, total_bytes, speed_bytes_per_sec,
-                eta_seconds, checksum, error_message, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 transferred_bytes = excluded.transferred_bytes,
@@ -901,9 +1003,11 @@ impl TransferManager {
                 eta_seconds = excluded.eta_seconds,
                 checksum = excluded.checksum,
                 error_message = excluded.error_message,
+                dismissed_at = excluded.dismissed_at,
                 updated_at = excluded.updated_at",
         )
         .bind(&job.id)
+        .bind(&job.user_id)
         .bind(&job.name)
         .bind(job.transfer_type.as_str())
         .bind(&job.source_connection_id)
@@ -917,6 +1021,7 @@ impl TransferManager {
         .bind(job.eta_seconds.map(|e| e as i64))
         .bind(&job.checksum)
         .bind(&job.error_message)
+        .bind(&dismissed_at)
         .bind(&created_at)
         .bind(&updated_at)
         .execute(db)

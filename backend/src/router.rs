@@ -96,7 +96,9 @@ pub fn create_router(state: AppState) -> Router {
 
     let transfer_routes = Router::new()
         .route("/", get(transfers::list_transfers).post(transfers::create_transfer))
-        .route("/{id}/cancel", post(transfers::cancel_transfer));
+        .route("/{id}/cancel", post(transfers::cancel_transfer))
+        .route("/{id}/dismiss", post(transfers::dismiss_transfer))
+        .route("/clear-finished", post(transfers::clear_finished_transfers));
 
     let share_routes = Router::new()
         .route("/", get(crate::api::shares::list_shares).post(crate::api::shares::create_share))

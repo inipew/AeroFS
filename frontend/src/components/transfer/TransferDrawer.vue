@@ -100,100 +100,160 @@
           </div>
         </div>
 
-        <!-- Transfer Jobs List -->
-        <div class="max-h-72 overflow-y-auto p-3 space-y-2.5 divide-y divide-gray-100 dark:divide-slate-800/60">
+        <!-- Transfer Jobs List with Active & Finished grouping -->
+        <div class="max-h-80 overflow-y-auto p-3 space-y-3">
           <div v-if="transferStore.jobs.length === 0" class="py-8 text-center text-gray-400 dark:text-slate-500 text-xs font-medium flex flex-col items-center justify-center space-y-1">
             <span class="text-xl">✨</span>
             <span>No active transfers</span>
           </div>
 
-          <div
-            v-for="job in transferStore.jobs"
-            :key="job.id"
-            class="pt-2 first:pt-0 space-y-1.5 group/item"
-          >
-            <div class="flex items-center justify-between text-[11px]">
-              <div class="flex items-center space-x-1.5 truncate max-w-[210px]">
-                <FbIcon
-                  :name="getTransferTypeIcon(job.transfer_type)"
-                  size="13px"
-                  :class="[
-                    job.status === 'running' ? 'text-blue-500 animate-bounce' : 'text-gray-400 dark:text-slate-500'
-                  ]"
-                />
-                <span class="font-semibold text-gray-800 dark:text-slate-200 truncate" :title="job.name">
-                  {{ job.name }}
-                </span>
+          <!-- Active Transfers Section -->
+          <div v-if="activeJobs.length > 0" class="space-y-2">
+            <div class="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider flex items-center justify-between">
+              <span>Active ({{ activeJobs.length }})</span>
+            </div>
+
+            <div
+              v-for="job in activeJobs"
+              :key="job.id"
+              class="p-2 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40 space-y-1.5 group/item"
+            >
+              <div class="flex items-center justify-between text-[11px]">
+                <div class="flex items-center space-x-1.5 truncate max-w-[210px]">
+                  <FbIcon
+                    :name="getTransferTypeIcon(job.transfer_type)"
+                    size="13px"
+                    :class="[
+                      job.status === 'running' ? 'text-blue-500 animate-bounce' : 'text-gray-400 dark:text-slate-500'
+                    ]"
+                  />
+                  <span class="font-semibold text-gray-800 dark:text-slate-200 truncate" :title="job.name">
+                    {{ job.name }}
+                  </span>
+                </div>
+
+                <div class="flex items-center space-x-1.5 shrink-0">
+                  <span
+                    :class="[
+                      'text-[9px] font-bold uppercase px-1.5 py-0.2 rounded-md',
+                      job.status === 'running' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400 animate-pulse' : 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
+                    ]"
+                  >
+                    {{ job.status }}
+                  </span>
+
+                  <!-- Cancel button -->
+                  <button
+                    @click="transferStore.cancelTransfer(job.id)"
+                    class="text-red-500 hover:text-red-600 font-bold px-1 cursor-pointer text-[11px]"
+                    title="Cancel Transfer"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
 
-              <div class="flex items-center space-x-1.5 shrink-0">
-                <span
-                  :class="[
-                    'text-[9px] font-bold uppercase px-1.5 py-0.2 rounded-md',
-                    job.status === 'running' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400 animate-pulse' : '',
-                    job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
-                    job.status === 'failed' ? 'bg-red-500/20 text-red-600 dark:text-red-400' : '',
-                    job.status === 'cancelled' ? 'bg-gray-200/60 dark:bg-slate-800 text-gray-500 dark:text-slate-400' : '',
-                    job.status === 'queued' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : '',
-                  ]"
-                >
-                  {{ job.status }}
+              <!-- Progress Bar -->
+              <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                <div
+                  class="h-1.5 transition-all duration-200 rounded-full bg-gradient-to-r from-blue-600 to-sky-400"
+                  :style="{ width: `${calculatePercent(job)}%` }"
+                ></div>
+              </div>
+
+              <!-- Transfer Meta -->
+              <div class="flex items-center justify-between text-[10px] text-gray-500 dark:text-slate-400 font-mono">
+                <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
+                <span v-if="job.status === 'running'">
+                  {{ getLiveSpeed(job) }}
                 </span>
-
-                <!-- Retry for failed / cancelled -->
-                <button
-                  v-if="job.status === 'failed' || job.status === 'cancelled'"
-                  @click="transferStore.retryTransfer(job.id)"
-                  class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
-                  title="Retry Transfer"
-                >
-                  Retry
-                </button>
-
-                <!-- Cancel for running / queued -->
-                <button
-                  v-if="job.status === 'running' || job.status === 'queued'"
-                  @click="transferStore.cancelTransfer(job.id)"
-                  class="text-red-500 hover:text-red-600 font-bold px-1 cursor-pointer text-[11px]"
-                  title="Cancel Transfer"
-                >
-                  ✕
-                </button>
-
-                <!-- Dismiss / Remove single item for completed / failed -->
-                <button
-                  v-else
-                  @click="transferStore.removeJob(job.id)"
-                  class="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 px-1 cursor-pointer text-[10px] transition"
-                  title="Dismiss from list"
-                >
-                  ✕
-                </button>
               </div>
             </div>
+          </div>
 
-            <!-- Progress Bar -->
-            <div class="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-              <div
-                :class="[
-                  'h-1.5 transition-all duration-200 rounded-full',
-                  job.status === 'completed' ? 'bg-emerald-500' : (job.status === 'failed' ? 'bg-red-500' : (job.status === 'cancelled' ? 'bg-gray-400 dark:bg-slate-600' : 'bg-gradient-to-r from-blue-600 to-sky-400'))
-                ]"
-                :style="{ width: `${calculatePercent(job)}%` }"
-              ></div>
+          <!-- Finished / History Section -->
+          <div v-if="finishedJobs.length > 0" class="space-y-2">
+            <div class="text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-100 dark:border-slate-800">
+              <span>History ({{ finishedJobs.length }})</span>
+              <button
+                @click="handleClear"
+                class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-semibold normal-case text-[10px]"
+              >
+                Clear History
+              </button>
             </div>
 
-            <!-- Transfer Meta (Transferred bytes, percent, speed, ETA) -->
-            <div class="flex items-center justify-between text-[10px] text-gray-400 dark:text-slate-500 font-mono">
-              <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
-              <span v-if="job.status === 'running'">
-                {{ getLiveSpeed(job) }}
-              </span>
-            </div>
+            <div
+              v-for="job in finishedJobs"
+              :key="job.id"
+              class="p-2 rounded-xl bg-gray-50/60 dark:bg-slate-900/40 border border-gray-100 dark:border-slate-800 space-y-1.5 group/item"
+            >
+              <div class="flex items-center justify-between text-[11px]">
+                <div class="flex items-center space-x-1.5 truncate max-w-[210px]">
+                  <FbIcon
+                    :name="getTransferTypeIcon(job.transfer_type)"
+                    size="13px"
+                    class="text-gray-400 dark:text-slate-500"
+                  />
+                  <span class="font-medium text-gray-700 dark:text-slate-300 truncate" :title="job.name">
+                    {{ job.name }}
+                  </span>
+                </div>
 
-            <!-- Error message if failed -->
-            <div v-if="job.status === 'failed' && job.error_message" class="text-[10px] text-red-500 dark:text-red-400 truncate">
-              {{ job.error_message }}
+                <div class="flex items-center space-x-1.5 shrink-0">
+                  <span
+                    :class="[
+                      'text-[9px] font-bold uppercase px-1.5 py-0.2 rounded-md',
+                      job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
+                      job.status === 'failed' ? 'bg-red-500/20 text-red-600 dark:text-red-400' : '',
+                      job.status === 'cancelled' ? 'bg-gray-200/60 dark:bg-slate-800 text-gray-500 dark:text-slate-400' : '',
+                    ]"
+                  >
+                    {{ job.status }}
+                  </span>
+
+                  <!-- Retry for failed / cancelled -->
+                  <button
+                    v-if="job.status === 'failed' || job.status === 'cancelled'"
+                    @click="transferStore.retryTransfer(job.id)"
+                    class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
+                    title="Retry Transfer"
+                  >
+                    Retry
+                  </button>
+
+                  <!-- Dismiss single item -->
+                  <button
+                    @click="transferStore.removeJob(job.id)"
+                    class="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 px-1 cursor-pointer text-[10px] transition"
+                    title="Dismiss from history"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <!-- Progress Bar -->
+              <div class="w-full bg-gray-200/60 dark:bg-slate-800 rounded-full h-1 overflow-hidden">
+                <div
+                  :class="[
+                    'h-1 rounded-full',
+                    job.status === 'completed' ? 'bg-emerald-500' : (job.status === 'failed' ? 'bg-red-500' : 'bg-gray-400 dark:bg-slate-600')
+                  ]"
+                  :style="{ width: `${calculatePercent(job)}%` }"
+                ></div>
+              </div>
+
+              <!-- Transfer Meta -->
+              <div class="flex items-center justify-between text-[10px] text-gray-400 dark:text-slate-500 font-mono">
+                <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }}</span>
+                <span>{{ calculatePercent(job) }}%</span>
+              </div>
+
+              <!-- Error message if failed -->
+              <div v-if="job.status === 'failed' && job.error_message" class="text-[10px] text-red-500 dark:text-red-400 truncate">
+                {{ job.error_message }}
+              </div>
             </div>
           </div>
         </div>
@@ -213,11 +273,19 @@ import type { IconName } from '../../utils/icons';
 const transferStore = useTransferStore();
 const uiStore = useUiStore();
 
-const hasFinishedJobs = computed(() => {
-  return transferStore.jobs.some(
+const activeJobs = computed(() => {
+  return transferStore.jobs.filter(
+    (j) => j.status === 'running' || j.status === 'queued'
+  );
+});
+
+const finishedJobs = computed(() => {
+  return transferStore.jobs.filter(
     (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled'
   );
 });
+
+const hasFinishedJobs = computed(() => finishedJobs.value.length > 0);
 
 function calculatePercent(job: TransferJob): number {
   if (job.total_bytes === 0) return job.status === 'completed' ? 100 : 0;

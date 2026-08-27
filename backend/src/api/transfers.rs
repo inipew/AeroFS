@@ -67,6 +67,7 @@ pub async fn create_transfer(
     let job_id = state
         .transfer_manager
         .submit_job(
+            Some(user.id.clone()),
             payload.name,
             payload.transfer_type,
             payload.source_connection_id,
@@ -87,12 +88,15 @@ pub async fn create_transfer(
     ))
 }
 
-/// List all active and historical transfer jobs (scoped by user connection permissions)
+/// List active and undismissed transfer jobs (scoped by user ownership and connection permissions)
 pub async fn list_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let mut jobs = state.transfer_manager.list_jobs().await;
+    let mut jobs = state
+        .transfer_manager
+        .list_jobs(Some(&user.id), user.is_admin, false)
+        .await;
 
     if !user.is_admin {
         // Query authorized connections for this user
@@ -117,22 +121,67 @@ pub async fn list_transfers(
     Ok(Json(jobs))
 }
 
-/// Cancel a transfer job
+/// Cancel an active transfer job (enforcing user ownership)
 pub async fn cancel_transfer(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let cancelled = state.transfer_manager.cancel_job(&id).await;
-    if cancelled {
-        Ok(Json(serde_json::json!({
+    match state
+        .transfer_manager
+        .cancel_job(&id, Some(&user.id), user.is_admin)
+        .await
+    {
+        Ok(true) => Ok(Json(serde_json::json!({
             "success": true,
             "message": format!("Transfer job '{}' cancelled", id),
-        })))
-    } else {
-        Err(AppError::NotFound(format!(
+        }))),
+        Ok(false) => Err(AppError::NotFound(format!(
             "Transfer job '{}' not running or not found",
             id
-        )))
+        ))),
+        Err(e) => Err(AppError::Forbidden(e)),
+    }
+}
+
+/// Dismiss a single transfer job from history (persistent)
+pub async fn dismiss_transfer(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    match state
+        .transfer_manager
+        .dismiss_job(&id, Some(&user.id), user.is_admin)
+        .await
+    {
+        Ok(true) => Ok(Json(serde_json::json!({
+            "success": true,
+            "message": format!("Transfer job '{}' dismissed", id),
+        }))),
+        Ok(false) => Err(AppError::NotFound(format!(
+            "Transfer job '{}' not found",
+            id
+        ))),
+        Err(e) => Err(AppError::Forbidden(e)),
+    }
+}
+
+/// Dismiss all finished transfer jobs for the authenticated user (persistent Clear)
+pub async fn clear_finished_transfers(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<impl IntoResponse, AppError> {
+    match state
+        .transfer_manager
+        .clear_finished_jobs(Some(&user.id), user.is_admin)
+        .await
+    {
+        Ok(cleared) => Ok(Json(serde_json::json!({
+            "success": true,
+            "cleared": cleared,
+            "message": format!("Cleared {} finished transfer(s)", cleared),
+        }))),
+        Err(e) => Err(AppError::Internal(anyhow::anyhow!(e))),
     }
 }
