@@ -19,6 +19,7 @@ export interface PanelState {
   error: string | null;
   history: string[];
   historyIndex: number;
+  initialized: boolean;
 }
 
 export const useWorkspaceStore = defineStore('workspace', () => {
@@ -26,6 +27,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const savedDualPane = localStorage.getItem('fb:isDualPane') === 'true';
   const isDualPane = ref<boolean>(savedDualPane);
   const activePanelId = ref<'left' | 'right'>('left');
+
+  // Request sequencing generation counters to avoid race conditions
+  let leftRequestGen = 0;
+  let rightRequestGen = 0;
 
   const leftConn = localStorage.getItem('fb:left:connectionId') || 'local';
   const leftPath = localStorage.getItem('fb:left:path') || '/';
@@ -48,6 +53,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     error: null,
     history: [leftPath],
     historyIndex: 0,
+    initialized: false,
   });
 
   const rightConn = localStorage.getItem('fb:right:connectionId') || 'local';
@@ -71,7 +77,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     error: null,
     history: [rightPath],
     historyIndex: 0,
+    initialized: false,
   });
+
+  function clonePanelState(source: PanelState, targetId: 'left' | 'right'): PanelState {
+    return {
+      id: targetId,
+      connectionId: source.connectionId,
+      path: source.path,
+      entries: [...source.entries],
+      selectedEntries: [...source.selectedEntries],
+      viewMode: source.viewMode,
+      showHidden: source.showHidden,
+      sortField: source.sortField,
+      sortOrder: source.sortOrder,
+      filterType: source.filterType,
+      searchQuery: source.searchQuery,
+      loading: source.loading,
+      error: source.error,
+      history: [...source.history],
+      historyIndex: source.historyIndex,
+      initialized: source.initialized,
+    };
+  }
 
   function saveState() {
     localStorage.setItem('fb:isDualPane', isDualPane.value ? 'true' : 'false');
@@ -97,23 +125,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function setDualPane(enable: boolean) {
     isDualPane.value = enable;
     saveState();
-    if (enable && rightPanel.value.entries.length === 0) {
+    if (enable && !rightPanel.value.initialized) {
       fetchPanelEntries('right');
     }
   }
 
   function closePanel(panelId: 'left' | 'right') {
-    if (panelId === 'right') {
-      isDualPane.value = false;
-      activePanelId.value = 'left';
-    } else {
-      // If closing left, transfer right panel's location to left panel
-      leftPanel.value.connectionId = rightPanel.value.connectionId;
-      leftPanel.value.path = rightPanel.value.path;
-      leftPanel.value.entries = [...rightPanel.value.entries];
-      isDualPane.value = false;
-      activePanelId.value = 'left';
+    if (panelId === 'left') {
+      // Full promotion: right panel state completely promoted to single left panel
+      leftPanel.value = clonePanelState(rightPanel.value, 'left');
     }
+    isDualPane.value = false;
+    activePanelId.value = 'left';
     saveState();
   }
 
@@ -123,6 +146,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     p.loading = true;
     p.error = null;
 
+    const currentGen = panelId === 'left' ? ++leftRequestGen : ++rightRequestGen;
+
     try {
       const data = await listFilesApi(p.connectionId, {
         path: p.path,
@@ -130,15 +155,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         sort: p.sortField,
         order: p.sortOrder,
       });
+
+      // Discard stale responses from out-of-order network returns
+      if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
+        return;
+      }
+
+      // Reconcile selection: preserve selected items that still exist in the new listing
+      const previousSelection = new Set(p.selectedEntries);
       p.entries = data.entries;
       p.path = data.path;
-      p.selectedEntries = [];
+      p.selectedEntries = data.entries
+        .map((e) => e.path)
+        .filter((entryPath) => previousSelection.has(entryPath));
+
+      p.initialized = true;
       saveState();
     } catch (err: any) {
+      if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
+        return;
+      }
       p.error = err.response?.data?.error?.message || 'Failed to list files';
     } finally {
-      p.loading = false;
+      if (panelId === 'left' ? currentGen === leftRequestGen : currentGen === rightRequestGen) {
+        p.loading = false;
+      }
     }
+  }
+
+  async function refreshPanel(panelId: 'left' | 'right') {
+    await fetchPanelEntries(panelId);
   }
 
   async function toggleShowHidden(panelId?: 'left' | 'right') {
@@ -177,6 +223,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     p.path = basePath;
     p.history = [basePath];
     p.historyIndex = 0;
+    p.initialized = false;
     await fetchPanelEntries(panelId, basePath);
     saveState();
   }
@@ -235,6 +282,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     setDualPane,
     closePanel,
     fetchPanelEntries,
+    refreshPanel,
     toggleShowHidden,
     refreshActive,
     refreshAll,

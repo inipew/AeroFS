@@ -1,7 +1,8 @@
 <template>
   <div
     v-if="uiStore.contextMenu.visible"
-    :style="{ top: `${uiStore.contextMenu.y}px`, left: `${uiStore.contextMenu.x}px` }"
+    ref="menuRef"
+    :style="computedStyle"
     class="fixed z-50 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 shadow-2xl rounded-2xl py-1.5 w-56 text-xs text-gray-700 dark:text-slate-200 select-none animate-in fade-in zoom-in-95 duration-100 font-sans"
     @click.stop
   >
@@ -124,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { apiClient } from '../../api/client';
 import { useFileStore } from '../../stores/fileStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -143,18 +144,66 @@ const workspaceStore = useWorkspaceStore();
 const starredStore = useStarredStore();
 const uiStore = useUiStore();
 
+const menuRef = ref<HTMLElement | null>(null);
+const posTop = ref(0);
+const posLeft = ref(0);
+
+const activeConnectionId = computed(() => {
+  return uiStore.contextMenu.connectionId || fileStore.currentConnectionId;
+});
+
 const isItemStarred = computed(() => {
   if (!uiStore.contextMenu.item) return false;
-  return starredStore.isStarred(fileStore.currentConnectionId, uiStore.contextMenu.item.path);
+  return starredStore.isStarred(activeConnectionId.value, uiStore.contextMenu.item.path);
 });
+
+// Smart Viewport Clamping: Prevents menu from overflowing off-screen
+watch(
+  () => [uiStore.contextMenu.visible, uiStore.contextMenu.x, uiStore.contextMenu.y],
+  async ([visible]) => {
+    if (visible) {
+      posTop.value = uiStore.contextMenu.y;
+      posLeft.value = uiStore.contextMenu.x;
+
+      await nextTick();
+      if (!menuRef.value) return;
+
+      const menuWidth = menuRef.value.offsetWidth || 224;
+      const menuHeight = menuRef.value.offsetHeight || 360;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      let x = uiStore.contextMenu.x;
+      let y = uiStore.contextMenu.y;
+
+      // Adjust horizontal overflow
+      if (x + menuWidth > viewportWidth - 8) {
+        x = Math.max(8, viewportWidth - menuWidth - 8);
+      }
+
+      // Adjust vertical overflow (flip upwards or clamp if near bottom)
+      if (y + menuHeight > viewportHeight - 8) {
+        y = Math.max(8, viewportHeight - menuHeight - 8);
+      }
+
+      posTop.value = y;
+      posLeft.value = x;
+    }
+  }
+);
+
+const computedStyle = computed(() => ({
+  top: `${posTop.value}px`,
+  left: `${posLeft.value}px`,
+}));
 
 async function handleEditInEditor() {
   const item = uiStore.contextMenu.item;
   if (!item) return;
+  const connId = activeConnectionId.value;
   uiStore.closeContextMenu();
 
   try {
-    const connId = fileStore.currentConnectionId;
     const resp = await apiClient.get(`/connections/${connId}/files/content`, {
       params: { path: item.path },
       responseType: 'text',
@@ -167,7 +216,7 @@ async function handleEditInEditor() {
 
 function handleToggleStar() {
   if (uiStore.contextMenu.item) {
-    starredStore.toggleStar(fileStore.currentConnectionId, uiStore.contextMenu.item);
+    starredStore.toggleStar(activeConnectionId.value, uiStore.contextMenu.item);
     uiStore.showToast(isItemStarred.value ? 'Added to Starred' : 'Removed from Starred', 'success');
   }
   uiStore.closeContextMenu();
@@ -176,7 +225,7 @@ function handleToggleStar() {
 function handleShare() {
   if (uiStore.contextMenu.item) {
     emit('openCreateShareDialog', {
-      connectionId: fileStore.currentConnectionId,
+      connectionId: activeConnectionId.value,
       path: uiStore.contextMenu.item.path,
     });
   }
@@ -186,7 +235,7 @@ function handleShare() {
 function handleProperties() {
   if (uiStore.contextMenu.item) {
     emit('openPropertiesDialog', {
-      connectionId: fileStore.currentConnectionId,
+      connectionId: activeConnectionId.value,
       path: uiStore.contextMenu.item.path,
     });
   }
@@ -201,10 +250,13 @@ function isArchive(name: string): boolean {
 function handleOpen() {
   const item = uiStore.contextMenu.item;
   if (!item) return;
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const connId = activeConnectionId.value;
+
   if (item.kind === 'directory') {
-    workspaceStore.navigatePanel(workspaceStore.activePanelId, item.path);
+    workspaceStore.navigatePanel(panelId, item.path);
   } else {
-    const url = getDownloadUrl(fileStore.currentConnectionId, item.path);
+    const url = getDownloadUrl(connId, item.path);
     window.open(url, '_blank');
   }
   uiStore.closeContextMenu();
@@ -220,16 +272,18 @@ function handleCompress() {
 async function handleExtract() {
   const item = uiStore.contextMenu.item;
   if (!item) return;
+  const connId = activeConnectionId.value;
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
   uiStore.closeContextMenu();
 
   try {
     const parentDir = item.path.substring(0, item.path.lastIndexOf('/')) || '/';
-    await apiClient.post(`/connections/${fileStore.currentConnectionId}/archive/extract`, {
+    await apiClient.post(`/connections/${connId}/archive/extract`, {
       archive_path: item.path,
       destination_dir: parentDir,
     });
     uiStore.showToast(`Extracted ${item.name} successfully`, 'success');
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+    await workspaceStore.fetchPanelEntries(panelId);
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
   }

@@ -40,11 +40,15 @@ export const useUiStore = defineStore('ui', () => {
     x: number;
     y: number;
     item: FileEntry | null;
+    connectionId: string;
+    panelId: 'left' | 'right';
   }>({
     visible: false,
     x: 0,
     y: 0,
     item: null,
+    connectionId: 'local',
+    panelId: 'left',
   });
 
   const toasts = ref<ToastMessage[]>([]);
@@ -127,13 +131,20 @@ export const useUiStore = defineStore('ui', () => {
     mediaViewerUrl.value = getDownloadUrl(mediaViewerConnectionId.value, nextItem.path);
   }
 
-  function openContextMenu(e: MouseEvent, item: FileEntry | null = null) {
+  function openContextMenu(
+    e: MouseEvent,
+    item: FileEntry | null = null,
+    connectionId: string = 'local',
+    panelId: 'left' | 'right' = 'left'
+  ) {
     e.preventDefault();
     contextMenu.value = {
       visible: true,
       x: e.clientX,
       y: e.clientY,
       item,
+      connectionId,
+      panelId,
     };
   }
 

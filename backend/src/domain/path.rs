@@ -1,3 +1,4 @@
+use crate::errors::VfsError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use utoipa::ToSchema;
@@ -10,12 +11,28 @@ pub struct VfsPath {
 }
 
 impl VfsPath {
-    pub fn new(connection_id: impl Into<String>, path: impl Into<String>) -> Self {
-        let raw_path = path.into();
-        let normalized = Self::normalize_path_str(&raw_path);
-        Self {
+    /// Safe parser that strictly rejects traversal attempts (`..`), null bytes, or drive prefixes
+    pub fn parse(connection_id: impl Into<String>, path: &str) -> Result<Self, VfsError> {
+        let normalized = Self::validate_and_normalize(path)?;
+        Ok(Self {
             connection_id: connection_id.into(),
             path: normalized,
+        })
+    }
+
+    /// Construct a VfsPath. Strict validation is performed.
+    /// Traversal attempts are preserved as raw paths so VFS adapters strictly reject them.
+    pub fn new(connection_id: impl Into<String>, path: impl Into<String>) -> Self {
+        let raw_path = path.into();
+        match Self::validate_and_normalize(&raw_path) {
+            Ok(normalized) => Self {
+                connection_id: connection_id.into(),
+                path: normalized,
+            },
+            Err(_) => Self {
+                connection_id: connection_id.into(),
+                path: raw_path,
+            },
         }
     }
 
@@ -27,11 +44,16 @@ impl VfsPath {
         }
     }
 
-    /// Normalize path string to standard Unix-style leading slash without trailing slashes (except root "/")
-    pub fn normalize_path_str(p: &str) -> String {
+    /// Validate that path does not contain traversal escapes (`..`), null bytes, or drive prefixes,
+    /// and normalize duplicate slashes and dots.
+    pub fn validate_and_normalize(p: &str) -> Result<String, VfsError> {
+        if p.contains('\0') {
+            return Err(VfsError::InvalidPath("Null byte detected in path".into()));
+        }
+
         let trimmed = p.trim();
         if trimmed.is_empty() || trimmed == "/" || trimmed == "." {
-            return "/".to_string();
+            return Ok("/".to_string());
         }
 
         let mut parts = Vec::new();
@@ -39,17 +61,33 @@ impl VfsPath {
             match segment {
                 "" | "." => continue,
                 ".." => {
-                    parts.pop();
+                    return Err(VfsError::InvalidPath(format!(
+                        "Path traversal '..' is strictly prohibited in '{}'",
+                        p
+                    )));
                 }
-                seg => parts.push(seg),
+                seg => {
+                    if seg.contains(':') {
+                        return Err(VfsError::InvalidPath(format!(
+                            "Drive prefix or invalid colon in path segment '{}'",
+                            seg
+                        )));
+                    }
+                    parts.push(seg);
+                }
             }
         }
 
         if parts.is_empty() {
-            "/".to_string()
+            Ok("/".to_string())
         } else {
-            format!("/{}", parts.join("/"))
+            Ok(format!("/{}", parts.join("/")))
         }
+    }
+
+    /// Normalize path string safely without swallowing traversal errors
+    pub fn normalize_path_str(p: &str) -> String {
+        Self::validate_and_normalize(p).unwrap_or_else(|_| p.to_string())
     }
 
     /// Returns the parent VfsPath if not already root
@@ -105,17 +143,22 @@ mod tests {
 
     #[test]
     fn test_vfs_path_normalization() {
-        let p = VfsPath::new("local", "/a/b/../c/./d/");
-        assert_eq!(p.path, "/a/c/d");
+        let p = VfsPath::parse("local", "/a/b/c/./d/").unwrap();
+        assert_eq!(p.path, "/a/b/c/d");
 
-        let root = VfsPath::new("local", "/../../../");
-        assert_eq!(root.path, "/");
-        assert!(root.is_root());
-
-        let p2 = VfsPath::new("sftp", "docs/report.pdf");
+        let p2 = VfsPath::parse("sftp", "docs/report.pdf").unwrap();
         assert_eq!(p2.path, "/docs/report.pdf");
         assert_eq!(p2.file_name(), Some("report.pdf"));
         assert_eq!(p2.parent().unwrap().path, "/docs");
+    }
+
+    #[test]
+    fn test_vfs_path_traversal_rejection() {
+        assert!(VfsPath::parse("local", "../../etc/passwd").is_err());
+        assert!(VfsPath::parse("local", "/a/b/../../c").is_err());
+        assert!(VfsPath::parse("local", "/../../../").is_err());
+        assert!(VfsPath::parse("local", "C:\\Windows\\System32").is_err());
+        assert!(VfsPath::parse("local", "/test\0null").is_err());
     }
 
     #[test]

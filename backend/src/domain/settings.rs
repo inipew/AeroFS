@@ -1,0 +1,136 @@
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GeneralSettings {
+    pub language: String,
+    pub theme: String,
+    pub default_view: String, // "grid" | "list"
+    pub default_sort: String, // "name" | "size" | "modified"
+    pub sort_direction: String, // "asc" | "desc"
+    pub show_hidden_default: bool,
+    pub confirm_destructive: bool,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            language: "en".to_string(),
+            theme: "dark".to_string(),
+            default_view: "grid".to_string(),
+            default_sort: "name".to_string(),
+            sort_direction: "asc".to_string(),
+            show_hidden_default: false,
+            confirm_destructive: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct FileManagerSettings {
+    pub default_layout: String, // "single" | "split"
+    pub show_breadcrumbs: bool,
+    pub show_file_size: bool,
+    pub show_permissions: bool,
+    pub remember_last_directories: bool,
+}
+
+impl Default for FileManagerSettings {
+    fn default() -> Self {
+        Self {
+            default_layout: "split".to_string(),
+            show_breadcrumbs: true,
+            show_file_size: true,
+            show_permissions: true,
+            remember_last_directories: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TransferSettings {
+    pub max_concurrent_transfers: usize,
+    pub retry_attempts: usize,
+    pub auto_retry: bool,
+    pub show_notifications: bool,
+}
+
+impl Default for TransferSettings {
+    fn default() -> Self {
+        Self {
+            max_concurrent_transfers: 4,
+            retry_attempts: 3,
+            auto_retry: true,
+            show_notifications: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ConnectionSettings {
+    pub connection_timeout_secs: u64,
+    pub health_check_interval_secs: u64,
+    pub auto_reconnect: bool,
+    pub default_local_root: String,
+    pub temp_dir: String,
+}
+
+impl Default for ConnectionSettings {
+    fn default() -> Self {
+        Self {
+            connection_timeout_secs: 60,
+            health_check_interval_secs: 30,
+            auto_reconnect: true,
+            default_local_root: "./storage".to_string(),
+            temp_dir: "./storage/temp".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SecuritySettings {
+    pub allow_symlinks_outside_root: bool,
+    pub confirm_permanent_delete: bool,
+    pub read_only_default: bool,
+    pub session_timeout_secs: u64,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self {
+            allow_symlinks_outside_root: false,
+            confirm_permanent_delete: true,
+            read_only_default: false,
+            session_timeout_secs: 86400,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AdvancedSettings {
+    pub log_level: String, // "info" | "debug" | "trace"
+    pub enable_telemetry: bool,
+    pub enable_tracing: bool,
+    pub directory_cache_ttl_secs: u64,
+}
+
+impl Default for AdvancedSettings {
+    fn default() -> Self {
+        Self {
+            log_level: "info".to_string(),
+            enable_telemetry: true,
+            enable_tracing: true,
+            directory_cache_ttl_secs: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct AppSettings {
+    pub general: GeneralSettings,
+    pub file_manager: FileManagerSettings,
+    pub transfers: TransferSettings,
+    pub connections: ConnectionSettings,
+    pub security: SecuritySettings,
+    pub advanced: AdvancedSettings,
+}

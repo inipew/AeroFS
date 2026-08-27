@@ -114,9 +114,13 @@ impl FileSystem for OpenDalFileSystem {
 
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn stat(&self, path: &VfsPath) -> Result<FileMetadata, VfsError> {
-        // P0 #2: Honest root stat handling without fake timestamps or invented permissions
+        // Honest root stat handling: propagate connection/auth errors, only fallback on NotFound or Unsupported
         if path.is_root() {
-            let real_meta = self.operator.stat("/").await.ok();
+            let real_meta = match self.operator.stat("/").await {
+                Ok(m) => Some(m),
+                Err(e) if e.kind() == ErrorKind::NotFound || e.kind() == ErrorKind::Unsupported => None,
+                Err(e) => return Err(map_opendal_error(e, "Failed to stat root directory")),
+            };
             let size = real_meta.as_ref().map(|m| m.content_length()).unwrap_or(0);
             let modified_at = real_meta.as_ref().and_then(|m| m.last_modified()).map(|dt| {
                 let st: std::time::SystemTime = dt.into();
@@ -242,12 +246,12 @@ impl FileSystem for OpenDalFileSystem {
                     return Ok(());
                 }
 
-                // 3. If non-empty directory, recursively delete children
+                // 3. If non-empty directory, recursively delete children with fail-fast error propagation
                 if let Ok(entries) = self.list(path).await {
                     if !entries.is_empty() {
                         for entry in entries {
                             let child_vfs = VfsPath::new(&self.connection_id, &entry.path);
-                            let _ = Box::pin(self.delete(&child_vfs)).await;
+                            Box::pin(self.delete(&child_vfs)).await?;
                         }
                         if self.operator.delete(&dir_op_path).await.is_ok() {
                             return Ok(());

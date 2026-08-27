@@ -40,40 +40,47 @@
       <!-- Panel Action Buttons & Close Panel (✕) -->
       <div class="flex items-center space-x-1">
         <button
-          @click.stop="workspaceStore.fetchPanelEntries(panelId)"
-          class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+          :disabled="panel.loading"
+          @click.stop="workspaceStore.refreshPanel(panelId)"
+          class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
           title="Reload panel"
         >
-          <FbIcon name="refresh" size="14px" />
+          <FbIcon name="refresh" size="14px" :class="{ 'animate-spin': panel.loading }" />
         </button>
 
         <button
           @click.stop="workspaceStore.closePanel(panelId)"
           class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition cursor-pointer font-bold text-xs"
-          title="Close / Disconnect Panel"
+          title="Close panel"
         >
           ✕
         </button>
       </div>
     </div>
 
+    <!-- Pinned Drop Overlay (Always in Viewport Even When Scrolled Down) -->
+    <div
+      v-if="isDragOver"
+      :class="[
+        'absolute inset-x-4 bottom-4 z-30 bg-blue-500/10 backdrop-blur-xs border-2 border-dashed border-blue-500 rounded-3xl flex items-center justify-center pointer-events-none transition-all duration-150',
+        workspaceStore.isDualPane ? 'top-14' : 'top-4'
+      ]"
+    >
+      <div class="bg-blue-600 text-white px-6 py-3 rounded-2xl shadow-2xl font-bold text-sm flex items-center space-x-2 animate-bounce">
+        <FbIcon name="upload" size="20px" />
+        <span>Drop files to copy into this folder</span>
+      </div>
+    </div>
+
     <!-- Drop Zone & File Listing Content -->
     <div
-      @dragover.prevent="isDragOver = true"
-      @dragleave.prevent="isDragOver = false"
-      @drop.prevent="handleDrop"
+      @dragenter="handleDragEnter"
+      @dragover="handleDragOver"
+      @dragleave="handleDragLeave"
+      @drop.prevent="handleDrop($event)"
+      @contextmenu.self="openBlankContextMenu"
       class="flex-1 overflow-y-auto p-6 relative"
     >
-      <!-- Drop Overlay -->
-      <div
-        v-if="isDragOver"
-        class="absolute inset-4 z-30 bg-blue-500/10 backdrop-blur-xs border-2 border-dashed border-blue-500 rounded-3xl flex items-center justify-center pointer-events-none"
-      >
-        <div class="bg-blue-600 text-white px-6 py-3 rounded-2xl shadow-2xl font-bold text-sm flex items-center space-x-2 animate-bounce">
-          <FbIcon name="upload" size="20px" />
-          <span>Drop files to copy into this folder</span>
-        </div>
-      </div>
 
       <!-- Empty State -->
       <div
@@ -105,6 +112,8 @@
               @click="handleEntryClick($event, folder)"
               @dblclick="workspaceStore.navigatePanel(panelId, folder.path)"
               @contextmenu="openContextMenu($event, folder)"
+              @dragover.stop.prevent="handleDragOver"
+              @drop.stop.prevent="handleDrop($event, folder)"
               :class="[
                 'border rounded-2xl px-4 py-3 flex items-center space-x-3 cursor-pointer transition-all duration-150 select-none shadow-xs group',
                 isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
@@ -273,6 +282,8 @@
               @click="handleEntryClick($event, entry)"
               @dblclick="handleEntryDoubleClick(entry)"
               @contextmenu="openContextMenu($event, entry)"
+              @dragover.stop.prevent="entry.kind === 'directory' ? handleDragOver($event) : null"
+              @drop.stop.prevent="entry.kind === 'directory' ? handleDrop($event, entry) : null"
               :class="[
                 'cursor-pointer transition group',
                 isItemHidden(entry) ? 'opacity-65 hover:opacity-100 italic' : '',
@@ -587,10 +598,47 @@ async function handleEntryDoubleClick(entry: FileEntry) {
   }
 }
 
+let dragEnterCounter = 0;
+
+function handleDragEnter(e: DragEvent) {
+  e.preventDefault();
+  dragEnterCounter++;
+  isDragOver.value = true;
+}
+
+function handleDragLeave(e: DragEvent) {
+  e.preventDefault();
+  dragEnterCounter--;
+  if (dragEnterCounter <= 0) {
+    dragEnterCounter = 0;
+    isDragOver.value = false;
+  }
+}
+
+function handleDragOver(e: DragEvent) {
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'copy';
+  }
+}
+
 function openContextMenu(e: MouseEvent, entry: FileEntry) {
   fileStore.currentConnectionId = panel.value.connectionId;
   fileStore.currentPath = panel.value.path;
-  uiStore.openContextMenu(e, entry);
+  workspaceStore.activePanelId = props.panelId;
+
+  if (!panel.value.selectedEntries.includes(entry.path)) {
+    panel.value.selectedEntries = [entry.path];
+  }
+
+  uiStore.openContextMenu(e, entry, panel.value.connectionId, props.panelId);
+}
+
+function openBlankContextMenu(e: MouseEvent) {
+  fileStore.currentConnectionId = panel.value.connectionId;
+  fileStore.currentPath = panel.value.path;
+  workspaceStore.activePanelId = props.panelId;
+  uiStore.openContextMenu(e, null, panel.value.connectionId, props.panelId);
 }
 
 function handleBatchCompress() {
@@ -619,44 +667,64 @@ function handleDragStart(e: DragEvent, entry: FileEntry) {
     ? panel.value.selectedEntries
     : [entry.path];
 
+  if (!panel.value.selectedEntries.includes(entry.path)) {
+    panel.value.selectedEntries = [entry.path];
+  }
+
   const payload = {
     sourcePanelId: props.panelId,
     sourceConnectionId: panel.value.connectionId,
     paths: selected,
   };
 
-  e.dataTransfer?.setData('application/json', JSON.stringify(payload));
+  const payloadStr = JSON.stringify(payload);
+  e.dataTransfer?.setData('application/json', payloadStr);
+  e.dataTransfer?.setData('text/plain', payloadStr);
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'copyMove';
   }
 }
 
-async function handleDrop(e: DragEvent) {
+async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
+  dragEnterCounter = 0;
   isDragOver.value = false;
-  const rawData = e.dataTransfer?.getData('application/json');
+
+  const rawData = e.dataTransfer?.getData('application/json') || e.dataTransfer?.getData('text/plain');
   if (!rawData) return;
 
   try {
     const data = JSON.parse(rawData);
-    if (data.sourcePanelId !== props.panelId) {
-      for (const filePath of data.paths) {
-        const fileName = filePath.split('/').pop() || 'file';
-        const targetPath = panel.value.path === '/' ? `/${fileName}` : `${panel.value.path}/${fileName}`;
+    if (!data.paths || data.paths.length === 0) return;
 
-        await transferStore.submitTransfer(
-          `Copy ${fileName} to ${panel.value.path}`,
-          'copy',
-          data.sourceConnectionId,
-          filePath,
-          panel.value.connectionId,
-          targetPath
-        );
-      }
-      uiStore.showToast(`Queued ${data.paths.length} transfer(s)`, 'info');
-      setTimeout(() => {
-        workspaceStore.fetchPanelEntries(props.panelId);
-      }, 1000);
+    const targetDir = targetFolder && targetFolder.kind === 'directory'
+      ? targetFolder.path
+      : panel.value.path;
+
+    // Prevent dropping into the exact same folder on the same connection
+    if (data.sourceConnectionId === panel.value.connectionId && data.paths.every((p: string) => {
+      const parent = p.substring(0, p.lastIndexOf('/')) || '/';
+      return parent === targetDir;
+    })) {
+      return;
     }
+
+    for (const filePath of data.paths) {
+      const fileName = filePath.split('/').pop() || 'file';
+      const targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
+
+      await transferStore.submitTransfer(
+        `Copy ${fileName} to ${targetDir}`,
+        'copy',
+        data.sourceConnectionId,
+        filePath,
+        panel.value.connectionId,
+        targetPath
+      );
+    }
+    uiStore.showToast(`Queued ${data.paths.length} transfer(s)`, 'info');
+    setTimeout(() => {
+      workspaceStore.fetchPanelEntries(props.panelId);
+    }, 1000);
   } catch (err: any) {
     uiStore.showToast('Transfer queue failed', 'error');
   }
