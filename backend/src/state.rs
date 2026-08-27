@@ -25,17 +25,6 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
-        // Ensure system_settings table exists
-        let _ = sqlx::query(
-            "CREATE TABLE IF NOT EXISTS system_settings (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )",
-        )
-        .execute(&db)
-        .await;
-
         let master_key = derive_master_key(&config.security.session_secret);
         let providers_map = Arc::new(RwLock::new(HashMap::new()));
         let connection_errors = Arc::new(RwLock::new(HashMap::new()));
@@ -107,6 +96,33 @@ impl AppState {
         )
         .bind(key)
         .bind(value)
+        .bind(&now)
+        .execute(&self.db)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_user_preferences(&self, user_id: &str) -> Option<String> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT preferences_json FROM user_preferences WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or(None);
+
+        row.map(|r| r.0)
+    }
+
+    pub async fn set_user_preferences(&self, user_id: &str, preferences_json: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO user_preferences (user_id, preferences_json, updated_at) VALUES (?, ?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET preferences_json = excluded.preferences_json, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(preferences_json)
         .bind(&now)
         .execute(&self.db)
         .await?;

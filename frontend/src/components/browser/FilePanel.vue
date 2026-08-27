@@ -49,49 +49,10 @@
           <FbIcon name="arrow-up" size="14px" />
         </button>
 
-        <div class="h-4 w-px bg-gray-200 dark:bg-slate-800 mx-0.5"></div>
+        <div class="h-3.5 w-px bg-gray-200 dark:bg-slate-800 mx-1 shrink-0"></div>
 
-        <!-- Custom Connection Switcher Dropdown -->
-        <div ref="connMenuRef" class="relative">
-          <button
-            @click.stop="isConnMenuOpen = !isConnMenuOpen"
-            class="flex items-center space-x-1.5 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:border-blue-500 rounded-xl px-2.5 py-1 text-xs font-semibold text-gray-800 dark:text-slate-100 cursor-pointer shadow-xs transition max-w-[150px] truncate"
-            :title="`Current Storage: ${currentConnName}`"
-          >
-            <FbIcon name="folder" size="13px" class="text-blue-500 shrink-0" />
-            <span class="truncate">{{ currentConnName }}</span>
-            <FbIcon name="chevron-down" size="12px" class="text-gray-400 shrink-0" />
-          </button>
-
-          <!-- Dropdown Popup -->
-          <div
-            v-if="isConnMenuOpen"
-            @click.stop
-            class="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl z-50 py-1 overflow-hidden"
-          >
-            <div class="px-3 py-1.5 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
-              Storage Connections
-            </div>
-            <button
-              v-for="conn in connStore.connections"
-              :key="conn.id"
-              @click="selectConnection(conn.id)"
-              :class="[
-                'w-full text-left px-3 py-1.5 flex items-center justify-between text-xs transition cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-950/40',
-                panel.connectionId === conn.id ? 'text-blue-600 dark:text-blue-400 font-semibold bg-blue-50/50 dark:bg-blue-950/30' : 'text-gray-700 dark:text-slate-300'
-              ]"
-            >
-              <div class="flex items-center space-x-2 truncate">
-                <span class="text-xs">💾</span>
-                <span class="truncate">{{ conn.name }}</span>
-              </div>
-              <span v-if="panel.connectionId === conn.id" class="text-blue-600 dark:text-blue-400 text-xs">✓</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Address Bar Mode vs Normal Path Indicator -->
-        <div v-if="isAddressBar" class="relative flex items-center flex-1 min-w-[140px] max-w-[260px]">
+        <!-- Address Bar Mode vs Interactive Breadcrumb Path -->
+        <div v-if="isAddressBar" class="relative flex items-center flex-1 min-w-0">
           <input
             ref="addressInputRef"
             v-model="addressInput"
@@ -100,7 +61,7 @@
             @keydown.tab.prevent="autocompleteFirstPath"
             @blur="handleAddressBlur"
             type="text"
-            class="w-full bg-white dark:bg-slate-900 border border-blue-500 rounded-lg px-2 py-0.5 text-xs font-mono text-gray-800 dark:text-slate-100 outline-none shadow-xs"
+            class="w-full bg-white dark:bg-[#0f1422] border border-blue-500 rounded-lg px-2.5 py-1 text-xs font-mono text-gray-800 dark:text-slate-100 outline-none shadow-xs"
             placeholder="/path/to/folder"
           />
           <!-- Autocomplete Dropdown -->
@@ -119,17 +80,54 @@
             </div>
           </div>
         </div>
-        <button
+
+        <!-- Interactive Clickable Segmented Breadcrumb Path -->
+        <div
           v-else
-          @click="openAddressBar"
-          class="text-gray-400 dark:text-slate-500 font-mono text-[11px] truncate max-w-[180px] hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 px-1.5 py-0.5 rounded cursor-text transition text-left"
-          :title="`Click to edit path (Ctrl+L): ${panel.path}`"
+          class="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5 space-x-0.5"
         >
-          {{ panel.path }}
-        </button>
+          <!-- Root Button (/) -->
+          <button
+            @click.stop="workspaceStore.navigateTo(panelId, '/')"
+            :class="[
+              'px-1.5 py-0.5 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center space-x-1 shrink-0',
+              panel.path === '/' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-gray-500 dark:text-slate-400'
+            ]"
+            title="Root (/)"
+          >
+            <FbIcon name="folder" size="13px" class="text-blue-500 shrink-0" />
+            <span class="font-semibold text-xs">{{ currentConnName }}</span>
+          </button>
+
+          <!-- Breadcrumb Segments -->
+          <template v-for="(seg, idx) in breadcrumbSegments" :key="seg.path">
+            <span class="text-gray-300 dark:text-slate-600 text-xs shrink-0 select-none">/</span>
+            <button
+              @click.stop="workspaceStore.navigateTo(panelId, seg.path)"
+              :class="[
+                'px-1.5 py-0.5 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs truncate max-w-[120px] sm:max-w-[160px]',
+                idx === breadcrumbSegments.length - 1
+                  ? 'font-bold text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+              ]"
+              :title="seg.path"
+            >
+              {{ seg.name }}
+            </button>
+          </template>
+
+          <!-- Edit Path Pencil / Trigger Button -->
+          <button
+            @click.stop="openAddressBar"
+            class="p-1 rounded-md text-gray-400 hover:text-gray-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0 ml-0.5"
+            title="Edit path directly (Ctrl+L)"
+          >
+            <FbIcon name="rename" size="11px" />
+          </button>
+        </div>
       </div>
 
-      <!-- Panel Action Buttons & Close Panel (✕) -->
+      <!-- Panel Action Buttons: Reload, Swap & Close -->
       <div class="flex items-center space-x-1 shrink-0">
         <button
           :disabled="panel.loading"
@@ -137,7 +135,15 @@
           class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
           title="Reload panel"
         >
-          <FbIcon name="refresh" size="14px" :class="{ 'animate-spin': panel.loading }" />
+          <FbIcon name="refresh" size="13px" :class="{ 'animate-spin': panel.loading }" />
+        </button>
+
+        <button
+          @click.stop="workspaceStore.swapPanels()"
+          class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+          title="Swap Left & Right Panels"
+        >
+          ⇄
         </button>
 
         <button
@@ -182,56 +188,6 @@
       >
         Retry
       </button>
-    </div>
-
-    <!-- Contextual Selection Action Bar -->
-    <div
-      v-if="panel.selectedEntries.length > 0"
-      class="h-10 bg-blue-50 dark:bg-blue-950/40 border-b border-blue-200 dark:border-blue-800/60 px-4 flex items-center justify-between text-xs font-semibold text-blue-900 dark:text-blue-200 shrink-0 select-none animate-in slide-in-from-top-1 duration-150"
-    >
-      <div class="flex items-center space-x-2">
-        <span class="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
-        <span>{{ panel.selectedEntries.length }} selected</span>
-        <span v-if="selectedTotalSize > 0" class="text-[11px] font-mono opacity-75 font-normal">({{ formatBytes(selectedTotalSize) }})</span>
-      </div>
-
-      <div class="flex items-center space-x-1.5 sm:space-x-2">
-        <button
-          @click.stop="handleBatchCompress"
-          class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border border-gray-200 dark:border-slate-700 flex items-center space-x-1 transition cursor-pointer text-xs"
-          title="Compress selected items"
-        >
-          <FbIcon name="archive" size="13px" />
-          <span class="hidden sm:inline">Compress</span>
-        </button>
-
-        <button
-          v-if="panel.selectedEntries.length === 1"
-          @click.stop="handleSingleRename"
-          class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border border-gray-200 dark:border-slate-700 flex items-center space-x-1 transition cursor-pointer text-xs"
-          title="Rename item"
-        >
-          <FbIcon name="rename" size="13px" />
-          <span class="hidden sm:inline">Rename</span>
-        </button>
-
-        <button
-          @click.stop="handleBatchDelete"
-          class="px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/60 flex items-center space-x-1 transition cursor-pointer text-xs"
-          title="Delete selected items"
-        >
-          <FbIcon name="delete" size="13px" />
-          <span class="hidden sm:inline">Delete</span>
-        </button>
-
-        <button
-          @click.stop="panel.selectedEntries = []"
-          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-white transition cursor-pointer text-xs font-bold"
-          title="Clear Selection"
-        >
-          ✕
-        </button>
-      </div>
     </div>
 
     <!-- Drop Zone & File Listing Content (with Touch Pull-To-Refresh on Mobile) -->
@@ -287,6 +243,7 @@
             <div
               v-if="panel.path !== '/' && panel.path !== ''"
               @click="workspaceStore.navigateUp(panelId)"
+              @dblclick="workspaceStore.navigateUp(panelId)"
               class="border rounded-2xl p-2.5 sm:p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-150 select-none shadow-xs group bg-gray-50/70 dark:bg-slate-900/60 border-dashed border-gray-300 dark:border-slate-700 hover:border-blue-500 hover:bg-blue-50/30 text-gray-600 dark:text-slate-300 active:scale-[0.98] min-h-[120px] sm:min-h-[135px]"
               title="Go to parent directory (..)"
             >
@@ -303,6 +260,7 @@
               v-for="folder in displayedFolders"
               :key="folder.path"
               data-entry-item="true"
+              :data-entry-path="folder.path"
               draggable="true"
               @dragstart="handleDragStart($event, folder)"
               @touchstart.passive="handleTouchStart($event, folder)"
@@ -310,7 +268,7 @@
               @touchmove="handleTouchMove"
               @touchcancel="handleTouchEnd"
               @click="handleEntryClick($event, folder)"
-              @dblclick="workspaceStore.navigatePanel(panelId, folder.path)"
+              @dblclick="handleEntryDoubleClick(folder)"
               @contextmenu="openContextMenu($event, folder)"
               @dragover.stop.prevent="handleFolderDragOver($event, folder)"
               @dragleave.stop="handleFolderDragLeave(folder)"
@@ -361,6 +319,7 @@
               v-for="file in displayedFiles"
               :key="file.path"
               data-entry-item="true"
+              :data-entry-path="file.path"
               draggable="true"
               @dragstart="handleDragStart($event, file)"
               @touchstart.passive="handleTouchStart($event, file)"
@@ -506,6 +465,7 @@
             <tr
               v-if="panel.path !== '/' && panel.path !== ''"
               @click="workspaceStore.navigateUp(panelId)"
+              @dblclick="workspaceStore.navigateUp(panelId)"
               class="cursor-pointer transition hover:bg-blue-50/40 dark:hover:bg-slate-800/60 text-gray-700 dark:text-slate-300"
               title="Go to parent directory (..)"
             >
@@ -522,6 +482,7 @@
               v-for="entry in displayedEntries"
               :key="entry.path"
               data-entry-item="true"
+              :data-entry-path="entry.path"
               draggable="true"
               @dragstart="handleDragStart($event, entry)"
               @touchstart.passive="handleTouchStart($event, entry)"
@@ -607,6 +568,67 @@
       </div>
     </div>
 
+    <!-- Floating Contextual Selection Action Bar (Zero Layout Shift!) -->
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="opacity-0 translate-y-3 scale-95"
+      enter-to-class="opacity-100 translate-y-0 scale-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="opacity-100 translate-y-0 scale-100"
+      leave-to-class="opacity-0 translate-y-3 scale-95"
+    >
+      <div
+        v-if="panel.selectedEntries.length > 0"
+        class="absolute bottom-11 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-40 bg-white/95 dark:bg-[#0d1424]/95 backdrop-blur-md border border-blue-500/30 dark:border-blue-500/40 rounded-2xl shadow-2xl px-3.5 py-2 flex items-center justify-between sm:justify-center gap-3 text-xs font-semibold text-gray-800 dark:text-slate-100 select-none pointer-events-auto"
+      >
+        <div class="flex items-center space-x-2 shrink-0">
+          <span class="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
+          <span class="font-bold text-blue-600 dark:text-blue-400">{{ panel.selectedEntries.length }} selected</span>
+          <span v-if="selectedTotalSize > 0" class="text-[11px] font-mono text-gray-500 dark:text-slate-400 font-normal">({{ formatBytes(selectedTotalSize) }})</span>
+        </div>
+
+        <div class="h-4 w-px bg-gray-200 dark:bg-slate-700 hidden sm:block"></div>
+
+        <div class="flex items-center space-x-1 sm:space-x-1.5 shrink-0">
+          <button
+            @click.stop="handleBatchCompress"
+            class="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-blue-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border border-gray-200 dark:border-slate-700 flex items-center space-x-1 transition cursor-pointer text-xs"
+            title="Compress selected items"
+          >
+            <FbIcon name="archive" size="13px" />
+            <span class="hidden sm:inline">Compress</span>
+          </button>
+
+          <button
+            v-if="panel.selectedEntries.length === 1"
+            @click.stop="handleSingleRename"
+            class="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-blue-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border border-gray-200 dark:border-slate-700 flex items-center space-x-1 transition cursor-pointer text-xs"
+            title="Rename item"
+          >
+            <FbIcon name="rename" size="13px" />
+            <span class="hidden sm:inline">Rename</span>
+          </button>
+
+          <button
+            @click.stop="handleBatchDelete"
+            class="px-2.5 py-1.5 rounded-xl bg-red-50 dark:bg-red-950/50 hover:bg-red-100 dark:hover:bg-red-900/60 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/60 flex items-center space-x-1 transition cursor-pointer text-xs"
+            title="Delete selected items"
+          >
+            <FbIcon name="delete" size="13px" />
+            <span class="hidden sm:inline">Delete</span>
+          </button>
+
+          <button
+            @click.stop="panel.selectedEntries = []"
+            class="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs font-bold"
+            title="Clear Selection (Esc)"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    </Transition>
+
     <!-- Information-Dense Panel Status Bar -->
     <div class="h-8 border-t border-gray-200/80 dark:border-slate-800/80 px-4 flex items-center justify-between text-[11px] font-medium text-gray-500 dark:text-slate-400 bg-gray-50/70 dark:bg-slate-900/50 shrink-0 select-none">
       <div class="flex items-center space-x-2 truncate">
@@ -679,16 +701,10 @@ const isAddressBar = ref(false);
 const addressInput = ref('');
 const addressInputRef = ref<HTMLInputElement | null>(null);
 
-const isConnMenuOpen = ref(false);
 const currentConnName = computed(() => {
   const c = connStore.connections.find((x) => x.id === panel.value.connectionId);
   return c ? c.name : panel.value.connectionId;
 });
-
-async function selectConnection(connId: string) {
-  isConnMenuOpen.value = false;
-  await handleConnectionChange(connId);
-}
 
 async function openAddressBar() {
   addressInput.value = panel.value.path;
@@ -707,6 +723,20 @@ async function submitAddressBar() {
     isAddressBar.value = false;
   }
 }
+
+const breadcrumbSegments = computed(() => {
+  const p = panel.value.path || '/';
+  if (p === '/' || p === '') return [];
+  const parts = p.split('/').filter(Boolean);
+  let currentAccum = '';
+  return parts.map((name) => {
+    currentAccum += `/${name}`;
+    return {
+      name,
+      path: currentAccum,
+    };
+  });
+});
 
 const pathSuggestions = computed(() => {
   if (!isAddressBar.value || !addressInput.value) return [];
@@ -823,10 +853,6 @@ function isItemHidden(entry: FileEntry): boolean {
   return entry.is_hidden || entry.name.startsWith('.');
 }
 
-function handleConnectionChange(newConnId: string) {
-  workspaceStore.switchPanelConnection(props.panelId, newConnId, '/');
-}
-
 function isImage(entry: FileEntry): boolean {
   const ext = getFileExt(entry);
   return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico'].includes(ext);
@@ -924,12 +950,51 @@ function toggleEntrySelect(path: string, multi: boolean = false) {
 let lastClickedIndex = -1;
 let touchTimer: any = null;
 let touchMoved = false;
+let lastClickTime = 0;
+let lastClickPath = '';
 
 const panelContentRef = ref<HTMLElement | null>(null);
 const isPullRefreshing = ref(false);
 const pullDistance = ref(0);
 let startY = 0;
 let isPulling = false;
+
+function getGridColumnCount(): number {
+  if (panel.value.viewMode !== 'grid' || !panelContentRef.value) return 1;
+  const items = panelContentRef.value.querySelectorAll('[data-entry-item="true"]');
+  if (!items || items.length < 2) return 1;
+  const firstTop = (items[0] as HTMLElement).offsetTop;
+  let count = 0;
+  for (let i = 0; i < items.length; i++) {
+    if ((items[i] as HTMLElement).offsetTop === firstTop) {
+      count++;
+    } else {
+      break;
+    }
+  }
+  return Math.max(1, count);
+}
+
+function selectAndScrollToIndex(idx: number, isRange: boolean = false) {
+  if (idx < 0 || idx >= displayedEntries.value.length) return;
+  const targetEntry = displayedEntries.value[idx];
+  if (isRange) {
+    const anchor = lastClickedIndex !== -1 ? lastClickedIndex : idx;
+    const start = Math.min(anchor, idx);
+    const end = Math.max(anchor, idx);
+    panel.value.selectedEntries = displayedEntries.value.slice(start, end + 1).map((i: FileEntry) => i.path);
+  } else {
+    panel.value.selectedEntries = [targetEntry.path];
+    lastClickedIndex = idx;
+  }
+
+  nextTick(() => {
+    const el = panelContentRef.value?.querySelector(`[data-entry-path="${CSS.escape(targetEntry.path)}"]`);
+    if (el) {
+      (el as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  });
+}
 
 function onContainerTouchStart(e: TouchEvent) {
   if (!uiStore.isMobile || !panelContentRef.value) return;
@@ -1016,6 +1081,16 @@ function handleEntryClick(e: MouseEvent, entry: FileEntry) {
     return;
   }
 
+  const now = Date.now();
+  const isQuickSecondClick = (now - lastClickTime < 380) && (lastClickPath === entry.path);
+  lastClickTime = now;
+  lastClickPath = entry.path;
+
+  if (isQuickSecondClick && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+    handleEntryDoubleClick(entry);
+    return;
+  }
+
   const currentIndex = displayedEntries.value.findIndex((item: FileEntry) => item.path === entry.path);
 
   if (e.shiftKey && currentIndex !== -1) {
@@ -1060,9 +1135,21 @@ function handleContainerClick(e: MouseEvent) {
   uiStore.closeContextMenu();
 }
 
+let lastOpenTime = 0;
+let lastOpenPath = '';
+
 async function handleEntryDoubleClick(entry: FileEntry) {
+  const now = Date.now();
+  if (now - lastOpenTime < 350 && lastOpenPath === entry.path) {
+    return;
+  }
+  lastOpenTime = now;
+  lastOpenPath = entry.path;
+
   if (entry.kind === 'directory') {
-    workspaceStore.navigatePanel(props.panelId, entry.path);
+    panel.value.selectedEntries = [];
+    lastClickedIndex = -1;
+    await workspaceStore.navigatePanel(props.panelId, entry.path);
     return;
   }
 
@@ -1439,69 +1526,82 @@ function handleKeyDown(e: KeyboardEvent) {
         handleEntryDoubleClick(selected);
       }
     }
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (displayedEntries.value.length === 0) return;
+    if (panel.value.viewMode === 'grid') {
+      if (panel.value.selectedEntries.length === 0) {
+        selectAndScrollToIndex(0, e.shiftKey);
+      } else {
+        const lastSelectedPath = panel.value.selectedEntries[panel.value.selectedEntries.length - 1];
+        const idx = displayedEntries.value.findIndex((i: FileEntry) => i.path === lastSelectedPath);
+        const nextIdx = Math.min(displayedEntries.value.length - 1, (idx >= 0 ? idx : 0) + 1);
+        selectAndScrollToIndex(nextIdx, e.shiftKey);
+      }
+    } else {
+      if (panel.value.selectedEntries.length === 1) {
+        const selected = panel.value.entries.find((i) => i.path === panel.value.selectedEntries[0]);
+        if (selected) {
+          handleEntryDoubleClick(selected);
+        }
+      } else if (panel.value.selectedEntries.length === 0) {
+        selectAndScrollToIndex(0, false);
+      }
+    }
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (displayedEntries.value.length === 0) return;
+    if (panel.value.viewMode === 'grid') {
+      if (panel.value.selectedEntries.length === 0) {
+        selectAndScrollToIndex(displayedEntries.value.length - 1, e.shiftKey);
+      } else {
+        const firstSelectedPath = panel.value.selectedEntries[0];
+        const idx = displayedEntries.value.findIndex((i: FileEntry) => i.path === firstSelectedPath);
+        const prevIdx = Math.max(0, (idx >= 0 ? idx : 0) - 1);
+        selectAndScrollToIndex(prevIdx, e.shiftKey);
+      }
+    } else {
+      if (panel.value.path !== '/' && panel.value.path !== '') {
+        workspaceStore.navigateUp(props.panelId);
+      }
+    }
   } else if (e.key === 'ArrowDown') {
     e.preventDefault();
     if (displayedEntries.value.length === 0) return;
+    const step = panel.value.viewMode === 'grid' ? getGridColumnCount() : 1;
     if (panel.value.selectedEntries.length === 0) {
-      panel.value.selectedEntries = [displayedEntries.value[0].path];
-      lastClickedIndex = 0;
+      selectAndScrollToIndex(0, e.shiftKey);
     } else {
       const lastSelectedPath = panel.value.selectedEntries[panel.value.selectedEntries.length - 1];
       const idx = displayedEntries.value.findIndex((i: FileEntry) => i.path === lastSelectedPath);
-      const nextIdx = Math.min(displayedEntries.value.length - 1, (idx >= 0 ? idx : 0) + 1);
-      if (e.shiftKey) {
-        const start = Math.min(lastClickedIndex !== -1 ? lastClickedIndex : idx, nextIdx);
-        const end = Math.max(lastClickedIndex !== -1 ? lastClickedIndex : idx, nextIdx);
-        panel.value.selectedEntries = displayedEntries.value.slice(start, end + 1).map((i: FileEntry) => i.path);
-      } else {
-        panel.value.selectedEntries = [displayedEntries.value[nextIdx].path];
-        lastClickedIndex = nextIdx;
-      }
+      const nextIdx = Math.min(displayedEntries.value.length - 1, (idx >= 0 ? idx : 0) + step);
+      selectAndScrollToIndex(nextIdx, e.shiftKey);
     }
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
     if (displayedEntries.value.length === 0) return;
+    const step = panel.value.viewMode === 'grid' ? getGridColumnCount() : 1;
     if (panel.value.selectedEntries.length === 0) {
-      panel.value.selectedEntries = [displayedEntries.value[displayedEntries.value.length - 1].path];
-      lastClickedIndex = displayedEntries.value.length - 1;
+      selectAndScrollToIndex(displayedEntries.value.length - 1, e.shiftKey);
     } else {
       const firstSelectedPath = panel.value.selectedEntries[0];
       const idx = displayedEntries.value.findIndex((i: FileEntry) => i.path === firstSelectedPath);
-      const prevIdx = Math.max(0, (idx >= 0 ? idx : 0) - 1);
-      if (e.shiftKey) {
-        const start = Math.min(lastClickedIndex !== -1 ? lastClickedIndex : idx, prevIdx);
-        const end = Math.max(lastClickedIndex !== -1 ? lastClickedIndex : idx, prevIdx);
-        panel.value.selectedEntries = displayedEntries.value.slice(start, end + 1).map((i: FileEntry) => i.path);
-      } else {
-        panel.value.selectedEntries = [displayedEntries.value[prevIdx].path];
-        lastClickedIndex = prevIdx;
-      }
+      const prevIdx = Math.max(0, (idx >= 0 ? idx : 0) - step);
+      selectAndScrollToIndex(prevIdx, e.shiftKey);
     }
   } else if (e.key === 'Backspace') {
     e.preventDefault();
     workspaceStore.navigateUp(props.panelId);
   } else if (e.key === 'Escape') {
     panel.value.selectedEntries = [];
-    isConnMenuOpen.value = false;
-  }
-}
-
-const connMenuRef = ref<HTMLElement | null>(null);
-
-function handleGlobalClick(e: MouseEvent) {
-  const target = e.target as Node;
-  if (isConnMenuOpen.value && connMenuRef.value && !connMenuRef.value.contains(target)) {
-    isConnMenuOpen.value = false;
   }
 }
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown);
-  window.addEventListener('click', handleGlobalClick);
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
-  window.removeEventListener('click', handleGlobalClick);
 });
 </script>

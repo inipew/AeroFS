@@ -205,7 +205,7 @@ fn handle_config_command(cmd: ConfigCommand, config_path: Option<&Path>, json_ou
     Ok(())
 }
 
-async fn handle_doctor_command(_args: DoctorArgs, config_path: Option<&Path>, json_output: bool) -> anyhow::Result<()> {
+async fn handle_doctor_command(args: DoctorArgs, config_path: Option<&Path>, json_output: bool) -> anyhow::Result<()> {
     let config_res = AppConfig::load(config_path);
     let mut checks = Vec::new();
     let mut all_ok = true;
@@ -224,14 +224,17 @@ async fn handle_doctor_command(_args: DoctorArgs, config_path: Option<&Path>, js
     // Check 2: Storage root accessibility
     if config.filesystem.default_local_root.exists() {
         checks.push(("Storage root directory exists", true, config.filesystem.default_local_root.display().to_string()));
-    } else {
+    } else if args.repair {
         match std::fs::create_dir_all(&config.filesystem.default_local_root) {
-            Ok(_) => checks.push(("Storage root directory created", true, config.filesystem.default_local_root.display().to_string())),
+            Ok(_) => checks.push(("Storage root directory repaired", true, config.filesystem.default_local_root.display().to_string())),
             Err(e) => {
                 all_ok = false;
-                checks.push(("Storage root directory access", false, format!("Cannot create: {}", e)));
+                checks.push(("Storage root directory access", false, format!("Repair failed: {}", e)));
             }
         }
+    } else {
+        all_ok = false;
+        checks.push(("Storage root directory exists", false, format!("Directory not found: {} (Run with --repair to create)", config.filesystem.default_local_root.display())));
     }
 
     // Check 3: Database & PRAGMA integrity
@@ -260,11 +263,13 @@ async fn handle_doctor_command(_args: DoctorArgs, config_path: Option<&Path>, js
     // Check 4: Session secret
     let secret = &config.security.session_secret;
     if secret == "dev_secret_change_in_production_32_chars_min" {
-        checks.push(("Session secret security", true, "Using development default secret (Change for production)".to_string()));
+        checks.push(("Session secret security", false, "Using development default secret (Set AEROFS_SESSION_SECRET for production)".to_string()));
+        all_ok = false;
     } else if secret.len() >= 32 {
         checks.push(("Session secret security", true, "Strong session secret configured (>= 32 chars)".to_string()));
     } else {
         checks.push(("Session secret security", false, "Session secret is shorter than recommended 32 characters".to_string()));
+        all_ok = false;
     }
 
     if json_output {
@@ -278,7 +283,7 @@ async fn handle_doctor_command(_args: DoctorArgs, config_path: Option<&Path>, js
             let symbol = if ok { "✓" } else { "✗" };
             println!("  {} {}: {}", symbol, name, details);
         }
-        println!("\nStatus: {}\n", if all_ok { "All systems operational" } else { "Issues detected" });
+        println!("\nStatus: {}\n", if all_ok { "All systems operational" } else { "Action items detected" });
     }
 
     Ok(())
@@ -293,6 +298,9 @@ async fn handle_db_command(cmd: DbCommand, config_path: Option<&Path>, json_outp
             let count_users: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users").fetch_one(&pool).await?;
             let count_connections: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM connections").fetch_one(&pool).await?;
             let count_transfers: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transfer_jobs").fetch_one(&pool).await?;
+            let journal_mode_row: (String,) = sqlx::query_as("PRAGMA journal_mode;").fetch_one(&pool).await?;
+            let foreign_keys_row: (i64,) = sqlx::query_as("PRAGMA foreign_keys;").fetch_one(&pool).await?;
+            let fk_status = if foreign_keys_row.0 == 1 { "Enabled (1)" } else { "Disabled (0)" };
 
             if json_output {
                 println!("{}", json!({
@@ -300,16 +308,16 @@ async fn handle_db_command(cmd: DbCommand, config_path: Option<&Path>, json_outp
                     "users_count": count_users.0,
                     "connections_count": count_connections.0,
                     "transfer_jobs_count": count_transfers.0,
-                    "journal_mode": "WAL",
-                    "foreign_keys": "ON"
+                    "journal_mode": journal_mode_row.0.to_uppercase(),
+                    "foreign_keys": foreign_keys_row.0 == 1
                 }));
             } else {
                 println!("Database Status ({}):", config.database.url);
                 println!("  • Users: {}", count_users.0);
                 println!("  • Storage Connections: {}", count_connections.0);
                 println!("  • Total Transfer Jobs: {}", count_transfers.0);
-                println!("  • Mode: WAL (Write-Ahead Logging)");
-                println!("  • Foreign Keys: Enabled");
+                println!("  • Mode: {} (Actual PRAGMA)", journal_mode_row.0.to_uppercase());
+                println!("  • Foreign Keys: {} (Actual PRAGMA)", fk_status);
             }
         }
         DbAction::IntegrityCheck => {

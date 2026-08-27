@@ -270,3 +270,88 @@ url = "sqlite://{}?mode=rwc"
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
 }
+
+#[tokio::test]
+async fn test_user_preferences_api() {
+    let temp = tempdir().unwrap();
+    let db_path = temp.path().join("prefs_test.db");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&storage_dir).unwrap();
+
+    let mut config = AppConfig::default();
+    config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    config.filesystem.default_local_root = storage_dir;
+
+    let db = init_db(&config.database.url).await.unwrap();
+    let state = AppState::new_with_db(config, db).await;
+    let app = create_router(state.clone());
+
+    // 1. Login as admin
+    let login_req = Request::builder()
+        .uri("/api/v1/auth/login")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": "admin", "password": "admin12345" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(login_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cookie = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+
+    // 2. GET /api/v1/user/preferences -> returns defaults
+    let req = Request::builder()
+        .uri("/api/v1/user/preferences")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. PUT /api/v1/user/preferences -> updates preferences
+    let update_req = Request::builder()
+        .uri("/api/v1/user/preferences")
+        .method("PUT")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "language": "id",
+                "theme": "light",
+                "default_view": "list",
+                "default_sort": "size",
+                "sort_direction": "desc",
+                "show_hidden": true,
+                "confirm_destructive": false,
+                "default_layout": "single",
+                "show_breadcrumbs": true,
+                "show_file_size": true,
+                "show_permissions": true,
+                "remember_last_directories": false
+            }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(update_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 4. GET /api/v1/user/preferences -> verifies persisted values
+    let req = Request::builder()
+        .uri("/api/v1/user/preferences")
+        .method("GET")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(val["theme"], "light");
+    assert_eq!(val["default_view"], "list");
+    assert_eq!(val["language"], "id");
+    assert_eq!(val["default_layout"], "single");
+}

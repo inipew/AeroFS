@@ -347,11 +347,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       saveState();
       return { ok: true, path: data.path };
     } catch (err: any) {
-      if (err.name === 'CanceledError' || err.name === 'AbortError' || err.code === 'ERR_CANCELED') {
-        return { ok: false, error: 'Aborted' };
+      if (
+        err.name === 'CanceledError' ||
+        err.name === 'AbortError' ||
+        err.code === 'ERR_CANCELED' ||
+        err.message === 'canceled' ||
+        err.message === 'canceled'
+      ) {
+        return { ok: false, error: 'Aborted', aborted: true } as any;
       }
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
-        return { ok: false };
+        return { ok: false, error: 'Stale response discarded', aborted: true } as any;
       }
       p.runtime.status = 'error';
       p.runtime.error = err.response?.data?.error?.message || 'Failed to list files';
@@ -368,8 +374,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const res = await fetchPanelEntries(panelId, targetPath);
 
     if (!res.ok) {
-      const uiStore = useUiStore();
-      uiStore.showToast(res.error || 'Failed to open directory', 'error');
+      if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
+        const uiStore = useUiStore();
+        uiStore.showToast(res.error || 'Failed to open directory', 'error');
+      }
       return res;
     }
 
@@ -410,7 +418,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (res.ok) {
         p.navigation.historyIndex = targetIdx;
         saveState();
-      } else {
+      } else if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
         const uiStore = useUiStore();
         uiStore.showToast(res.error || `Failed to navigate back to ${targetPath}`, 'error');
       }
@@ -426,7 +434,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (res.ok) {
         p.navigation.historyIndex = targetIdx;
         saveState();
-      } else {
+      } else if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
         const uiStore = useUiStore();
         uiStore.showToast(res.error || `Failed to navigate forward to ${targetPath}`, 'error');
       }

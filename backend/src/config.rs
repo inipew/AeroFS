@@ -162,7 +162,7 @@ impl AppConfig {
         }
 
         // 3. Override with Environment Variables
-        config.apply_env_overrides();
+        config.apply_env_overrides()?;
 
         // 4. Validate configuration
         config.validate()?;
@@ -170,16 +170,17 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Apply environment variables
-    pub fn apply_env_overrides(&mut self) {
-        if let Ok(host) = env::var("AEROFS_HOST").or_else(|_| env::var("WFM_HOST")).or_else(|_| env::var("HOST")) {
+    /// Apply environment variables with validation
+    pub fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
+        if let Ok(host) = env::var("AEROFS_HOST").or_else(|_| env::var("WFM_HOST")) {
             self.server.host = host;
         }
 
-        if let Ok(port_str) = env::var("AEROFS_PORT").or_else(|_| env::var("WFM_PORT")).or_else(|_| env::var("PORT")) {
-            if let Ok(port) = port_str.parse::<u16>() {
-                self.server.port = port;
-            }
+        if let Ok(port_str) = env::var("AEROFS_PORT").or_else(|_| env::var("WFM_PORT")) {
+            let port = port_str.parse::<u16>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_PORT: '{}'", port_str))
+            })?;
+            self.server.port = port;
         }
 
         if let Ok(root) = env::var("AEROFS_ROOT_PATH").or_else(|_| env::var("WFM_ROOT_PATH")).or_else(|_| env::var("WFM_LOCAL_ROOT")) {
@@ -190,7 +191,15 @@ impl AppConfig {
             self.filesystem.temp_dir = Some(PathBuf::from(temp));
         }
 
-        if let Ok(db_url) = env::var("AEROFS_DATABASE_URL").or_else(|_| env::var("WFM_DATABASE_URL")).or_else(|_| env::var("DATABASE_URL")) {
+        if let Ok(hidden) = env::var("AEROFS_SHOW_HIDDEN") {
+            self.filesystem.show_hidden_default = hidden == "1" || hidden.to_lowercase() == "true";
+        }
+
+        if let Ok(ro) = env::var("AEROFS_READ_ONLY") {
+            self.filesystem.read_only_default = ro == "1" || ro.to_lowercase() == "true";
+        }
+
+        if let Ok(db_url) = env::var("AEROFS_DATABASE_URL").or_else(|_| env::var("WFM_DATABASE_URL")) {
             self.database.url = db_url;
         }
 
@@ -198,21 +207,66 @@ impl AppConfig {
             self.security.allow_symlinks_outside_root = symlinks == "1" || symlinks.to_lowercase() == "true";
         }
 
+        if let Ok(private_net) = env::var("AEROFS_ALLOW_PRIVATE_NETWORKS") {
+            self.security.allow_private_network_connections = private_net == "1" || private_net.to_lowercase() == "true";
+        }
+
         if let Ok(secret) = env::var("AEROFS_SESSION_SECRET").or_else(|_| env::var("WFM_SESSION_SECRET")) {
             self.security.session_secret = secret;
         }
 
-        if let Ok(max_upload_mb) = env::var("AEROFS_MAX_UPLOAD_MB").or_else(|_| env::var("WFM_MAX_UPLOAD_MB")) {
-            if let Ok(mb) = max_upload_mb.parse::<u64>() {
-                self.limits.max_upload_size = mb * 1024 * 1024;
-            }
+        if let Ok(ttl_str) = env::var("AEROFS_SESSION_TTL") {
+            let ttl = ttl_str.parse::<u64>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_SESSION_TTL: '{}'", ttl_str))
+            })?;
+            self.security.session_ttl_secs = ttl;
         }
 
-        if let Ok(max_transfers) = env::var("AEROFS_MAX_TRANSFERS") {
-            if let Ok(n) = max_transfers.parse::<usize>() {
-                self.limits.max_concurrent_transfers = n;
-            }
+        if let Ok(max_upload_mb_str) = env::var("AEROFS_MAX_UPLOAD_MB").or_else(|_| env::var("WFM_MAX_UPLOAD_MB")) {
+            let mb = max_upload_mb_str.parse::<u64>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_UPLOAD_MB: '{}'", max_upload_mb_str))
+            })?;
+            let bytes = mb.checked_mul(1024).and_then(|v| v.checked_mul(1024)).ok_or_else(|| {
+                ConfigError::Validation("AEROFS_MAX_UPLOAD_MB value causes integer overflow".to_string())
+            })?;
+            self.limits.max_upload_size = bytes;
         }
+
+        if let Ok(max_edit_mb_str) = env::var("AEROFS_MAX_EDITABLE_MB") {
+            let mb = max_edit_mb_str.parse::<u64>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_EDITABLE_MB: '{}'", max_edit_mb_str))
+            })?;
+            let bytes = mb.checked_mul(1024).and_then(|v| v.checked_mul(1024)).ok_or_else(|| {
+                ConfigError::Validation("AEROFS_MAX_EDITABLE_MB value causes integer overflow".to_string())
+            })?;
+            self.limits.max_editable_size = bytes;
+        }
+
+        if let Ok(max_prev_mb_str) = env::var("AEROFS_MAX_PREVIEW_MB") {
+            let mb = max_prev_mb_str.parse::<u64>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_PREVIEW_MB: '{}'", max_prev_mb_str))
+            })?;
+            let bytes = mb.checked_mul(1024).and_then(|v| v.checked_mul(1024)).ok_or_else(|| {
+                ConfigError::Validation("AEROFS_MAX_PREVIEW_MB value causes integer overflow".to_string())
+            })?;
+            self.limits.max_preview_size = bytes;
+        }
+
+        if let Ok(max_entries_str) = env::var("AEROFS_MAX_DIR_ENTRIES") {
+            let entries = max_entries_str.parse::<usize>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_DIR_ENTRIES: '{}'", max_entries_str))
+            })?;
+            self.limits.max_directory_entries = entries;
+        }
+
+        if let Ok(max_transfers_str) = env::var("AEROFS_MAX_TRANSFERS") {
+            let n = max_transfers_str.parse::<usize>().map_err(|_| {
+                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_TRANSFERS: '{}'", max_transfers_str))
+            })?;
+            self.limits.max_concurrent_transfers = n;
+        }
+
+        Ok(())
     }
 
     /// Validate sanity of the configuration

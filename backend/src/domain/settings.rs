@@ -125,6 +125,66 @@ impl Default for AdvancedSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct UserPreferences {
+    pub language: String,
+    pub theme: String,
+    pub default_view: String, // "grid" | "list"
+    pub default_sort: String, // "name" | "size" | "modified"
+    pub sort_direction: String, // "asc" | "desc"
+    pub show_hidden: bool,
+    pub confirm_destructive: bool,
+    pub default_layout: String, // "single" | "split"
+    pub show_breadcrumbs: bool,
+    pub show_file_size: bool,
+    pub show_permissions: bool,
+    pub remember_last_directories: bool,
+}
+
+impl Default for UserPreferences {
+    fn default() -> Self {
+        Self {
+            language: "en".to_string(),
+            theme: "dark".to_string(),
+            default_view: "grid".to_string(),
+            default_sort: "name".to_string(),
+            sort_direction: "asc".to_string(),
+            show_hidden: false,
+            confirm_destructive: true,
+            default_layout: "split".to_string(),
+            show_breadcrumbs: true,
+            show_file_size: true,
+            show_permissions: true,
+            remember_last_directories: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct SystemSettings {
+    pub default_local_root: String,
+    pub temp_dir: String,
+    pub read_only_default: bool,
+    pub max_concurrent_transfers: usize,
+    pub retry_attempts: usize,
+    pub connection_timeout_secs: u64,
+    pub allow_symlinks_outside_root: bool,
+}
+
+impl Default for SystemSettings {
+    fn default() -> Self {
+        Self {
+            default_local_root: "./storage".to_string(),
+            temp_dir: "./storage/temp".to_string(),
+            read_only_default: false,
+            max_concurrent_transfers: 4,
+            retry_attempts: 3,
+            connection_timeout_secs: 60,
+            allow_symlinks_outside_root: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct AppSettings {
     pub general: GeneralSettings,

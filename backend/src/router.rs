@@ -118,6 +118,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/shares", share_routes)
         .nest("/trash", trash_routes)
         .route("/settings", get(crate::api::settings::get_settings).put(crate::api::settings::update_settings))
+        .route("/user/preferences", get(crate::api::preferences::get_user_preferences).put(crate::api::preferences::update_user_preferences))
         .route("/audit-logs", get(audit::list_audit_logs));
 
     Router::new()

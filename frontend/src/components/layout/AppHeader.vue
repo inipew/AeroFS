@@ -27,21 +27,6 @@
         <FbIcon name="chevron-left" size="18px" />
       </button>
 
-      <!-- Dual Pane Active Badge (Shown when dual-pane is enabled) -->
-      <button
-        v-if="workspaceStore.isDualPane && !uiStore.isMobile"
-        @click="togglePanelFocus"
-        :class="[
-          'px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition cursor-pointer shrink-0 flex items-center space-x-1 ring-1 mr-1',
-          workspaceStore.activePanelId === 'left'
-            ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 ring-blue-500/30'
-            : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 ring-emerald-500/30'
-        ]"
-        :title="`Active Pane: ${workspaceStore.activePanelId.toUpperCase()} (Click to toggle)`"
-      >
-        <span>{{ workspaceStore.activePanelId === 'left' ? 'Left' : 'Right' }}</span>
-      </button>
-
       <!-- INLINE PATH EDITING BAR -->
       <div v-if="isEditingPath" class="flex items-center space-x-1 flex-1 min-w-0">
         <form @submit.prevent="submitPath" class="flex-1 flex items-center min-w-0">
@@ -700,10 +685,6 @@ function handleSelectSource(connectionId: string) {
 function toggleMobileViewMode() {
   activePanel.value.viewMode = activePanel.value.viewMode === 'grid' ? 'list' : 'grid';
   workspaceStore.saveState();
-}
-
-function togglePanelFocus() {
-  workspaceStore.activePanelId = workspaceStore.activePanelId === 'left' ? 'right' : 'left';
 }
 
 function startPathEditing() {
