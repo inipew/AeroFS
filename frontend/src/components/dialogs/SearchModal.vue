@@ -246,14 +246,15 @@ async function performSearch() {
       const allResults: SearchResultItem[] = [];
       for (const conn of connStore.connections) {
         try {
-          const resp = await apiClient.get<FileEntry[]>(`/connections/${conn.id}/search`, {
+          const resp = await apiClient.get<any>(`/connections/${conn.id}/search`, {
             params: {
               path: '/',
               query: query.value.trim(),
               regex: isRegex.value,
             },
           });
-          for (const item of resp.data) {
+          const items: FileEntry[] = Array.isArray(resp.data) ? resp.data : resp.data.results || [];
+          for (const item of items) {
             allResults.push({ connectionId: conn.id, entry: item });
           }
         } catch {
@@ -263,14 +264,15 @@ async function performSearch() {
       results.value = allResults;
     } else {
       const searchPath = scope.value === 'current_dir' ? activeP.location.path : '/';
-      const resp = await apiClient.get<FileEntry[]>(`/connections/${activeP.location.connectionId}/search`, {
+      const resp = await apiClient.get<any>(`/connections/${activeP.location.connectionId}/search`, {
         params: {
           path: searchPath,
           query: query.value.trim(),
           regex: isRegex.value,
         },
       });
-      results.value = resp.data.map((item) => ({
+      const items: FileEntry[] = Array.isArray(resp.data) ? resp.data : resp.data.results || [];
+      results.value = items.map((item) => ({
         connectionId: activeP.location.connectionId,
         entry: item,
       }));

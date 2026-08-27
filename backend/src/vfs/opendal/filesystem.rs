@@ -178,6 +178,10 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path, offset = %offset, length = %length))]
     async fn read_range(&self, path: &VfsPath, offset: u64, length: u64) -> Result<AsyncReadBox, VfsError> {
         let op_path = self.to_operator_path(path)?;
+        if length == 0 {
+            return Ok(Box::new(std::io::Cursor::new(Vec::new())));
+        }
+
         let meta = self
             .operator
             .stat(&op_path)

@@ -16,6 +16,7 @@ pub struct SearchQuery {
     pub query: String,
     pub regex: Option<bool>,
     pub max_depth: Option<usize>,
+    pub limit: Option<usize>,
 }
 
 /// Recursive search files in a connection
@@ -33,16 +34,18 @@ pub async fn search_files(
     let start_path = params.path.unwrap_or_else(|| "/".to_string());
     let is_regex = params.regex.unwrap_or(false);
     let max_depth = params.max_depth.unwrap_or(10);
+    let limit = params.limit.unwrap_or(500).min(2000);
 
-    let results = search_recursive(
+    let output = search_recursive(
         &provider,
         &connection_id,
         &start_path,
         &params.query,
         is_regex,
         max_depth,
+        limit,
     )
     .await?;
 
-    Ok(Json(results))
+    Ok(Json(output))
 }

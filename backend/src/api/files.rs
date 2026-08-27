@@ -213,16 +213,29 @@ pub async fn get_file_content(
         }
     }
 
-    // Handle HTTP Range header for seeking in video/audio players
+    // Handle HTTP Range header for seeking in video/audio players (RFC 7233 compliant)
     if let Some(range_val) = req_headers.get(header::RANGE).and_then(|r| r.to_str().ok()) {
         if let Some(range_spec) = range_val.strip_prefix("bytes=") {
             let parts: Vec<&str> = range_spec.split('-').collect();
             if parts.len() == 2 {
-                let start: u64 = parts[0].parse().unwrap_or(0);
-                let end: u64 = if parts[1].is_empty() {
-                    file_size.saturating_sub(1)
+                let (start, end) = if parts[0].is_empty() {
+                    // Suffix range: bytes=-500 (last 500 bytes)
+                    let suffix_len: u64 = parts[1].parse().unwrap_or(0);
+                    if suffix_len == 0 {
+                        (0, 0)
+                    } else {
+                        let s = file_size.saturating_sub(suffix_len);
+                        (s, file_size.saturating_sub(1))
+                    }
+                } else if parts[1].is_empty() {
+                    // Open-ended range: bytes=500- (from 500 to EOF)
+                    let s: u64 = parts[0].parse().unwrap_or(0);
+                    (s, file_size.saturating_sub(1))
                 } else {
-                    parts[1].parse().unwrap_or(file_size.saturating_sub(1)).min(file_size.saturating_sub(1))
+                    // Bounded range: bytes=100-200
+                    let s: u64 = parts[0].parse().unwrap_or(0);
+                    let e: u64 = parts[1].parse().unwrap_or(file_size.saturating_sub(1)).min(file_size.saturating_sub(1));
+                    (s, e)
                 };
 
                 if start <= end && start < file_size {
@@ -238,6 +251,15 @@ pub async fn get_file_content(
                         format!("bytes {}-{}/{}", start, end, file_size).parse().unwrap(),
                     );
                     return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body));
+                } else {
+                    // 416 Range Not Satisfiable
+                    let mut unsat_headers = HeaderMap::new();
+                    unsat_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+                    unsat_headers.insert(
+                        header::CONTENT_RANGE,
+                        format!("bytes */{}", file_size).parse().unwrap(),
+                    );
+                    return Ok((StatusCode::RANGE_NOT_SATISFIABLE, unsat_headers, Body::empty()));
                 }
             }
         }
@@ -382,6 +404,20 @@ pub async fn create_directory(
     ))
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DeleteResultItem {
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DeleteResponse {
+    pub success: bool,
+    pub succeeded: Vec<String>,
+    pub failed: Vec<DeleteResultItem>,
+    pub message: String,
+}
+
 /// Delete one or more files / directories
 pub async fn delete_files(
     State(state): State<AppState>,
@@ -396,14 +432,32 @@ pub async fn delete_files(
         .await
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
 
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
     for p in &payload.paths {
         let vfs_path = VfsPath::new(&connection_id, p);
-        provider.delete(&vfs_path).await?;
+        match provider.delete(&vfs_path).await {
+            Ok(_) => succeeded.push(p.clone()),
+            Err(e) => failed.push(DeleteResultItem {
+                path: p.clone(),
+                error: e.to_string(),
+            }),
+        }
     }
 
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: format!("Deleted {} item(s)", payload.paths.len()),
+    let success = failed.is_empty();
+    let message = if success {
+        format!("Deleted {} item(s)", succeeded.len())
+    } else {
+        format!("Deleted {} item(s), {} failed", succeeded.len(), failed.len())
+    };
+
+    Ok(Json(DeleteResponse {
+        success,
+        succeeded,
+        failed,
+        message,
     }))
 }
 

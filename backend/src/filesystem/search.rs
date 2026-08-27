@@ -2,8 +2,17 @@ use crate::domain::{FileEntry, FileKind, VfsPath};
 use crate::errors::VfsError;
 use crate::vfs::FileSystem;
 use regex::Regex;
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct SearchOutput {
+    pub results: Vec<FileEntry>,
+    pub truncated: bool,
+    pub total_scanned: usize,
+    pub errors: Vec<String>,
+}
 
 pub async fn search_recursive(
     provider: &Arc<dyn FileSystem>,
@@ -12,8 +21,11 @@ pub async fn search_recursive(
     query: &str,
     is_regex: bool,
     max_depth: usize,
-) -> Result<Vec<FileEntry>, VfsError> {
+    limit: usize,
+) -> Result<SearchOutput, VfsError> {
     let mut matches = Vec::new();
+    let mut errors = Vec::new();
+    let mut total_scanned = 0;
     let mut queue: VecDeque<(VfsPath, usize)> = VecDeque::new();
 
     let root_vfs = VfsPath::new(connection_id, start_path);
@@ -25,6 +37,7 @@ pub async fn search_recursive(
         None
     };
     let query_lower = query.to_lowercase();
+    let mut truncated = false;
 
     while let Some((current_dir, depth)) = queue.pop_front() {
         if depth > max_depth {
@@ -33,8 +46,18 @@ pub async fn search_recursive(
 
         let entries = match provider.list(&current_dir).await {
             Ok(e) => e,
-            Err(_) => continue, // Skip unreadable directories
+            Err(e) => {
+                match e {
+                    VfsError::ConnectionError(_) | VfsError::PermissionDenied(_) => {
+                        errors.push(format!("{}: {}", current_dir.path, e));
+                    }
+                    _ => {}
+                }
+                continue;
+            }
         };
+
+        total_scanned += entries.len();
 
         for entry in entries {
             let is_match = if let Some(re) = &regex_matcher {
@@ -45,6 +68,10 @@ pub async fn search_recursive(
 
             if is_match {
                 matches.push(entry.clone());
+                if matches.len() >= limit {
+                    truncated = true;
+                    break;
+                }
             }
 
             // If directory, enqueue child search
@@ -53,7 +80,16 @@ pub async fn search_recursive(
                 queue.push_back((child_vfs, depth + 1));
             }
         }
+
+        if truncated {
+            break;
+        }
     }
 
-    Ok(matches)
+    Ok(SearchOutput {
+        results: matches,
+        truncated,
+        total_scanned,
+        errors,
+    })
 }

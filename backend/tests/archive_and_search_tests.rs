@@ -67,8 +67,8 @@ async fn test_archive_compress_extract_and_search() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let results: Value = serde_json::from_slice(&body).unwrap();
-    let results_arr = results.as_array().unwrap();
+    let res_obj: Value = serde_json::from_slice(&body).unwrap();
+    let results_arr = res_obj["results"].as_array().unwrap();
     assert_eq!(results_arr.len(), 1);
     assert_eq!(results_arr[0]["name"], "report.txt");
 
@@ -171,8 +171,8 @@ async fn test_archive_compress_extract_and_search() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let results: Value = serde_json::from_slice(&body).unwrap();
-    let results_arr = results.as_array().unwrap();
+    let res_obj: Value = serde_json::from_slice(&body).unwrap();
+    let results_arr = res_obj["results"].as_array().unwrap();
     assert!(!results_arr.is_empty());
 
     // 5. Query Audit Logs (Admin only)
