@@ -273,7 +273,7 @@
         <p class="text-xs text-gray-400 dark:text-slate-500 mt-1">Upload files or create new folders to get started</p>
       </div>
 
-      <!-- MOSAIC / GRID VIEW (Default matching screenshot) -->
+      <!-- MOSAIC / GRID VIEW (Explorer / Dolphin / Filestash Aesthetic) -->
       <div v-if="panel.viewMode === 'grid'" class="space-y-8">
         <!-- 1. FOLDERS SECTION -->
         <div v-if="displayedFolders.length > 0 || (panel.path !== '/' && panel.path !== '')">
@@ -282,18 +282,23 @@
             <span class="text-[10px] font-mono text-gray-400 font-normal">({{ displayedFolders.length }})</span>
           </h2>
 
-          <div class="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 sm:gap-3">
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4.5">
             <!-- Parent Folder Navigation Card (..) -->
             <div
               v-if="panel.path !== '/' && panel.path !== ''"
               @click="workspaceStore.navigateUp(panelId)"
-              class="border rounded-2xl px-3 py-2.5 sm:px-4 sm:py-3 flex items-center space-x-2.5 sm:space-x-3 cursor-pointer transition-all duration-150 select-none shadow-xs group bg-gray-50/70 dark:bg-slate-900/60 border-dashed border-gray-300 dark:border-slate-700 hover:border-blue-500 hover:bg-blue-50/30 text-gray-600 dark:text-slate-300 active:scale-[0.98]"
+              class="border rounded-2xl p-4 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-150 select-none shadow-xs group bg-gray-50/70 dark:bg-slate-900/60 border-dashed border-gray-300 dark:border-slate-700 hover:border-blue-500 hover:bg-blue-50/30 text-gray-600 dark:text-slate-300 active:scale-[0.98] min-h-[160px] sm:min-h-[180px]"
               title="Go to parent directory (..)"
             >
-              <FbIcon name="chevron-left" size="18px" class="text-blue-500 shrink-0 group-hover:-translate-x-0.5 transition-transform" />
-              <span class="font-bold text-xs truncate">.. (Parent)</span>
+              <div class="flex-1 flex items-center justify-center w-full py-2">
+                <div class="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <FbIcon name="chevron-left" size="24px" class="group-hover:-translate-x-1 transition-transform" />
+                </div>
+              </div>
+              <span class="font-bold text-xs sm:text-sm truncate text-gray-700 dark:text-slate-300 w-full block">.. (Parent)</span>
             </div>
 
+            <!-- Modern Sky-Blue Folder Card matching Filestash / Dolphin -->
             <div
               v-for="folder in displayedFolders"
               :key="folder.path"
@@ -310,28 +315,30 @@
               @dragover.stop.prevent="handleDragOver"
               @drop.stop.prevent="handleDrop($event, folder)"
               :class="[
-                'border rounded-2xl px-3 py-2.5 sm:px-4 sm:py-3 flex items-center space-x-2.5 sm:space-x-3 cursor-pointer transition-all duration-150 select-none shadow-xs group active:scale-[0.98]',
+                'border rounded-2xl p-4 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-150 select-none shadow-xs group active:scale-[0.98] min-h-[160px] sm:min-h-[180px]',
                 isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
                 workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 panel.selectedEntries.includes(folder.path)
                   ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
-                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-md'
+                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:-translate-y-0.5'
               ]"
             >
-              <!-- Folder Icon -->
-              <FbIcon
-                name="folder"
-                size="18px"
-                :class="[
-                  'shrink-0 group-hover:scale-105 transition transform',
-                  isItemHidden(folder) ? 'text-gray-400 dark:text-slate-500' : 'text-blue-600 dark:text-blue-400'
-                ]"
-              />
-              <div class="truncate flex-1 flex items-center space-x-1 min-w-0">
-                <span class="font-semibold text-xs text-gray-900 dark:text-white truncate">
+              <!-- Large Prominent Sky-Blue / Azure Folder Icon -->
+              <div class="flex-1 flex items-center justify-center w-full py-2">
+                <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-16 h-16 sm:w-20 sm:h-20 drop-shadow-2xs group-hover:scale-105 transition-transform duration-200">
+                  <!-- Back Folder Tab -->
+                  <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-400 dark:fill-sky-500" />
+                  <!-- Front Folder Flap -->
+                  <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-300 dark:fill-sky-400" />
+                </svg>
+              </div>
+
+              <!-- Centered Folder Name Label -->
+              <div class="w-full truncate px-1 mt-2">
+                <span class="font-semibold text-xs sm:text-sm text-gray-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition truncate block" :title="folder.name">
                   {{ folder.name }}
                 </span>
-                <span v-if="isItemHidden(folder)" class="text-[9px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono shrink-0">
+                <span v-if="isItemHidden(folder)" class="inline-block mt-0.5 text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono">
                   dot
                 </span>
               </div>
@@ -346,7 +353,7 @@
             <span class="text-[10px] font-mono text-gray-400 font-normal">({{ displayedFiles.length }})</span>
           </h2>
 
-          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-4">
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4.5">
             <div
               v-for="file in displayedFiles"
               :key="file.path"
@@ -361,24 +368,24 @@
               @dblclick="handleEntryDoubleClick(file)"
               @contextmenu="openContextMenu($event, file)"
               :class="[
-                'border rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 flex flex-col group select-none shadow-xs active:scale-[0.98]',
+                'border rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[160px] sm:min-h-[180px]',
                 isItemHidden(file) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
                 workspaceStore.isCutItem(panel.connectionId, file.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 panel.selectedEntries.includes(file.path)
                   ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
-                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-xl hover:-translate-y-0.5 hover:border-blue-400 dark:hover:border-blue-500'
+                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:-translate-y-0.5 hover:border-blue-400 dark:hover:border-blue-500'
               ]"
             >
               <!-- Card Thumbnail Area (Centered Absolute Overlays) -->
               <div
-                class="h-28 sm:h-36 md:h-40 w-full bg-slate-100 dark:bg-slate-950/90 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center"
+                class="flex-1 w-full bg-slate-50/70 dark:bg-slate-950/60 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-3 min-h-[110px]"
               >
                 <!-- Real Image Preview -->
                 <template v-if="isImage(file)">
                   <img
                     :src="getDownloadUrl(panel.connectionId, file.path)"
                     :alt="file.name"
-                    class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                    class="w-full h-full object-cover group-hover:scale-105 transition duration-300 rounded-lg"
                     loading="lazy"
                   />
                   <span class="absolute bottom-1.5 right-1.5 text-[9px] px-1.5 py-0.5 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md border border-white/10">
@@ -393,13 +400,13 @@
                     preload="metadata"
                     muted
                     playsinline
-                    class="w-full h-full object-cover group-hover:scale-105 transition duration-300 pointer-events-none"
+                    class="w-full h-full object-cover group-hover:scale-105 transition duration-300 pointer-events-none rounded-lg"
                   ></video>
                   <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent group-hover:opacity-90 transition"></div>
                   <!-- Perfectly Centered Play Button -->
                   <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div class="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
-                      <FbIcon name="play" size="14px" class="fill-white" />
+                    <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
+                      <FbIcon name="play" size="13px" class="fill-white" />
                     </div>
                   </div>
                   <span class="absolute bottom-1.5 right-1.5 text-[9px] px-1.5 py-0.5 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md z-10 border border-white/10">
@@ -409,48 +416,43 @@
 
                 <!-- Audio Thumbnail with Music Visual Artwork -->
                 <template v-else-if="isAudio(file)">
-                  <div class="w-full h-full bg-gradient-to-br from-indigo-500/15 via-purple-500/15 to-pink-500/15 dark:from-indigo-950/50 dark:to-purple-950/50 flex flex-col items-center justify-center space-y-1.5">
-                    <div class="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-lg sm:text-xl shadow-lg group-hover:scale-110 transition duration-200">
+                  <div class="w-full h-full bg-gradient-to-br from-indigo-500/15 via-purple-500/15 to-pink-500/15 dark:from-indigo-950/50 dark:to-purple-950/50 flex flex-col items-center justify-center space-y-1.5 rounded-lg">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-lg shadow-lg group-hover:scale-110 transition duration-200">
                       🎵
                     </div>
-                    <span class="text-[9px] sm:text-[10px] font-mono font-bold uppercase text-indigo-600 dark:text-indigo-400 tracking-wider">
+                    <span class="text-[9px] font-mono font-bold uppercase text-indigo-600 dark:text-indigo-400 tracking-wider">
                       {{ getFileExt(file) }}
                     </span>
                   </div>
                 </template>
 
-                <!-- Code / Script Preview (Adaptable for light and dark modes) -->
-                <div v-else-if="isCode(file)" class="w-full h-full bg-slate-50 dark:bg-slate-900/90 p-2.5 sm:p-3.5 text-[10px] font-mono text-slate-500 dark:text-slate-400 overflow-hidden flex flex-col justify-between">
-                  <div class="space-y-1 opacity-70">
-                    <div class="h-1 w-3/4 bg-blue-500/40 rounded"></div>
-                    <div class="h-1 w-1/2 bg-slate-300 dark:bg-slate-700 rounded"></div>
-                    <div class="h-1 w-5/6 bg-slate-300 dark:bg-slate-700 rounded"></div>
+                <!-- Document / Code / Other Files matching Filestash Grey Card with Badge -->
+                <div v-else class="flex flex-col items-center justify-center w-full h-full">
+                  <div class="w-12 h-16 sm:w-14 sm:h-18 bg-gray-400 dark:bg-slate-600 rounded-lg relative flex items-center justify-center shadow-xs group-hover:scale-105 transition-transform duration-200">
+                    <!-- Dog-ear corner fold -->
+                    <div class="absolute top-0 right-0 w-3.5 h-3.5 bg-slate-50/70 dark:bg-slate-950/60 rounded-bl-md"></div>
+                    <div class="absolute top-0 right-0 w-3.5 h-3.5 border-l border-b border-gray-300 dark:border-slate-500 rounded-bl-md bg-gray-300 dark:bg-slate-500"></div>
+                    <!-- Format Badge -->
+                    <span class="px-1.5 py-0.5 rounded bg-gray-900 dark:bg-slate-950 text-white font-mono text-[9px] sm:text-[10px] font-bold uppercase tracking-wider shadow-xs max-w-[48px] truncate">
+                      {{ (getFileExt(file) || 'FILE').slice(0, 4) }}
+                    </span>
                   </div>
-                  <span class="text-blue-600 dark:text-blue-400 font-bold text-[10px] sm:text-[11px] self-end uppercase">{{ getFileExt(file) }}</span>
-                </div>
-
-                <!-- Document / Archive / Other File Icon -->
-                <div v-else class="flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 space-y-1">
-                  <FbIcon :name="getCategoryIcon(file)" size="28px" class="text-slate-400 dark:text-slate-500 group-hover:scale-110 transition transform duration-200" />
-                  <span class="text-[9px] font-mono uppercase text-gray-500 dark:text-slate-400 font-bold tracking-wider">
-                    {{ getFileExt(file) }}
-                  </span>
                 </div>
               </div>
 
               <!-- Card Bottom Footer -->
-              <div class="p-2.5 sm:p-3.5 bg-white dark:bg-[#0f1422] flex-1 flex flex-col justify-between">
-                <div class="flex items-start justify-between gap-1">
-                  <span class="font-bold text-xs text-gray-900 dark:text-white line-clamp-2 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition leading-tight" :title="file.name">
+              <div class="p-2.5 sm:p-3 bg-white dark:bg-[#0f1422] shrink-0 text-center">
+                <div class="flex items-center justify-center gap-1">
+                  <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition leading-tight block" :title="file.name">
                     {{ file.name }}
                   </span>
-                  <span v-if="isItemHidden(file)" class="text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-500 dark:text-slate-400 font-mono shrink-0 mt-0.5">
+                  <span v-if="isItemHidden(file)" class="text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-500 dark:text-slate-400 font-mono shrink-0">
                     dot
                   </span>
                 </div>
-                <span class="text-[10px] sm:text-[11px] text-gray-400 dark:text-slate-500 mt-1.5 font-normal truncate">
+                <div class="text-[10px] text-gray-400 dark:text-slate-500 mt-1 font-normal truncate">
                   {{ formatBytes(file.size || 0) }} · {{ formatRelativeTime(file.modified_at) }}
-                </span>
+                </div>
               </div>
             </div>
           </div>
@@ -851,10 +853,6 @@ function isArchiveFile(entry: { name: string }): boolean {
     name.endsWith('.bz2') ||
     name.endsWith('.xz')
   );
-}
-
-function isCode(entry: FileEntry): boolean {
-  return isTextOrCode(entry);
 }
 
 function isTextOrCode(entry: FileEntry): boolean {
