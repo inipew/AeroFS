@@ -336,20 +336,34 @@ pub async fn update_file_content(
         }
     }
 
+    // Destination permission preservation: capture existing permissions before atomic overwrite
+    let existing_perms = provider.stat(&vfs_path).await.ok().and_then(|m| m.permissions);
+
     // Atomic write safety: write to temporary path first then rename to prevent corrupt target on disconnect
     let bytes = payload.content.into_bytes();
     let tmp_vfs = VfsPath::new(&connection_id, format!("{}.aerofs.tmp", vfs_path.path));
     let cursor = Cursor::new(bytes.clone());
 
     if provider.write_stream(&tmp_vfs, Box::new(cursor)).await.is_ok() {
+        if let Some(ref perms) = existing_perms {
+            let _ = provider.set_permissions(&tmp_vfs, perms).await;
+        }
         if provider.rename(&tmp_vfs, &vfs_path).await.is_err() {
             let fallback = Cursor::new(bytes);
             provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+            if let Some(ref perms) = existing_perms {
+                let _ = provider.set_permissions(&vfs_path, perms).await;
+            }
             let _ = provider.delete(&tmp_vfs).await;
+        } else if let Some(ref perms) = existing_perms {
+            let _ = provider.set_permissions(&vfs_path, perms).await;
         }
     } else {
         let fallback = Cursor::new(bytes);
         provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+        if let Some(ref perms) = existing_perms {
+            let _ = provider.set_permissions(&vfs_path, perms).await;
+        }
     }
 
     crate::auth::record_audit_log(
@@ -624,6 +638,8 @@ pub async fn upload_file(
                 format!("{}.aerofs.part", target_path.path),
             );
 
+            let existing_perms = provider.stat(&target_path).await.ok().and_then(|m| m.permissions);
+
             // Bounded 64 KiB asynchronous duplex pipe with zero whole-file RAM buffering
             let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
             let write_handle = tokio::spawn({
@@ -665,6 +681,11 @@ pub async fn upload_file(
                 return Err(AppError::from(e));
             }
 
+            // If target already existed, apply its permissions to .part before promoting
+            if let Some(ref perms) = existing_perms {
+                let _ = provider.set_permissions(&part_path, perms).await;
+            }
+
             // Stream completed cleanly -> promote .aerofs.part to final target
             if let Err(rename_err) = provider.rename(&part_path, &target_path).await {
                 // If direct rename fails, attempt fallback copy + cleanup
@@ -676,6 +697,10 @@ pub async fn upload_file(
                     )));
                 }
                 let _ = provider.delete(&part_path).await;
+            }
+
+            if let Some(ref perms) = existing_perms {
+                let _ = provider.set_permissions(&target_path, perms).await;
             }
 
             crate::auth::record_audit_log(
@@ -709,47 +734,41 @@ pub async fn chmod_file(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
 
-    let _provider = state
+    let provider = state
         .get_provider(&connection_id)
         .await
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
 
     let vfs_path = VfsPath::new(&connection_id, &payload.path);
 
-    if connection_id != "local" {
-        return Err(AppError::BadRequest(
-            "Permissions modification (CHMOD) is only supported on local filesystems".into(),
-        ));
-    }
+    let formatted_mode = format!("{:04o}", payload.mode);
+    provider.set_permissions(&vfs_path, &formatted_mode).await?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let root = if let Some(custom) = state.get_system_setting("local_root").await {
-            std::path::PathBuf::from(custom)
-        } else {
-            state.config.filesystem.default_local_root.clone()
-        };
-        let safe_path = crate::filesystem::safepath::SafePath::resolve(
-            &root,
-            &payload.path,
-            state.config.security.allow_symlinks_outside_root,
-        )?;
-        let abs_path = safe_path.absolute();
-
-        let perms = std::fs::Permissions::from_mode(payload.mode);
-        std::fs::set_permissions(abs_path, perms)
-            .map_err(|e| anyhow::anyhow!("Failed to chmod: {}", e))?;
-
-        if payload.recursive.unwrap_or(false) && abs_path.is_dir() {
-            let (succeeded, failed) = apply_chmod_recursive(abs_path, payload.mode).await;
-            if !failed.is_empty() {
-                return Ok(Json(serde_json::json!({
-                    "success": false,
-                    "succeeded": succeeded,
-                    "failed": failed,
-                    "message": format!("Chmod partially completed: {} succeeded, {} failed", succeeded, failed.len())
-                })));
+        if payload.recursive.unwrap_or(false) {
+            let root = if let Some(custom) = state.get_system_setting("local_root").await {
+                std::path::PathBuf::from(custom)
+            } else {
+                state.config.filesystem.default_local_root.clone()
+            };
+            if let Ok(safe_path) = crate::filesystem::safepath::SafePath::resolve(
+                &root,
+                &payload.path,
+                state.config.security.allow_symlinks_outside_root,
+            ) {
+                let abs_path = safe_path.absolute();
+                if abs_path.is_dir() {
+                    let (succeeded, failed) = apply_chmod_recursive(abs_path, payload.mode).await;
+                    if !failed.is_empty() {
+                        return Ok(Json(serde_json::json!({
+                            "success": false,
+                            "succeeded": succeeded,
+                            "failed": failed,
+                            "message": format!("Chmod partially completed: {} succeeded, {} failed", succeeded, failed.len())
+                        })));
+                    }
+                }
             }
         }
     }

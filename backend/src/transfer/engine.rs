@@ -606,6 +606,23 @@ impl TransferManager {
             .await
             .map_err(|e| anyhow::anyhow!("Stat source failed: {}", e))?;
 
+        // FAST-PATH: Native atomic rename for same-connection Move (preserves inode, permissions, timestamps, instant)
+        if job.transfer_type == TransferType::Move && job.source_connection_id == job.destination_connection_id {
+            match src_fs.rename(&src_vfs, &dst_vfs).await {
+                Ok(_) => {
+                    job.transferred_bytes = meta.size;
+                    job.total_bytes = meta.size;
+                    job.speed_bytes_per_sec = 0;
+                    job.eta_seconds = Some(0);
+                    job.updated_at = Utc::now();
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("Native rename fallback on same-connection move ({}), streaming copy+delete", e);
+                }
+            }
+        }
+
         if meta.kind == crate::domain::FileKind::Directory {
             // Recursive directory transfer!
             #[derive(Debug)]
@@ -753,10 +770,15 @@ impl TransferManager {
                     Ok::<u64, anyhow::Error>(file_transferred)
                 });
 
+                let existing_dst_perms = dst_fs.stat(&dst_file_vfs).await.ok().and_then(|m| m.permissions);
                 let write_res = dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader)).await;
                 let pump_res = pump_handle.await.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?;
                 let file_bytes = pump_res?;
                 write_res.map_err(|e| anyhow::anyhow!("Write failed: {}", e))?;
+
+                if let Some(ref perms) = existing_dst_perms {
+                    let _ = dst_fs.set_permissions(&dst_file_vfs, perms).await;
+                }
 
                 transferred_so_far += file_bytes;
             }
@@ -873,6 +895,7 @@ impl TransferManager {
         });
 
         // 5. Destination writes directly from the streaming pipe
+        let existing_dst_perms = dst_fs.stat(&dst_vfs).await.ok().and_then(|m| m.permissions);
         let write_res = dst_fs
             .write_stream(&dst_vfs, Box::new(pipe_reader))
             .await;
@@ -883,6 +906,10 @@ impl TransferManager {
 
         let (transferred_bytes, checksum) = pump_res?;
         write_res.map_err(|e| anyhow::anyhow!("Destination write failed: {}", e))?;
+
+        if let Some(ref perms) = existing_dst_perms {
+            let _ = dst_fs.set_permissions(&dst_vfs, perms).await;
+        }
 
         job.transferred_bytes = transferred_bytes;
         job.checksum = Some(checksum);

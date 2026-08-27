@@ -63,3 +63,37 @@ async fn test_local_vfs_full_workflow() {
     vfs.delete(&moved_btn).await.unwrap();
     assert!(vfs.stat(&moved_btn).await.is_err());
 }
+
+#[tokio::test]
+async fn test_real_unix_permissions_and_chmod() {
+    let temp = tempdir().unwrap();
+    let root_str = temp.path().to_string_lossy().to_string();
+    let op = build_fs_operator(&root_str).unwrap();
+    let vfs = OpenDalFileSystem::new_local("local", op, temp.path());
+
+    // 1. Create a file
+    let file_path = VfsPath::new("local", "/sensitive.key");
+    let content = b"SECRET_PRIVATE_KEY_DATA".to_vec();
+    vfs.write_stream(&file_path, Box::new(std::io::Cursor::new(content))).await.unwrap();
+
+    // 2. Set permissions to 0600
+    vfs.set_permissions(&file_path, "0600").await.unwrap();
+
+    // 3. Stat must return exact mode "0600" (on unix)
+    #[cfg(unix)]
+    {
+        let meta = vfs.stat(&file_path).await.unwrap();
+        assert_eq!(meta.permissions, Some("0600".to_string()));
+
+        // 4. Directory list must also return exact mode "0600"
+        let root_path = VfsPath::root("local");
+        let entries = vfs.list(&root_path).await.unwrap();
+        let key_entry = entries.iter().find(|e| e.name == "sensitive.key").expect("Entry must exist");
+        assert_eq!(key_entry.permissions, Some("0600".to_string()));
+
+        // 5. Change permissions to 0750
+        vfs.set_permissions(&file_path, "0750").await.unwrap();
+        let meta_updated = vfs.stat(&file_path).await.unwrap();
+        assert_eq!(meta_updated.permissions, Some("0750".to_string()));
+    }
+}

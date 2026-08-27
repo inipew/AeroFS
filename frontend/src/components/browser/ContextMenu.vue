@@ -15,7 +15,7 @@
         'z-50 bg-white dark:bg-[#0f1422] text-gray-700 dark:text-slate-200 select-none font-sans',
         uiStore.isMobile
           ? 'fixed inset-x-0 bottom-0 rounded-t-3xl border-t border-gray-200 dark:border-slate-800 shadow-2xl p-4 max-h-[85vh] overflow-y-auto pb-safe animate-in slide-in-from-bottom duration-200'
-          : 'fixed border border-gray-200 dark:border-slate-700 shadow-2xl rounded-2xl py-1.5 w-56 text-xs animate-in fade-in zoom-in-95 duration-100'
+          : 'fixed border border-gray-200 dark:border-slate-700 shadow-2xl rounded-2xl py-1.5 w-60 text-xs animate-in fade-in zoom-in-95 duration-100'
       ]"
       @click.stop
     >
@@ -44,195 +44,244 @@
         </button>
       </div>
 
+      <!-- A. ITEM CONTEXT MENU (When an item is clicked) -->
       <div v-if="uiStore.contextMenu.item" :class="uiStore.isMobile ? 'space-y-1' : ''">
-      <!-- 1. Open / View / Edit in Code Editor -->
-      <template v-if="uiStore.contextMenu.item.kind === 'directory'">
+        <!-- 1. Open / View / Edit in Code Editor -->
+        <template v-if="uiStore.contextMenu.item.kind === 'directory'">
+          <button
+            @click="handleOpen"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          >
+            <span>📁 Open Folder</span>
+          </button>
+
+          <button
+            @click="handleOpenInOtherPanel"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+          >
+            <span>📂 Open in Other Panel</span>
+            <span class="text-[10px] opacity-75 font-mono">Ctrl+Enter</span>
+          </button>
+        </template>
+
+        <template v-else>
+          <!-- Edit in Code Editor -->
+          <button
+            @click="handleEditInEditor"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+          >
+            <span>📝 Edit in Code Editor</span>
+          </button>
+
+          <!-- Browse Archive Contents -->
+          <button
+            v-if="isArchive(uiStore.contextMenu.item.name)"
+            @click="handleOpenArchiveViewer"
+            class="w-full text-left px-3.5 py-2 hover:bg-amber-500 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-600 dark:text-amber-400 font-semibold cursor-pointer"
+          >
+            <span>📦 Browse Archive Contents</span>
+          </button>
+
+          <button
+            @click="handleOpen"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          >
+            <span>📄 Download / Open</span>
+          </button>
+        </template>
+
+        <!-- Cross-Pane Dual Pane Actions -->
+        <template v-if="workspaceStore.isDualPane">
+          <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+
+          <button
+            @click="handleCopyToOtherPane"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-indigo-600 dark:text-indigo-400 font-semibold"
+          >
+            <span>↪ Copy to Other Pane</span>
+            <span class="text-[10px] opacity-75 font-mono">F5</span>
+          </button>
+
+          <button
+            v-if="canWrite"
+            @click="handleMoveToOtherPane"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-indigo-600 dark:text-indigo-400 font-semibold"
+          >
+            <span>↦ Move to Other Pane</span>
+            <span class="text-[10px] opacity-75 font-mono">F6</span>
+          </button>
+        </template>
+
+        <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+
+        <!-- Toggle Star Bookmark -->
         <button
-          @click="handleOpen"
+          @click="handleToggleStar"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
         >
-          <span>📁 Open Folder</span>
+          <span>{{ isItemStarred ? '⭐ Remove from Starred' : '⭐ Add to Starred' }}</span>
         </button>
 
+        <!-- Share Link -->
         <button
-          @click="handleOpenInOtherPanel"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
-        >
-          <span>📂 Open in Other Panel</span>
-          <span class="text-[10px] opacity-75 font-mono">Ctrl+Enter</span>
-        </button>
-      </template>
-
-      <template v-else>
-        <!-- Edit in Code Editor (Available for all files & dotfiles) -->
-        <button
-          @click="handleEditInEditor"
+          @click="handleShare"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
         >
-          <span>📝 Edit in Code Editor</span>
+          <span>🔗 Share Link...</span>
         </button>
 
-        <!-- Browse Archive Contents (Virtual Archive) -->
+        <!-- Properties / Permissions -->
         <button
-          v-if="isArchive(uiStore.contextMenu.item.name)"
-          @click="handleOpenArchiveViewer"
-          class="w-full text-left px-3.5 py-2 hover:bg-amber-500 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-600 dark:text-amber-400 font-semibold cursor-pointer"
-        >
-          <span>📦 Browse Archive Contents</span>
-        </button>
-
-        <button
-          @click="handleOpen"
+          @click="handleProperties"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
         >
-          <span>📄 Open / Download</span>
+          <span>ℹ️ Properties / Permissions</span>
         </button>
-      </template>
 
-      <!-- Toggle Star Bookmark -->
-      <button
-        @click="handleToggleStar"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>{{ isItemStarred ? '⭐ Remove from Starred' : '⭐ Add to Starred' }}</span>
-      </button>
+        <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
 
-      <!-- Share Link -->
-      <button
-        @click="handleShare"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
-      >
-        <span>🔗 Share Link...</span>
-      </button>
+        <!-- Read-Only Badge -->
+        <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-1.5 rounded-xl">
+          <span>🔒</span>
+          <span>Read-Only Storage</span>
+        </div>
 
-      <!-- Properties / Info -->
-      <button
-        @click="handleProperties"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>ℹ️ Properties / Permissions</span>
-      </button>
+        <!-- Copy & Cut Operations -->
+        <button
+          @click="handleCopy"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
+        >
+          <span>📋 Copy</span>
+          <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+C</span>
+        </button>
 
-      <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+        <button
+          v-if="canWrite"
+          @click="handleCut"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
+        >
+          <span>✂️ Cut</span>
+          <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+X</span>
+        </button>
 
-      <!-- Read-Only Badge -->
-      <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-1.5 rounded-xl">
-        <span>🔒</span>
-        <span>Read-Only Storage</span>
+        <button
+          v-if="canWrite && workspaceStore.clipboard"
+          @click="handlePaste"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+        >
+          <span>📄 Paste</span>
+          <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
+        </button>
+
+        <div v-if="canWrite" class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+
+        <!-- Extract Archive -->
+        <button
+          v-if="canWrite && isArchive(uiStore.contextMenu.item.name)"
+          @click="handleExtract"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-500 cursor-pointer"
+        >
+          <span>📦 Extract Archive Here</span>
+        </button>
+
+        <!-- Compress Selected -->
+        <button
+          v-if="canWrite"
+          @click="handleCompress"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+        >
+          <span>📦 Compress...</span>
+        </button>
+
+        <!-- Rename -->
+        <button
+          v-if="canWrite"
+          @click="handleRename"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+        >
+          <span>✏️ Rename</span>
+          <span class="text-[10px] text-gray-400 opacity-75 font-mono ml-auto">F2</span>
+        </button>
+
+        <!-- Delete -->
+        <button
+          v-if="canWrite"
+          @click="handleDelete"
+          class="w-full text-left px-3.5 py-2 hover:bg-red-600 hover:text-white text-red-500 flex items-center justify-between transition rounded-xl cursor-pointer"
+        >
+          <span>🗑️ Delete</span>
+          <span class="text-[10px] opacity-75 font-mono">Del</span>
+        </button>
       </div>
 
-      <!-- Copy & Cut Operations -->
-      <button
-        @click="handleCopy"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
-      >
-        <span>📋 Copy</span>
-        <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+C</span>
-      </button>
+      <!-- B. BACKGROUND CONTEXT MENU (When clicked on empty space) -->
+      <div v-else class="space-y-0.5">
+        <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-1.5 rounded-xl">
+          <span>🔒</span>
+          <span>Read-Only Storage</span>
+        </div>
 
-      <button
-        v-if="canWrite"
-        @click="handleCut"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
-      >
-        <span>✂️ Cut</span>
-        <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+X</span>
-      </button>
+        <button
+          v-if="canWrite && workspaceStore.clipboard"
+          @click="handlePaste"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400 font-semibold"
+        >
+          <span>📄 Paste Here</span>
+          <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
+        </button>
 
-      <button
-        v-if="canWrite && workspaceStore.clipboard"
-        @click="handlePaste"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
-      >
-        <span>📄 Paste</span>
-        <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
-      </button>
+        <div v-if="canWrite && workspaceStore.clipboard" class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
 
-      <div v-if="canWrite" class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+        <button
+          v-if="canWrite"
+          @click="uiStore.openCreate('file'); uiStore.closeContextMenu()"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+        >
+          <span>📄 + New File</span>
+        </button>
 
-      <!-- Extract Archive if .zip or .tar.gz -->
-      <button
-        v-if="canWrite && isArchive(uiStore.contextMenu.item.name)"
-        @click="handleExtract"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-500 cursor-pointer"
-      >
-        <span>📦 Extract Archive Here</span>
-      </button>
+        <button
+          v-if="canWrite"
+          @click="uiStore.openCreate('directory'); uiStore.closeContextMenu()"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+        >
+          <span>📁 + New Folder</span>
+        </button>
 
-      <!-- Compress Selected -->
-      <button
-        v-if="canWrite"
-        @click="handleCompress"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>📦 Compress...</span>
-      </button>
+        <button
+          v-if="canWrite"
+          @click="uiStore.openUpload(); uiStore.closeContextMenu()"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+        >
+          <span>⬆ Upload Files</span>
+        </button>
 
-      <!-- Rename -->
-      <button
-        v-if="canWrite"
-        @click="handleRename"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>✏️ Rename</span>
-      </button>
+        <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
 
-      <!-- Delete -->
-      <button
-        v-if="canWrite"
-        @click="handleDelete"
-        class="w-full text-left px-3.5 py-2 hover:bg-red-600 hover:text-white text-red-500 flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>🗑️ Delete</span>
-      </button>
-    </div>
+        <button
+          @click="handleSelectAll"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
+        >
+          <span>☑ Select All</span>
+          <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+A</span>
+        </button>
 
-    <!-- Blank Area Context Menu -->
-    <div v-else>
-      <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-1.5 rounded-xl">
-        <span>🔒</span>
-        <span>Read-Only Storage</span>
+        <button
+          @click="handleToggleViewMode"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+        >
+          <span>🗂 Toggle Grid / List View</span>
+        </button>
+
+        <button
+          @click="workspaceStore.refreshAll(); uiStore.closeContextMenu()"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
+        >
+          <span>↻ Refresh Directory</span>
+          <span class="text-[10px] text-gray-400 opacity-75 font-mono">F5</span>
+        </button>
       </div>
-
-      <button
-        v-if="canWrite && workspaceStore.clipboard"
-        @click="handlePaste"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
-      >
-        <span>📄 Paste Here</span>
-        <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
-      </button>
-      <div v-if="canWrite && workspaceStore.clipboard" class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
-      <button
-        v-if="canWrite"
-        @click="uiStore.openCreate('file'); uiStore.closeContextMenu()"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>+ New File</span>
-      </button>
-      <button
-        v-if="canWrite"
-        @click="uiStore.openCreate('directory'); uiStore.closeContextMenu()"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>+ New Folder</span>
-      </button>
-      <div v-if="canWrite" class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
-      <button
-        v-if="canWrite"
-        @click="uiStore.openUpload(); uiStore.closeContextMenu()"
-        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>Upload Files</span>
-      </button>
-      <button
-        @click="workspaceStore.refreshAll(); uiStore.closeContextMenu()"
-        class="w-full text-left px-3.5 py-2 hover:bg-gray-100 dark:hover:bg-slate-800 text-gray-500 dark:text-slate-400 flex items-center space-x-2 transition rounded-xl cursor-pointer"
-      >
-        <span>↻ Refresh</span>
-      </button>
     </div>
-  </div>
   </div>
 </template>
 
@@ -241,6 +290,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { apiClient } from '../../api/client';
 import { useFileStore } from '../../stores/fileStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useTransferStore } from '../../stores/transferStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useStarredStore } from '../../stores/starredStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -255,6 +305,7 @@ const emit = defineEmits<{
 
 const fileStore = useFileStore();
 const workspaceStore = useWorkspaceStore();
+const transferStore = useTransferStore();
 const connStore = useConnectionStore();
 const starredStore = useStarredStore();
 const uiStore = useUiStore();
@@ -287,7 +338,7 @@ watch(
       await nextTick();
       if (!menuRef.value) return;
 
-      const menuWidth = menuRef.value.offsetWidth || 224;
+      const menuWidth = menuRef.value.offsetWidth || 240;
       const menuHeight = menuRef.value.offsetHeight || 380;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
@@ -406,6 +457,88 @@ async function handlePaste() {
   const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
   uiStore.closeContextMenu();
   await workspaceStore.paste(panelId);
+}
+
+async function handleCopyToOtherPane() {
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const sourcePanel = workspaceStore.getPanel(sourcePanelId);
+  const targetPanelId = sourcePanelId === 'left' ? 'right' : 'left';
+  const targetPanel = workspaceStore.getPanel(targetPanelId);
+
+  const selectedPaths = sourcePanel.selectedEntries.includes(item.path)
+    ? sourcePanel.selectedEntries
+    : [item.path];
+
+  uiStore.closeContextMenu();
+
+  for (const filePath of selectedPaths) {
+    const fileName = filePath.split('/').pop() || 'file';
+    const targetPath = targetPanel.path === '/' ? `/${fileName}` : `${targetPanel.path}/${fileName}`;
+    await transferStore.submitTransfer(
+      `Copy ${fileName} to ${targetPanel.path}`,
+      'copy',
+      sourcePanel.connectionId,
+      filePath,
+      targetPanel.connectionId,
+      targetPath
+    );
+  }
+
+  uiStore.showToast(`Queued ${selectedPaths.length} item(s) copy to other pane`, 'info');
+  setTimeout(() => {
+    workspaceStore.fetchPanelEntries(targetPanelId);
+  }, 1000);
+}
+
+async function handleMoveToOtherPane() {
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const sourcePanel = workspaceStore.getPanel(sourcePanelId);
+  const targetPanelId = sourcePanelId === 'left' ? 'right' : 'left';
+  const targetPanel = workspaceStore.getPanel(targetPanelId);
+
+  const selectedPaths = sourcePanel.selectedEntries.includes(item.path)
+    ? sourcePanel.selectedEntries
+    : [item.path];
+
+  uiStore.closeContextMenu();
+
+  for (const filePath of selectedPaths) {
+    const fileName = filePath.split('/').pop() || 'file';
+    const targetPath = targetPanel.path === '/' ? `/${fileName}` : `${targetPanel.path}/${fileName}`;
+    await transferStore.submitTransfer(
+      `Move ${fileName} to ${targetPanel.path}`,
+      'move',
+      sourcePanel.connectionId,
+      filePath,
+      targetPanel.connectionId,
+      targetPath
+    );
+  }
+
+  uiStore.showToast(`Queued ${selectedPaths.length} item(s) move to other pane`, 'info');
+  setTimeout(() => {
+    workspaceStore.fetchPanelEntries(sourcePanelId);
+    workspaceStore.fetchPanelEntries(targetPanelId);
+  }, 1000);
+}
+
+function handleSelectAll() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const panel = workspaceStore.getPanel(panelId);
+  panel.selectedEntries = panel.entries.map((e) => e.path);
+  uiStore.closeContextMenu();
+}
+
+function handleToggleViewMode() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const panel = workspaceStore.getPanel(panelId);
+  panel.viewMode = panel.viewMode === 'grid' ? 'list' : 'grid';
+  workspaceStore.saveState();
+  uiStore.closeContextMenu();
 }
 
 function isArchive(name: string): boolean {

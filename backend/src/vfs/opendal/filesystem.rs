@@ -16,6 +16,7 @@ pub struct OpenDalFileSystem {
     connection_id: String,
     operator: Operator,
     capabilities: Capabilities,
+    local_root: Option<std::path::PathBuf>,
 }
 
 impl OpenDalFileSystem {
@@ -33,7 +34,31 @@ impl OpenDalFileSystem {
             connection_id: conn_id,
             operator,
             capabilities,
+            local_root: None,
         }
+    }
+
+    pub fn new_local(
+        connection_id: impl Into<String>,
+        operator: Operator,
+        local_root: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        let conn_id = connection_id.into();
+        let raw_cap = operator.info().capability();
+        let scheme = operator.info().scheme();
+        let capabilities = map_opendal_capabilities_for_scheme(raw_cap, scheme);
+
+        Self {
+            connection_id: conn_id,
+            operator,
+            capabilities,
+            local_root: Some(local_root.into()),
+        }
+    }
+
+    pub fn with_local_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.local_root = Some(root.into());
+        self
     }
 
     /// Custom constructor allowing capability overrides
@@ -46,6 +71,7 @@ impl OpenDalFileSystem {
             connection_id: connection_id.into(),
             operator,
             capabilities,
+            local_root: None,
         }
     }
 
@@ -104,7 +130,16 @@ impl FileSystem for OpenDalFileSystem {
 
         let mut results = Vec::new();
         for entry in entries {
-            if let Some(mapped) = map_opendal_entry(&entry, path) {
+            if let Some(mut mapped) = map_opendal_entry(&entry, path) {
+                #[cfg(unix)]
+                if let Some(ref root) = self.local_root {
+                    use std::os::unix::fs::PermissionsExt;
+                    let abs_child = root.join(mapped.path.trim_start_matches('/'));
+                    if let Ok(sym_meta) = std::fs::symlink_metadata(&abs_child) {
+                        let mode = sym_meta.permissions().mode() & 0o7777;
+                        mapped.permissions = Some(format!("{:04o}", mode));
+                    }
+                }
                 results.push(mapped);
             }
         }
@@ -127,6 +162,16 @@ impl FileSystem for OpenDalFileSystem {
                 chrono::DateTime::<chrono::Utc>::from(st)
             });
 
+            let mut permissions = None;
+            #[cfg(unix)]
+            if let Some(ref root) = self.local_root {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(sym_meta) = std::fs::symlink_metadata(root) {
+                    let mode = sym_meta.permissions().mode() & 0o7777;
+                    permissions = Some(format!("{:04o}", mode));
+                }
+            }
+
             return Ok(FileMetadata {
                 name: "root".to_string(),
                 path: "/".to_string(),
@@ -134,7 +179,7 @@ impl FileSystem for OpenDalFileSystem {
                 size,
                 modified_at,
                 created_at: None,
-                permissions: None,
+                permissions,
                 mime_type: None,
                 etag: format!("\"od-root-{}\"", self.connection_id),
                 is_readonly: false,
@@ -150,7 +195,40 @@ impl FileSystem for OpenDalFileSystem {
             .await
             .map_err(|e| map_opendal_error(e, &format!("Failed to stat '{}'", path.path)))?;
 
-        Ok(map_opendal_metadata(&meta, path, false))
+        let mut res = map_opendal_metadata(&meta, path, false);
+        #[cfg(unix)]
+        if let Some(ref root) = self.local_root {
+            use std::os::unix::fs::PermissionsExt;
+            let abs_path = root.join(path.path.trim_start_matches('/'));
+            if let Ok(sym_meta) = std::fs::symlink_metadata(&abs_path) {
+                let mode = sym_meta.permissions().mode() & 0o7777;
+                res.permissions = Some(format!("{:04o}", mode));
+            }
+        }
+        Ok(res)
+    }
+
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
+    async fn set_permissions(&self, path: &VfsPath, permissions: &str) -> Result<(), VfsError> {
+        #[cfg(unix)]
+        if let Some(ref root) = self.local_root {
+            use std::os::unix::fs::PermissionsExt;
+            let clean_perms = permissions.trim_start_matches('0');
+            let mode = if clean_perms.is_empty() {
+                0o000
+            } else {
+                u32::from_str_radix(clean_perms, 8)
+                    .map_err(|e| VfsError::InvalidPath(format!("Invalid octal mode '{}': {}", permissions, e)))?
+            };
+            let abs_path = root.join(path.path.trim_start_matches('/'));
+            std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| VfsError::IoError(format!("Failed to chmod {:?}: {}", abs_path, e)))?;
+            return Ok(());
+        }
+
+        let _ = path;
+        let _ = permissions;
+        Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]

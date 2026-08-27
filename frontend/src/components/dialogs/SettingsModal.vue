@@ -16,7 +16,7 @@
           </div>
           <div>
             <h3 class="text-sm font-bold text-gray-900 dark:text-white">Settings & Preferences</h3>
-            <p class="text-[11px] text-gray-500 dark:text-slate-400">Configure application preferences, transfers, security, and storage paths.</p>
+            <p class="text-[11px] text-gray-500 dark:text-slate-400">Configure appearance, workspace, shortcuts, and system administration.</p>
           </div>
         </div>
 
@@ -28,19 +28,20 @@
         </button>
       </div>
 
-      <!-- Navigation Tabs (6 Categories Matching Architecture Plan) -->
-      <div class="flex border-b border-gray-200 dark:border-slate-800 px-6 bg-white dark:bg-[#0b0f19] text-xs font-semibold gap-6 overflow-x-auto">
+      <!-- Navigation Tabs (Grouped: User Preferences vs System Administration) -->
+      <div class="flex border-b border-gray-200 dark:border-slate-800 px-6 bg-white dark:bg-[#0b0f19] text-xs font-semibold gap-6 overflow-x-auto no-scrollbar">
+        <!-- USER TABS -->
         <button
-          @click="activeTab = 'general'"
+          @click="activeTab = 'appearance'"
           :class="[
             'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
-            activeTab === 'general'
+            activeTab === 'appearance'
               ? 'border-blue-600 text-blue-600 dark:text-blue-400'
               : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
           ]"
         >
           <FbIcon name="home" size="14px" />
-          <span>General</span>
+          <span>Appearance</span>
         </button>
 
         <button
@@ -70,356 +71,324 @@
         </button>
 
         <button
-          @click="activeTab = 'connections'"
+          @click="activeTab = 'shortcuts'"
           :class="[
             'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
-            activeTab === 'connections'
+            activeTab === 'shortcuts'
               ? 'border-blue-600 text-blue-600 dark:text-blue-400'
               : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
           ]"
         >
-          <FbIcon name="settings" size="14px" />
-          <span>Connections</span>
+          <FbIcon name="rename" size="14px" />
+          <span>Shortcuts</span>
         </button>
 
-        <button
-          @click="activeTab = 'security'"
-          :class="[
-            'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
-            activeTab === 'security'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
-          ]"
-        >
-          <FbIcon name="shield" size="14px" />
-          <span>Security</span>
-        </button>
+        <!-- ADMIN TABS -->
+        <template v-if="authStore.isAdmin">
+          <div class="h-4 w-px bg-gray-200 dark:bg-slate-800 my-auto shrink-0"></div>
 
-        <button
-          @click="activeTab = 'advanced'"
-          :class="[
-            'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
-            activeTab === 'advanced'
-              ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
-          ]"
-        >
-          <FbIcon name="clock" size="14px" />
-          <span>Advanced & Logs</span>
-        </button>
+          <button
+            @click="activeTab = 'admin_storage'"
+            :class="[
+              'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
+              activeTab === 'admin_storage'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <FbIcon name="settings" size="14px" />
+            <span>Server Storage</span>
+          </button>
+
+          <button
+            @click="activeTab = 'admin_security'"
+            :class="[
+              'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
+              activeTab === 'admin_security'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <FbIcon name="shield" size="14px" />
+            <span>Security & Policy</span>
+          </button>
+
+          <button
+            @click="activeTab = 'admin_logs'"
+            :class="[
+              'py-3 border-b-2 transition cursor-pointer flex items-center space-x-1.5 shrink-0',
+              activeTab === 'admin_logs'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <FbIcon name="clock" size="14px" />
+            <span>Audit Logs</span>
+          </button>
+        </template>
       </div>
 
       <!-- Tab Content Area -->
       <div class="p-6 overflow-y-auto flex-1 space-y-4 bg-white dark:bg-[#0b0f19]">
-        <!-- 1. GENERAL -->
-        <div v-if="activeTab === 'general'" class="space-y-3">
+        <!-- 1. APPEARANCE (USER) -->
+        <div v-if="activeTab === 'appearance'" class="space-y-3">
+          <!-- Theme Selector -->
           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
             <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Default File View</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Choose between grid mosaic cards or compact list view.</p>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">Color Theme</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Choose between dark mode, light mode, or follow system theme.</p>
             </div>
             <select
-              v-model="form.general.default_view"
+              v-model="userPrefs.theme"
               class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold"
             >
-              <option value="grid">Grid Mosaic</option>
+              <option value="system">System Default</option>
+              <option value="dark">Dark Theme</option>
+              <option value="light">Light Theme</option>
+            </select>
+          </div>
+
+          <!-- List Density -->
+          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
+            <div>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">List & Card Density</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Control the padding and row spacing in file lists.</p>
+            </div>
+            <select
+              v-model="userPrefs.list_density"
+              class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold"
+            >
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+              <option value="dense">Dense</option>
+            </select>
+          </div>
+
+          <!-- Default File View -->
+          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
+            <div>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">Default View Mode</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Default layout when opening folders.</p>
+            </div>
+            <select
+              v-model="userPrefs.default_view"
+              class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold"
+            >
+              <option value="grid">Grid Mosaic Cards</option>
               <option value="list">Details List</option>
             </select>
           </div>
 
+          <!-- Default Workspace Layout -->
           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
             <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Show Hidden & Dotfiles by Default</p>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">Default Workspace Layout</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Choose between Single Pane or Dual-Pane Split mode on first launch.</p>
+            </div>
+            <select
+              v-model="userPrefs.default_layout"
+              class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold"
+            >
+              <option value="single">Single Pane</option>
+              <option value="split">Dual-Pane Split (Commander)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 2. FILE MANAGER (USER) -->
+        <div v-if="activeTab === 'file_manager'" class="space-y-3">
+          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
+            <div>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">Show Hidden & Dotfiles</p>
               <p class="text-[11px] text-gray-500 dark:text-slate-400">Display hidden files (starting with '.') in explorer listings.</p>
             </div>
             <input
               type="checkbox"
-              v-model="form.general.show_hidden_default"
+              v-model="userPrefs.show_hidden"
               class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
             />
-          </div>
-
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Confirm Destructive Actions</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Prompt confirmation dialog before deleting files or folders.</p>
-            </div>
-            <input
-              type="checkbox"
-              v-model="form.general.confirm_destructive"
-              class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
-            />
-          </div>
-        </div>
-
-        <!-- 2. FILE MANAGER -->
-        <div v-if="activeTab === 'file_manager'" class="space-y-3">
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Default Workspace Layout</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Start in Dual-Pane side-by-side mode or Single Pane mode.</p>
-            </div>
-            <select
-              v-model="form.file_manager.default_layout"
-              class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold"
-            >
-              <option value="split">Dual Pane (Split)</option>
-              <option value="single">Single Pane</option>
-            </select>
-          </div>
-
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">File List Density</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Row height and information density in List view.</p>
-            </div>
-            <div class="flex items-center space-x-1 bg-white dark:bg-slate-800 p-1 rounded-xl border border-gray-200 dark:border-slate-700">
-              <button
-                type="button"
-                @click="uiStore.setListDensity('comfortable')"
-                :class="[
-                  'px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer',
-                  uiStore.listDensity === 'comfortable' ? 'bg-blue-600 text-white shadow-xs' : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
-                ]"
-              >
-                Comfortable
-              </button>
-              <button
-                type="button"
-                @click="uiStore.setListDensity('compact')"
-                :class="[
-                  'px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer',
-                  uiStore.listDensity === 'compact' ? 'bg-blue-600 text-white shadow-xs' : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
-                ]"
-              >
-                Compact
-              </button>
-              <button
-                type="button"
-                @click="uiStore.setListDensity('dense')"
-                :class="[
-                  'px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer',
-                  uiStore.listDensity === 'dense' ? 'bg-blue-600 text-white shadow-xs' : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
-                ]"
-              >
-                Dense
-              </button>
-            </div>
           </div>
 
           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
             <div>
               <p class="font-bold text-gray-900 dark:text-white text-xs">Remember Last Directories</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Automatically restore the last opened folder path upon reconnection.</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Restore last visited folders across sessions.</p>
             </div>
             <input
               type="checkbox"
-              v-model="form.file_manager.remember_last_directories"
+              v-model="userPrefs.remember_last_dir"
               class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
             />
           </div>
         </div>
 
-        <!-- 3. TRANSFERS -->
+        <!-- 3. TRANSFERS (USER) -->
         <div v-if="activeTab === 'transfers'" class="space-y-3">
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Maximum Concurrent Transfers</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Number of simultaneous background file transfer streams (1–32).</p>
-            </div>
-            <input
-              type="number"
-              min="1"
-              max="32"
-              v-model.number="form.transfers.max_concurrent_transfers"
-              class="w-20 bg-white dark:bg-slate-950 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-center"
-            />
-          </div>
-
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Retry Attempts on Failure</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Exponential backoff retry count before marking a transfer failed.</p>
-            </div>
-            <input
-              type="number"
-              min="0"
-              max="10"
-              v-model.number="form.transfers.retry_attempts"
-              class="w-20 bg-white dark:bg-slate-950 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-center"
-            />
-          </div>
-
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Show Transfer Notifications</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Display toast notifications when transfer tasks finish or fail.</p>
-            </div>
-            <input
-              type="checkbox"
-              v-model="form.transfers.show_notifications"
-              class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
-            />
-          </div>
-        </div>
-
-        <!-- 4. CONNECTIONS -->
-        <div v-if="activeTab === 'connections'" class="space-y-4">
-          <div class="bg-gray-50 dark:bg-slate-900/60 p-4 rounded-2xl border border-gray-200 dark:border-slate-800 space-y-2">
+          <div class="p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800 space-y-2">
             <div class="flex items-center justify-between">
-              <label class="block text-xs font-bold text-gray-900 dark:text-white">Default Local Storage Root Path</label>
-              <span class="text-[10px] text-blue-600 dark:text-blue-400 font-mono font-semibold uppercase bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 rounded">Active Root</span>
+              <div>
+                <p class="font-bold text-gray-900 dark:text-white text-xs">Maximum Parallel Workers</p>
+                <p class="text-[11px] text-gray-500 dark:text-slate-400">Number of simultaneous chunked uploads or downloads.</p>
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="8"
+                v-model.number="adminForm.transfers.max_concurrent_transfers"
+                class="w-20 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-2.5 py-1 text-xs font-mono font-bold text-center"
+              />
             </div>
-            <p class="text-[11px] text-gray-500 dark:text-slate-400">
-              Root directory mounted for the "Local" storage connection.
-            </p>
-            <input
-              v-model="form.connections.default_local_root"
-              type="text"
-              placeholder="/home/user/storage or ./storage"
-              class="w-full bg-white dark:bg-slate-950 border border-gray-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-gray-900 dark:text-white font-mono text-xs focus:outline-none focus:border-blue-500 shadow-inner"
-              required
-            />
-          </div>
-
-          <div class="bg-gray-50 dark:bg-slate-900/60 p-4 rounded-2xl border border-gray-200 dark:border-slate-800 space-y-2">
-            <label class="block text-xs font-bold text-gray-900 dark:text-white">Temporary & Staging Directory</label>
-            <p class="text-[11px] text-gray-500 dark:text-slate-400">
-              Directory used for multipart uploads, streaming decompression, and temporary files.
-            </p>
-            <input
-              v-model="form.connections.temp_dir"
-              type="text"
-              placeholder="./storage/temp or /tmp/aerofs"
-              class="w-full bg-white dark:bg-slate-950 border border-gray-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-gray-900 dark:text-white font-mono text-xs focus:outline-none focus:border-blue-500 shadow-inner"
-            />
-          </div>
-
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Connection Timeout (Seconds)</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Network timeout before remote FTP/SFTP/S3 requests abort.</p>
-            </div>
-            <input
-              type="number"
-              min="10"
-              max="300"
-              v-model.number="form.connections.connection_timeout_secs"
-              class="w-20 bg-white dark:bg-slate-950 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-center"
-            />
           </div>
         </div>
 
-        <!-- 5. SECURITY -->
-        <div v-if="activeTab === 'security'" class="space-y-3">
+        <!-- 4. KEYBOARD SHORTCUTS REFERENCE (USER) -->
+        <div v-if="activeTab === 'shortcuts'" class="space-y-2">
+          <div class="text-[11px] text-gray-500 dark:text-slate-400 px-1 mb-2">
+            AeroFS is designed for power users with comprehensive keyboard control:
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Command Palette</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Ctrl + K</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Edit / Jump Path</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Ctrl + L</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Switch Dual Pane Focus</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Tab</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Swap Left & Right Panels</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Alt + S</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Copy Selected Items</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Ctrl + C</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Cut Selected Items</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Ctrl + X</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Paste Clipboard</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Ctrl + V</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Rename Item</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">F2</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Delete Item</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Delete</kbd>
+            </div>
+
+            <div class="p-3 bg-gray-50 dark:bg-slate-900/60 rounded-xl border border-gray-200 dark:border-slate-800 flex items-center justify-between">
+              <span class="text-xs text-gray-700 dark:text-slate-300">Navigate to Parent</span>
+              <kbd class="px-2 py-0.5 rounded bg-gray-200 dark:bg-slate-800 font-mono text-[10px] font-bold text-gray-600 dark:text-slate-300 shadow-2xs border border-gray-300 dark:border-slate-700">Alt + Up</kbd>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. SERVER STORAGE (ADMIN ONLY) -->
+        <div v-if="activeTab === 'admin_storage' && authStore.isAdmin" class="space-y-3">
+          <div class="p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800 space-y-2">
+            <label class="block font-bold text-gray-900 dark:text-white text-xs">Default Local Storage Root</label>
+            <input
+              type="text"
+              v-model="adminForm.connections.default_local_root"
+              class="w-full bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-gray-800 dark:text-slate-100"
+              placeholder="./storage"
+            />
+            <p class="text-[11px] text-gray-400">Absolute or relative filesystem path exposed as primary local storage root.</p>
+          </div>
+
+          <div class="p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800 space-y-2">
+            <label class="block font-bold text-gray-900 dark:text-white text-xs">Temporary & Staging Directory</label>
+            <input
+              type="text"
+              v-model="adminForm.connections.temp_dir"
+              class="w-full bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-gray-800 dark:text-slate-100"
+              placeholder="./storage/temp"
+            />
+            <p class="text-[11px] text-gray-400">Path used for streaming chunk uploads and archive extractions.</p>
+          </div>
+        </div>
+
+        <!-- 6. SECURITY & POLICY (ADMIN ONLY) -->
+        <div v-if="activeTab === 'admin_security' && authStore.isAdmin" class="space-y-3">
           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
             <div>
               <p class="font-bold text-gray-900 dark:text-white text-xs">Allow Symlinks Outside Root</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">When enabled, symlinks pointing outside the local root directory can be traversed.</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">When disabled, symlinks pointing outside storage root are strictly rejected.</p>
             </div>
             <input
               type="checkbox"
-              v-model="form.security.allow_symlinks_outside_root"
+              v-model="adminForm.security.allow_symlinks_outside_root"
               class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
             />
           </div>
 
           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
             <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Global Read-Only Mode</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Lock the server to read-only; blocks all file writes, deletes, and uploads.</p>
+              <p class="font-bold text-gray-900 dark:text-white text-xs">Read-Only Default Mode</p>
+              <p class="text-[11px] text-gray-500 dark:text-slate-400">Lock entire storage root to read-only for guest/non-admin users.</p>
             </div>
             <input
               type="checkbox"
-              v-model="form.security.read_only_default"
+              v-model="adminForm.security.read_only_default"
               class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
             />
           </div>
         </div>
 
-        <!-- 6. ADVANCED & AUDIT LOGS -->
-        <div v-if="activeTab === 'advanced'" class="space-y-4">
-          <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-slate-900/60 rounded-2xl border border-gray-200 dark:border-slate-800">
-            <div>
-              <p class="font-bold text-gray-900 dark:text-white text-xs">Logging Level</p>
-              <p class="text-[11px] text-gray-500 dark:text-slate-400">Log granularity for tracing operations and errors.</p>
-            </div>
-            <select
-              v-model="form.advanced.log_level"
-              class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold font-mono"
-            >
-              <option value="info">INFO</option>
-              <option value="debug">DEBUG</option>
-              <option value="trace">TRACE</option>
-            </select>
+        <!-- 7. AUDIT LOGS (ADMIN ONLY) -->
+        <div v-if="activeTab === 'admin_logs' && authStore.isAdmin" class="space-y-3">
+          <div v-if="auditLogs.length === 0" class="text-center py-8 text-gray-400 text-xs">
+            No system audit logs found.
           </div>
-
-          <!-- Audit Trail Section -->
-          <div class="space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-bold text-gray-900 dark:text-white">Security & Access Audit Trail</span>
-              <button
-                @click="fetchAuditLogs"
-                class="px-2.5 py-1 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 rounded-lg text-[11px] font-semibold text-gray-700 dark:text-slate-300 flex items-center space-x-1"
-              >
-                <span>↻ Refresh Logs</span>
-              </button>
-            </div>
-
-            <div class="border border-gray-200 dark:border-slate-800 rounded-2xl overflow-hidden max-h-56 overflow-y-auto font-mono text-[11px]">
-              <table class="w-full text-left border-collapse">
-                <thead class="bg-gray-50 dark:bg-slate-900 text-gray-500 dark:text-slate-400 text-[10px] uppercase font-bold border-b border-gray-200 dark:border-slate-800">
-                  <tr>
-                    <th class="py-2 px-3">Time</th>
-                    <th class="py-2 px-2">Action</th>
-                    <th class="py-2 px-2">Path / Target</th>
-                    <th class="py-2 px-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-slate-800/60">
-                  <tr v-for="log in auditLogs" :key="log.id" class="hover:bg-gray-50/50 dark:hover:bg-slate-900/40 text-gray-700 dark:text-slate-300">
-                    <td class="py-2 px-3 text-gray-400 text-[10px] truncate max-w-[120px]">{{ formatTime(log.created_at) }}</td>
-                    <td class="py-2 px-2 font-bold">{{ log.action }}</td>
-                    <td class="py-2 px-2 truncate max-w-[200px]" :title="log.path || log.details">{{ log.path || log.details || '—' }}</td>
-                    <td class="py-2 px-2">
-                      <span
-                        :class="[
-                          'px-2 py-0.5 rounded text-[10px] font-semibold',
-                          log.status === 'success' ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300' : 'bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300'
-                        ]"
-                      >
-                        {{ log.status }}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr v-if="auditLogs.length === 0">
-                    <td colspan="4" class="py-6 text-center text-gray-400">No audit logs recorded yet.</td>
-                  </tr>
-                </tbody>
-              </table>
+          <div v-else class="space-y-2">
+            <div
+              v-for="(log, idx) in auditLogs"
+              :key="idx"
+              class="p-3 bg-gray-50 dark:bg-slate-900/40 rounded-xl border border-gray-200/60 dark:border-slate-800/60 text-[11px] flex items-center justify-between"
+            >
+              <div class="truncate flex-1 space-y-0.5">
+                <p class="font-semibold text-gray-800 dark:text-slate-200 truncate">{{ log.action }}</p>
+                <p class="text-gray-400 font-mono text-[10px] truncate">{{ log.user_id }} · {{ log.details }}</p>
+              </div>
+              <span class="text-[10px] text-gray-400 font-mono shrink-0 ml-3">{{ formatTime(log.timestamp) }}</span>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Footer Buttons -->
+      <!-- Footer Actions -->
       <div class="h-16 bg-gray-50 dark:bg-[#090d16] border-t border-gray-200 dark:border-slate-800 px-6 flex items-center justify-between text-xs shrink-0">
         <button
-          type="button"
           @click="isOpen = false"
-          class="px-4 py-2 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium cursor-pointer"
+          class="px-4 py-2 rounded-xl text-gray-500 dark:text-slate-400 hover:bg-gray-200/60 dark:hover:bg-slate-800 transition cursor-pointer font-semibold"
         >
           Cancel
         </button>
 
         <button
-          type="button"
-          :disabled="saving"
           @click="handleSaveSettings"
-          class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-xs cursor-pointer flex items-center space-x-1.5 disabled:opacity-50"
+          :disabled="saving"
+          class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition shadow-md shadow-blue-500/20 cursor-pointer flex items-center space-x-1.5 disabled:opacity-50"
         >
-          <span v-if="saving" class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-white border-t-transparent"></span>
-          <span>{{ saving ? 'Saving Changes...' : 'Save & Apply Settings' }}</span>
+          <span v-if="saving" class="animate-spin text-xs">⏳</span>
+          <span>Save Changes</span>
         </button>
       </div>
     </div>
@@ -430,42 +399,29 @@
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { apiClient } from '../../api/client';
+import { useAuthStore } from '../../stores/authStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { usePreferencesStore } from '../../stores/preferencesStore';
 
-const props = defineProps<{
-  modelValue: boolean;
-}>();
+const props = defineProps<{ modelValue: boolean }>();
+const emit = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>();
 
-const emit = defineEmits<{
-  (e: 'update:modelValue', value: boolean): void;
-}>();
-
+const authStore = useAuthStore();
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
+const preferencesStore = usePreferencesStore();
 
 const isOpen = ref(props.modelValue);
-const activeTab = ref<'general' | 'file_manager' | 'transfers' | 'connections' | 'security' | 'advanced'>('general');
+const activeTab = ref('appearance');
 const saving = ref(false);
 const auditLogs = ref<any[]>([]);
 
-const form = ref({
-  general: {
-    language: 'en',
-    theme: 'dark',
-    default_view: 'grid',
-    default_sort: 'name',
-    sort_direction: 'asc',
-    show_hidden_default: false,
-    confirm_destructive: true,
-  },
-  file_manager: {
-    default_layout: 'split',
-    show_breadcrumbs: true,
-    show_file_size: true,
-    show_permissions: true,
-    remember_last_directories: true,
-  },
+// User Preferences Reactive Model
+const userPrefs = ref({ ...preferencesStore.preferences });
+
+// Admin System Settings Model
+const adminForm = ref({
   transfers: {
     max_concurrent_transfers: 4,
     retry_attempts: 3,
@@ -485,21 +441,18 @@ const form = ref({
     read_only_default: false,
     session_timeout_secs: 86400,
   },
-  advanced: {
-    log_level: 'info',
-    enable_telemetry: true,
-    enable_tracing: true,
-    directory_cache_ttl_secs: 0,
-  },
 });
 
 watch(
   () => props.modelValue,
-  (val) => {
+  async (val) => {
     isOpen.value = val;
     if (val) {
-      fetchSettings();
-      fetchAuditLogs();
+      userPrefs.value = { ...preferencesStore.preferences };
+      if (authStore.isAdmin) {
+        await fetchAdminSettings();
+        await fetchAuditLogs();
+      }
     }
   }
 );
@@ -511,28 +464,19 @@ watch(
   }
 );
 
-async function fetchSettings() {
+async function fetchAdminSettings() {
   try {
     const resp = await apiClient.get('/settings');
     const data = resp.data;
     if (data.settings) {
-      form.value = {
-        general: { ...form.value.general, ...data.settings.general },
-        file_manager: { ...form.value.file_manager, ...data.settings.file_manager },
-        transfers: { ...form.value.transfers, ...data.settings.transfers },
-        connections: { ...form.value.connections, ...data.settings.connections },
-        security: { ...form.value.security, ...data.settings.security },
-        advanced: { ...form.value.advanced, ...data.settings.advanced },
+      adminForm.value = {
+        transfers: { ...adminForm.value.transfers, ...data.settings.transfers },
+        connections: { ...adminForm.value.connections, ...data.settings.connections },
+        security: { ...adminForm.value.security, ...data.settings.security },
       };
-    } else {
-      form.value.connections.default_local_root = data.local_root || form.value.connections.default_local_root;
-      form.value.connections.temp_dir = data.temp_dir || form.value.connections.temp_dir;
-      form.value.security.allow_symlinks_outside_root = data.allow_symlinks ?? false;
-      form.value.general.show_hidden_default = data.show_hidden_default ?? false;
-      form.value.security.read_only_default = data.read_only_default ?? false;
     }
   } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to load settings', 'error');
+    console.warn('Failed to load admin settings', err);
   }
 }
 
@@ -546,20 +490,18 @@ async function fetchAuditLogs() {
 async function handleSaveSettings() {
   saving.value = true;
   try {
-    const resp = await apiClient.put('/settings', { settings: form.value });
-    uiStore.showToast(resp.data.message || 'Settings updated successfully!', 'success');
+    // 1. Save User Preferences to unified preferencesStore & API
+    await preferencesStore.updatePreferences(userPrefs.value);
+
+    // 2. If Admin, also save System Settings
+    if (authStore.isAdmin) {
+      await apiClient.put('/settings', { settings: adminForm.value });
+    }
+
+    uiStore.showToast('Settings & preferences saved successfully!', 'success');
     isOpen.value = false;
 
-    // Apply show_hidden and view_mode to workspace panels
-    workspaceStore.leftPanel.showHidden = form.value.general.show_hidden_default;
-    workspaceStore.rightPanel.showHidden = form.value.general.show_hidden_default;
-    if (form.value.general.default_view === 'grid' || form.value.general.default_view === 'list') {
-      workspaceStore.leftPanel.viewMode = form.value.general.default_view;
-      workspaceStore.rightPanel.viewMode = form.value.general.default_view;
-    }
-    workspaceStore.saveState();
-
-    // Refresh workspace file list with new settings
+    // 3. Refresh Workspace with updated preferences
     await workspaceStore.refreshAll();
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Failed to save settings', 'error');

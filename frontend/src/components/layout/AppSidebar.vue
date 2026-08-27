@@ -137,81 +137,33 @@
       </div>
     </div>
 
-    <!-- Storage Info Box -->
+    <!-- Streamlined Storage Info Box -->
     <div
       v-if="!isCollapsed"
-      class="mx-3 mb-3 p-3.5 bg-white dark:bg-[#0f1422] border border-gray-200/90 dark:border-slate-800 rounded-2xl shadow-xs space-y-1.5"
+      class="mx-3 mb-3 p-3 bg-white/70 dark:bg-[#0f1422]/80 border border-gray-200/80 dark:border-slate-800/80 rounded-2xl shadow-xs space-y-2"
     >
-      <div class="flex items-center justify-between text-xs font-semibold text-gray-900 dark:text-white mb-1">
-        <span>Storage</span>
-        <span
-          v-if="activeConnection?.provider !== 'local'"
-          class="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-blue-500/10 dark:bg-blue-400/20 text-blue-600 dark:text-blue-400 font-bold"
-        >
-          {{ activeConnection?.provider || 'REMOTE' }}
+      <div class="flex items-center justify-between text-xs">
+        <div class="flex items-center space-x-1.5 truncate">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
+          <span class="font-semibold text-gray-800 dark:text-slate-200 truncate">{{ storageInfo.source_name }}</span>
+        </div>
+        <span class="text-[10px] font-mono text-gray-400 dark:text-slate-500 uppercase font-bold shrink-0">
+          {{ activeConnection?.provider || 'LOCAL' }}
         </span>
       </div>
-      
-      <!-- MODE A: LOCAL STORAGE -->
-      <template v-if="activeConnection?.provider === 'local' || !activeConnection">
-        <!-- Line 1: Source Name & Source Size -->
-        <div class="flex items-center justify-between text-xs py-0.5 text-gray-700 dark:text-slate-300">
-          <div class="flex items-center space-x-2 truncate">
-            <FbIcon name="folder" size="14px" class="text-gray-500 shrink-0" />
-            <span class="truncate font-medium">{{ storageInfo.source_name }}</span>
-          </div>
-          <span class="text-gray-600 dark:text-slate-400 font-mono text-[11px] shrink-0 ml-2 font-medium">
-            {{ storageInfo.source_size_formatted }}
-          </span>
-        </div>
 
-        <!-- Line 2: Disk & Usage Percentage -->
-        <div class="flex items-center justify-between text-xs py-0.5 text-gray-700 dark:text-slate-300">
-          <div class="flex items-center space-x-2 truncate">
-            <FbIcon name="home" size="14px" class="text-gray-500 shrink-0" />
-            <span class="truncate font-medium">Disk</span>
-          </div>
-          <span class="text-gray-600 dark:text-slate-400 font-mono text-[11px] shrink-0 ml-2 font-medium">
-            {{ storageInfo.disk_usage_text }}
-          </span>
-        </div>
+      <div class="flex items-center justify-between text-[11px] text-gray-500 dark:text-slate-400 font-mono">
+        <span>{{ storageInfo.source_size_formatted }}</span>
+        <span>{{ storageInfo.disk_usage_text }}</span>
+      </div>
 
-        <!-- Local Storage Progress Bar -->
-        <div class="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-1.5 mt-2 overflow-hidden">
-          <div
-            class="bg-blue-600 h-full rounded-full transition-all duration-300"
-            :style="{ width: `${storageInfo.used_percent}%` }"
-          ></div>
-        </div>
-      </template>
-
-      <!-- MODE B: REMOTE / FTP STORAGE -->
-      <template v-else>
-        <!-- Line 1: Device Name & Provider -->
-        <div class="flex items-center justify-between text-xs py-0.5 text-gray-700 dark:text-slate-300">
-          <div class="flex items-center space-x-2 truncate">
-            <FbIcon name="share" size="14px" class="text-blue-500 shrink-0" />
-            <span class="truncate font-bold text-gray-900 dark:text-white">{{ storageInfo.source_name }}</span>
-          </div>
-          <span class="text-gray-500 dark:text-slate-400 font-mono text-[10px] shrink-0 ml-2">
-            {{ storageInfo.disk_label }}
-          </span>
-        </div>
-
-        <!-- Line 2: Connection Status -->
-        <div class="flex items-center justify-between text-xs py-0.5 text-gray-700 dark:text-slate-300">
-          <span class="text-gray-500 dark:text-slate-400 text-[11px]">Server Status</span>
-          <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 font-semibold text-[11px] font-mono">
-            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>Connected</span>
-          </div>
-        </div>
-
-        <!-- Remote Active Progress Bar -->
-        <div class="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-1.5 mt-2 overflow-hidden">
-          <div class="bg-gradient-to-r from-blue-600 via-blue-500 to-emerald-500 h-full w-full rounded-full"></div>
-        </div>
-      </template>
+      <!-- Compact Progress Bar -->
+      <div class="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-1 overflow-hidden">
+        <div
+          class="bg-blue-600 h-full rounded-full transition-all duration-300"
+          :style="{ width: `${storageInfo.used_percent || 0}%` }"
+        ></div>
+      </div>
     </div>
 
     <!-- User Profile Footer -->

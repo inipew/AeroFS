@@ -137,7 +137,7 @@ impl AppState {
         // Re-register local OpenDAL provider
         let root_str = new_root.to_string_lossy().to_string();
         let op = build_fs_operator(&root_str)?;
-        let local_fs = Arc::new(OpenDalFileSystem::new("local", op));
+        let local_fs = Arc::new(OpenDalFileSystem::new_local("local", op, new_root.clone()));
         self.register_provider("local".to_string(), local_fs).await;
 
         // Persist to database
@@ -164,7 +164,7 @@ impl AppState {
             let root_str = local_root.to_string_lossy().to_string();
             match build_fs_operator(&root_str) {
                 Ok(op) => {
-                    let local_fs = Arc::new(OpenDalFileSystem::new("local", op));
+                    let local_fs = Arc::new(OpenDalFileSystem::new_local("local", op, local_root.clone()));
                     self.register_provider("local".to_string(), local_fs).await;
                     tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
                 }

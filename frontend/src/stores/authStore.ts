@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { loginApi, logoutApi, meApi, type LoginPayload } from '../api/auth';
 import type { UserInfo } from '../types/auth';
 
@@ -8,6 +8,10 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = ref<boolean>(false);
   const isChecking = ref<boolean>(true);
   const error = ref<string | null>(null);
+
+  const isAdmin = computed<boolean>(() => {
+    return user.value?.is_admin ?? false;
+  });
 
   async function checkAuth() {
     isChecking.value = true;
@@ -49,6 +53,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     user,
     isAuthenticated,
+    isAdmin,
     isChecking,
     error,
     checkAuth,

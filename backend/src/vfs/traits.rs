@@ -39,4 +39,11 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Copy within the same provider
     async fn copy(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError>;
+
+    /// Set permissions (octal string e.g. "0755", "0600") on a file or directory
+    async fn set_permissions(&self, path: &VfsPath, permissions: &str) -> Result<(), VfsError> {
+        let _ = path;
+        let _ = permissions;
+        Ok(())
+    }
 }

@@ -237,16 +237,27 @@
             v-for="toast in uiStore.toasts"
             :key="toast.id"
             :class="[
-              'pointer-events-auto p-3.5 rounded-2xl shadow-xl border flex items-center space-x-3 text-xs font-semibold backdrop-blur-md transition-all',
-              toast.type === 'success' ? 'bg-emerald-950/90 border-emerald-700/60 text-emerald-200' : '',
-              toast.type === 'error' ? 'bg-rose-950/90 border-rose-700/60 text-rose-200' : '',
-              toast.type === 'warning' ? 'bg-amber-950/90 border-amber-700/60 text-amber-200' : '',
-              toast.type === 'info' ? 'bg-slate-900/90 border-slate-700/60 text-slate-200' : ''
+              'pointer-events-auto p-3 rounded-2xl shadow-2xl border flex items-center space-x-2.5 text-xs font-semibold backdrop-blur-md transition-all',
+              toast.type === 'success' ? 'bg-emerald-950/95 border-emerald-700/60 text-emerald-100' : '',
+              toast.type === 'error' ? 'bg-rose-950/95 border-rose-700/60 text-rose-100' : '',
+              toast.type === 'warning' ? 'bg-amber-950/95 border-amber-700/60 text-amber-100' : '',
+              toast.type === 'info' ? 'bg-slate-900/95 border-slate-700/60 text-slate-100' : ''
             ]"
           >
-            <span class="text-base shrink-0">
-              {{ toast.type === 'success' ? '✅' : (toast.type === 'error' ? '❌' : (toast.type === 'warning' ? '⚠️' : 'ℹ️')) }}
-            </span>
+            <div
+              :class="[
+                'w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-xs font-bold text-xs',
+                toast.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : '',
+                toast.type === 'error' ? 'bg-rose-500/20 text-rose-400' : '',
+                toast.type === 'warning' ? 'bg-amber-500/20 text-amber-400' : '',
+                toast.type === 'info' ? 'bg-blue-500/20 text-blue-400' : ''
+              ]"
+            >
+              <FbIcon v-if="toast.type === 'success'" name="check" size="13px" />
+              <FbIcon v-else-if="toast.type === 'error'" name="x" size="13px" />
+              <FbIcon v-else-if="toast.type === 'warning'" name="info" size="13px" />
+              <FbIcon v-else name="info" size="13px" />
+            </div>
             <span class="flex-1 leading-snug">{{ toast.message }}</span>
           </div>
         </TransitionGroup>
@@ -275,6 +286,7 @@ import { useWorkspaceStore } from './stores/workspaceStore';
 import { useTransferStore } from './stores/transferStore';
 import { useFileStore } from './stores/fileStore';
 import { useUiStore } from './stores/uiStore';
+import { usePreferencesStore } from './stores/preferencesStore';
 import { initializeCommandRegistry, commandRegistry } from './services/commandRegistry';
 import { PreviewResolver } from './services/previewResolver';
 import type { FileEntry } from './types/vfs';
@@ -310,6 +322,7 @@ const workspaceStore = useWorkspaceStore();
 const transferStore = useTransferStore();
 const fileStore = useFileStore();
 const uiStore = useUiStore();
+const preferencesStore = usePreferencesStore();
 
 const leftConnName = computed(() => {
   const conn = connStore.connections.find((c) => c.id === workspaceStore.leftPanel.connectionId);
@@ -643,6 +656,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown);
   await authStore.checkAuth();
   if (authStore.isAuthenticated) {
+    await preferencesStore.fetchPreferences();
     await connStore.fetchConnections();
     await workspaceStore.fetchPanelEntries('left');
     if (workspaceStore.isDualPane) {

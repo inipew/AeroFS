@@ -1475,7 +1475,23 @@ function handleKeyDown(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement)?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+  if (e.key === 'Tab' && workspaceStore.isDualPane) {
+    e.preventDefault();
+    workspaceStore.setActivePanel(props.panelId === 'left' ? 'right' : 'left');
+    return;
+  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'ArrowLeft') {
+    e.preventDefault();
+    workspaceStore.setActivePanel('left');
+    return;
+  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'ArrowRight') {
+    e.preventDefault();
+    workspaceStore.setActivePanel('right');
+    return;
+  } else if (e.key === 'F5') {
+    e.preventDefault();
+    workspaceStore.fetchPanelEntries(props.panelId);
+    return;
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
     e.preventDefault();
     openAddressBar();
   } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
