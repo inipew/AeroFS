@@ -312,15 +312,18 @@
               @click="handleEntryClick($event, folder)"
               @dblclick="workspaceStore.navigatePanel(panelId, folder.path)"
               @contextmenu="openContextMenu($event, folder)"
-              @dragover.stop.prevent="handleDragOver"
+              @dragover.stop.prevent="handleFolderDragOver($event, folder)"
+              @dragleave.stop="handleFolderDragLeave(folder)"
               @drop.stop.prevent="handleDrop($event, folder)"
               :class="[
                 'border rounded-2xl p-2.5 sm:p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-150 select-none shadow-xs group active:scale-[0.98] min-h-[120px] sm:min-h-[135px]',
                 isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
                 workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
-                panel.selectedEntries.includes(folder.path)
-                  ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
-                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:-translate-y-0.5'
+                hoveredFolderDrop === folder.path
+                  ? 'ring-2 ring-blue-500 scale-[1.04] bg-blue-100/70 dark:bg-blue-900/60 border-blue-500 shadow-lg'
+                  : (panel.selectedEntries.includes(folder.path)
+                    ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
+                    : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:-translate-y-0.5')
               ]"
             >
               <!-- Large Prominent Sky-Blue / Azure Folder Icon -->
@@ -528,15 +531,18 @@
               @click="handleEntryClick($event, entry)"
               @dblclick="handleEntryDoubleClick(entry)"
               @contextmenu="openContextMenu($event, entry)"
-              @dragover.stop.prevent="entry.kind === 'directory' ? handleDragOver($event) : null"
+              @dragover.stop.prevent="entry.kind === 'directory' ? handleFolderDragOver($event, entry) : null"
+              @dragleave.stop="entry.kind === 'directory' ? handleFolderDragLeave(entry) : null"
               @drop.stop.prevent="entry.kind === 'directory' ? handleDrop($event, entry) : null"
               :class="[
                 'cursor-pointer transition group',
                 isItemHidden(entry) ? 'opacity-65 hover:opacity-100 italic' : '',
                 workspaceStore.isCutItem(panel.connectionId, entry.path) ? 'opacity-40 italic' : '',
-                panel.selectedEntries.includes(entry.path)
-                  ? 'bg-blue-50/80 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200 border-l-2 border-l-blue-600 dark:border-l-blue-400'
-                  : 'hover:bg-gray-50/80 dark:hover:bg-slate-800/60 text-gray-800 dark:text-slate-200 border-l-2 border-l-transparent'
+                hoveredFolderDrop === entry.path
+                  ? 'bg-blue-100/70 dark:bg-blue-900/60 border-l-4 border-l-blue-600'
+                  : (panel.selectedEntries.includes(entry.path)
+                    ? 'bg-blue-50/80 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200 border-l-2 border-l-blue-600 dark:border-l-blue-400'
+                    : 'hover:bg-gray-50/80 dark:hover:bg-slate-800/60 text-gray-800 dark:text-slate-200 border-l-2 border-l-transparent')
               ]"
             >
               <td
@@ -647,7 +653,7 @@ import { useConnectionStore } from '../../stores/connectionStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useTransferStore } from '../../stores/transferStore';
 import { useUiStore } from '../../stores/uiStore';
-import { getDownloadUrl } from '../../api/files';
+import { getDownloadUrl, uploadFileApi } from '../../api/files';
 import type { FileEntry } from '../../types/vfs';
 import { PreviewResolver } from '../../services/previewResolver';
 
@@ -1087,10 +1093,26 @@ function handleDragLeave(e: DragEvent) {
   }
 }
 
+const hoveredFolderDrop = ref<string | null>(null);
+
+function handleFolderDragOver(e: DragEvent, folder: FileEntry) {
+  e.preventDefault();
+  hoveredFolderDrop.value = folder.path;
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = e.shiftKey ? 'move' : 'copy';
+  }
+}
+
+function handleFolderDragLeave(folder: FileEntry) {
+  if (hoveredFolderDrop.value === folder.path) {
+    hoveredFolderDrop.value = null;
+  }
+}
+
 function handleDragOver(e: DragEvent) {
   e.preventDefault();
   if (e.dataTransfer) {
-    e.dataTransfer.dropEffect = 'copy';
+    e.dataTransfer.dropEffect = e.shiftKey ? 'move' : 'copy';
   }
 }
 
@@ -1157,20 +1179,124 @@ function handleDragStart(e: DragEvent, entry: FileEntry) {
   }
 }
 
+interface DroppedUploadItem {
+  file: File;
+  relativePath: string;
+}
+
+async function traverseDirectoryEntry(entry: any, currentPath: string): Promise<DroppedUploadItem[]> {
+  const items: DroppedUploadItem[] = [];
+  if (entry.isFile) {
+    const file: File = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    items.push({
+      file,
+      relativePath: currentPath ? `${currentPath}/${entry.name}` : entry.name,
+    });
+  } else if (entry.isDirectory) {
+    const dirReader = entry.createReader();
+    const readAllEntries = async (): Promise<any[]> => {
+      const entries: any[] = [];
+      let batch: any[] = [];
+      do {
+        batch = await new Promise((resolve, reject) => dirReader.readEntries(resolve, reject));
+        entries.push(...batch);
+      } while (batch.length > 0);
+      return entries;
+    };
+
+    const dirEntries = await readAllEntries();
+    const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+    for (const child of dirEntries) {
+      const childItems = await traverseDirectoryEntry(child, nextPath);
+      items.push(...childItems);
+    }
+  }
+  return items;
+}
+
+async function handleExternalFilesDrop(e: DragEvent, targetDir: string) {
+  const items = e.dataTransfer?.items;
+  const files = e.dataTransfer?.files;
+  if (!items && !files) return;
+
+  const uploadItems: DroppedUploadItem[] = [];
+
+  if (items && items.length > 0) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.webkitGetAsEntry) {
+        const entry = item.webkitGetAsEntry();
+        if (entry) {
+          const entryItems = await traverseDirectoryEntry(entry, '');
+          uploadItems.push(...entryItems);
+        }
+      } else if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (f) {
+          uploadItems.push({ file: f, relativePath: f.name });
+        }
+      }
+    }
+  } else if (files && files.length > 0) {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      uploadItems.push({ file: f, relativePath: f.name });
+    }
+  }
+
+  if (uploadItems.length === 0) return;
+
+  uiStore.showToast(`Uploading ${uploadItems.length} file(s)...`, 'info');
+  const connId = panel.value.connectionId || 'local';
+
+  // Upload in bounded parallel batches (2 workers)
+  const concurrency = 2;
+  let nextIdx = 0;
+  let successCount = 0;
+
+  async function worker() {
+    while (nextIdx < uploadItems.length) {
+      const item = uploadItems[nextIdx++];
+      const cleanRel = item.relativePath.replace(/^\/+/, '');
+      const fullDest = targetDir === '/' ? `/${cleanRel}` : `${targetDir}/${cleanRel}`;
+      try {
+        await uploadFileApi(connId, fullDest, item.file);
+        successCount++;
+      } catch (err) {
+        console.error('Failed uploading item', cleanRel, err);
+      }
+    }
+  }
+
+  const workers = [];
+  for (let w = 0; w < Math.min(concurrency, uploadItems.length); w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+
+  uiStore.showToast(`Uploaded ${successCount} file(s) to ${targetDir}`, 'success');
+  await workspaceStore.fetchPanelEntries(props.panelId);
+}
+
 async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
   dragEnterCounter = 0;
   isDragOver.value = false;
+  hoveredFolderDrop.value = null;
+
+  const targetDir = targetFolder && targetFolder.kind === 'directory'
+    ? targetFolder.path
+    : panel.value.path;
 
   const rawData = e.dataTransfer?.getData('application/json') || e.dataTransfer?.getData('text/plain');
-  if (!rawData) return;
+  if (!rawData) {
+    // OS File / Folder drop
+    await handleExternalFilesDrop(e, targetDir);
+    return;
+  }
 
   try {
     const data = JSON.parse(rawData);
     if (!data.paths || data.paths.length === 0) return;
-
-    const targetDir = targetFolder && targetFolder.kind === 'directory'
-      ? targetFolder.path
-      : panel.value.path;
 
     // Prevent dropping into the exact same folder on the same connection
     if (data.sourceConnectionId === panel.value.connectionId && data.paths.every((p: string) => {
@@ -1180,7 +1306,9 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
       return;
     }
 
-    transferStore.resetBatchConflict();
+    const isMove = e.shiftKey || (data.sourceConnectionId === panel.value.connectionId && !e.ctrlKey && !e.altKey);
+    const opType: 'copy' | 'move' = isMove ? 'move' : 'copy';
+    const opLabel = isMove ? 'Move' : 'Copy';
 
     for (const filePath of data.paths) {
       let fileName = filePath.split('/').pop() || 'file';
@@ -1216,17 +1344,20 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
       }
 
       await transferStore.submitTransfer(
-        `Copy ${fileName} to ${targetDir}`,
-        'copy',
+        `${opLabel} ${fileName} to ${targetDir}`,
+        opType,
         data.sourceConnectionId,
         filePath,
         panel.value.connectionId,
         targetPath
       );
     }
-    uiStore.showToast(`Queued ${data.paths.length} transfer(s)`, 'info');
+    uiStore.showToast(`Queued ${data.paths.length} ${opLabel.toLowerCase()}(s)`, 'info');
     setTimeout(() => {
       workspaceStore.fetchPanelEntries(props.panelId);
+      if (isMove && data.sourcePanelId && data.sourcePanelId !== props.panelId) {
+        workspaceStore.fetchPanelEntries(data.sourcePanelId);
+      }
     }, 1000);
   } catch (err: any) {
     uiStore.showToast('Transfer queue failed', 'error');

@@ -332,6 +332,19 @@ impl FileSystem for OpenDalFileSystem {
 
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, from = %from.path, to = %to.path))]
     async fn copy(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError> {
+        let meta = self.stat(from).await?;
+        if meta.kind == FileKind::Directory {
+            self.create_dir(to).await?;
+            let entries = self.list(from).await?;
+            for entry in entries {
+                let child_name = entry.name;
+                let child_from = VfsPath::new(&from.connection_id, format!("{}/{}", from.path.trim_end_matches('/'), child_name));
+                let child_to = VfsPath::new(&to.connection_id, format!("{}/{}", to.path.trim_end_matches('/'), child_name));
+                Box::pin(self.copy(&child_from, &child_to)).await?;
+            }
+            return Ok(());
+        }
+
         let from_path = self.to_operator_path(from)?;
         let to_path = self.to_operator_path(to)?;
 

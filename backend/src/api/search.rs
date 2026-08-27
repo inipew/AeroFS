@@ -1,3 +1,4 @@
+use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, VfsError};
 use crate::filesystem::search::search_recursive;
@@ -22,10 +23,12 @@ pub struct SearchQuery {
 /// Recursive search files in a connection
 pub async fn search_files(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(params): Query<SearchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await

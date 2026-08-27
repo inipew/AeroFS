@@ -1,3 +1,4 @@
+use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
 use crate::domain::VfsPath;
 use crate::errors::{AppError, VfsError};
@@ -41,6 +42,8 @@ pub async fn compress_files(
     user: AuthenticatedUser,
     Json(payload): Json<CompressRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -106,6 +109,8 @@ pub async fn extract_archive_endpoint(
     user: AuthenticatedUser,
     Json(payload): Json<ExtractRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -160,9 +165,11 @@ pub struct ListArchiveQuery {
 pub async fn list_virtual_archive_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     axum::extract::Query(query): axum::extract::Query<ListArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -185,9 +192,11 @@ pub struct ReadArchiveQuery {
 pub async fn read_virtual_archive_entry_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     axum::extract::Query(query): axum::extract::Query<ReadArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -227,6 +236,7 @@ pub async fn extract_selected_archive_endpoint(
     user: AuthenticatedUser,
     Json(payload): Json<ExtractSelectedRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
     let provider = state
         .get_provider(&connection_id)
         .await

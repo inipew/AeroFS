@@ -619,6 +619,26 @@ function detectMode(filename: string): string {
   return mode || 'ace/mode/text';
 }
 
+let markdownDebounceTimer: any = null;
+
+function updateMarkdownPreviewDebounced() {
+  if (!isMarkdownFile.value || !showMarkdownPreview.value) return;
+  if (markdownDebounceTimer) clearTimeout(markdownDebounceTimer);
+  markdownDebounceTimer = setTimeout(() => {
+    if (editor.value) {
+      rawTextContent.value = editor.value.getValue();
+      charCount.value = rawTextContent.value.length;
+    }
+  }, 300);
+}
+
+watch(showMarkdownPreview, (show) => {
+  if (show && editor.value) {
+    rawTextContent.value = editor.value.getValue();
+    charCount.value = rawTextContent.value.length;
+  }
+});
+
 function initAce() {
   if (!editorEl.value || !uiStore.editorFile) return;
 
@@ -637,14 +657,17 @@ function initAce() {
 
   currentMode.value = detectMode(uiStore.editorFile.name);
   lineCount.value = editor.value.session.getLength();
-  rawTextContent.value = uiStore.editorContent;
-  charCount.value = rawTextContent.value.length;
+  charCount.value = uiStore.editorContent.length;
+  if (isMarkdownFile.value && showMarkdownPreview.value) {
+    rawTextContent.value = uiStore.editorContent;
+  }
 
   editor.value.session.on('change', () => {
     isDirty.value = !editor.value?.session.getUndoManager().isClean();
     lineCount.value = editor.value?.session.getLength() || 1;
-    rawTextContent.value = editor.value?.getValue() || '';
-    charCount.value = rawTextContent.value.length;
+    if (isMarkdownFile.value && showMarkdownPreview.value) {
+      updateMarkdownPreviewDebounced();
+    }
   });
 
   editor.value.commands.addCommand({
@@ -766,6 +789,11 @@ async function handleSave() {
             {
               path: uiStore.editorFile.path,
               content: currentText,
+            },
+            {
+              headers: {
+                'X-Force-Overwrite': 'true',
+              },
             }
           );
           if (forceResp.headers['etag']) {

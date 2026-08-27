@@ -217,19 +217,54 @@ async function startUpload() {
   const connId = activeP.connectionId || 'local';
   const targetFolder = activeP.path;
 
-  try {
-    for (let i = 0; i < selectedFiles.value.length; i++) {
+  const totalBytesAll = selectedFiles.value.reduce((acc, f) => acc + (f.size || 0), 0);
+  const transferredBytesMap: Record<number, number> = {};
+  const concurrency = 2;
+  let nextIdx = 0;
+  const errors: string[] = [];
+  let successfulCount = 0;
+
+  async function uploadWorker() {
+    while (nextIdx < selectedFiles.value.length) {
+      const i = nextIdx++;
       const file = selectedFiles.value[i];
       const targetPath = targetFolder === '/' ? `/${file.name}` : `${targetFolder}/${file.name}`;
+      try {
+        await uploadFileApi(connId, targetPath, file, (percent) => {
+          transferredBytesMap[i] = (percent / 100) * (file.size || 0);
+          const currentTotalTransferred = Object.values(transferredBytesMap).reduce((a, b) => a + b, 0);
+          if (totalBytesAll > 0) {
+            progress.value = Math.min(100, Math.round((currentTotalTransferred * 100) / totalBytesAll));
+          }
+        });
+        transferredBytesMap[i] = file.size || 0;
+        successfulCount++;
+      } catch (e: any) {
+        errors.push(`${file.name}: ${e.response?.data?.error?.message || e.message}`);
+      }
+    }
+  }
 
-      await uploadFileApi(connId, targetPath, file, (p) => {
-        progress.value = Math.round(((i + p / 100) / selectedFiles.value.length) * 100);
-      });
+  try {
+    const workers = [];
+    const count = Math.min(concurrency, selectedFiles.value.length);
+    for (let w = 0; w < count; w++) {
+      workers.push(uploadWorker());
+    }
+    await Promise.all(workers);
+
+    if (errors.length === 0) {
+      uiStore.showToast(`Successfully uploaded ${successfulCount} file(s)`, 'success');
+      uiStore.isUploadOpen = false;
+      selectedFiles.value = [];
+    } else if (successfulCount > 0) {
+      uiStore.showToast(`Uploaded ${successfulCount} file(s), ${errors.length} failed`, 'warning');
+      uiStore.isUploadOpen = false;
+      selectedFiles.value = [];
+    } else {
+      uiStore.showToast(errors[0] || 'Failed to upload files', 'error');
     }
 
-    uiStore.showToast(`Successfully uploaded ${selectedFiles.value.length} files`, 'success');
-    uiStore.isUploadOpen = false;
-    selectedFiles.value = [];
     await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Failed to upload files', 'error');

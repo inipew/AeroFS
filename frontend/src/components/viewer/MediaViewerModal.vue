@@ -290,6 +290,13 @@ const currentIndex = computed(() => {
 });
 
 const mediaType = computed(() => {
+  const mime = uiStore.mediaViewerFile?.mime_type?.toLowerCase();
+  if (mime) {
+    if (mime.startsWith('image/')) return 'image';
+    if (mime.startsWith('video/')) return 'video';
+    if (mime.startsWith('audio/')) return 'audio';
+  }
+
   const ext = uiStore.mediaViewerTitle.split('.').pop()?.toLowerCase() || '';
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif'].includes(ext)) {
     return 'image';

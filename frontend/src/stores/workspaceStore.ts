@@ -404,16 +404,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function goBack(panelId: PanelId) {
     const p = getPanel(panelId);
     if (p.navigation.historyIndex > 0) {
-      p.navigation.historyIndex--;
-      await navigateTo(panelId, p.navigation.history[p.navigation.historyIndex], false);
+      const targetIdx = p.navigation.historyIndex - 1;
+      const targetPath = p.navigation.history[targetIdx];
+      const res = await fetchPanelEntries(panelId, targetPath);
+      if (res.ok) {
+        p.navigation.historyIndex = targetIdx;
+        saveState();
+      } else {
+        const uiStore = useUiStore();
+        uiStore.showToast(res.error || `Failed to navigate back to ${targetPath}`, 'error');
+      }
     }
   }
 
   async function goForward(panelId: PanelId) {
     const p = getPanel(panelId);
     if (p.navigation.historyIndex < p.navigation.history.length - 1) {
-      p.navigation.historyIndex++;
-      await navigateTo(panelId, p.navigation.history[p.navigation.historyIndex], false);
+      const targetIdx = p.navigation.historyIndex + 1;
+      const targetPath = p.navigation.history[targetIdx];
+      const res = await fetchPanelEntries(panelId, targetPath);
+      if (res.ok) {
+        p.navigation.historyIndex = targetIdx;
+        saveState();
+      } else {
+        const uiStore = useUiStore();
+        uiStore.showToast(res.error || `Failed to navigate forward to ${targetPath}`, 'error');
+      }
     }
   }
 

@@ -220,3 +220,47 @@ async fn test_transfer_sqlite_durability() {
     assert_eq!(row.1, "completed");
     assert_eq!(row.2, "Durable Job");
 }
+
+#[tokio::test]
+async fn test_transfer_recursive_directory_copy() {
+    let (app, cookie, temp, _state) = setup_app().await;
+
+    // Create a source directory with nested folders and files
+    let storage_dir = temp.path().join("storage");
+    let src_dir = storage_dir.join("my_folder");
+    let sub_dir = src_dir.join("sub_folder");
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    std::fs::write(src_dir.join("file1.txt"), b"file 1 content").unwrap();
+    std::fs::write(sub_dir.join("nested.txt"), b"nested file content").unwrap();
+
+    // Submit transfer job to copy the directory to /backup_folder
+    let transfer_req = Request::builder()
+        .uri("/api/v1/transfers")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "name": "Copy my_folder to /backup_folder",
+                "transfer_type": "copy",
+                "source_connection_id": "local",
+                "source_path": "/my_folder",
+                "destination_connection_id": "local",
+                "destination_path": "/backup_folder"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(transfer_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let dst_dir = storage_dir.join("backup_folder");
+    assert!(dst_dir.is_dir(), "Destination must be a directory, not a 0-byte file!");
+    assert!(dst_dir.join("file1.txt").is_file());
+    assert_eq!(std::fs::read(dst_dir.join("file1.txt")).unwrap(), b"file 1 content");
+    assert!(dst_dir.join("sub_folder").join("nested.txt").is_file());
+    assert_eq!(std::fs::read(dst_dir.join("sub_folder").join("nested.txt")).unwrap(), b"nested file content");
+}

@@ -194,14 +194,44 @@ pub async fn get_file_content(
     resp_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
     resp_headers.insert(CONTENT_TYPE, mime.parse().unwrap());
     resp_headers.insert(ETAG, meta.etag.parse().unwrap());
+    resp_headers.insert(
+        header::CACHE_CONTROL,
+        "private, max-age=3600, must-revalidate".parse().unwrap(),
+    );
 
     if let Some(mtime) = meta.modified_at {
         resp_headers.insert(LAST_MODIFIED, mtime.to_rfc2822().parse().unwrap());
     }
 
     if query.download.unwrap_or(false) {
-        let disposition = format!("attachment; filename=\"{}\"", meta.name.replace('"', ""));
+        let ascii_fallback = meta
+            .name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
+            .collect::<String>();
+        let fallback = if ascii_fallback.is_empty() {
+            "download".to_string()
+        } else {
+            ascii_fallback
+        };
+        let encoded_utf8 = urlencoding::encode(&meta.name);
+        let disposition = format!(
+            "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+            fallback, encoded_utf8
+        );
         resp_headers.insert(CONTENT_DISPOSITION, disposition.parse().unwrap());
+
+        crate::auth::record_audit_log(
+            &state.db,
+            Some(&user.id),
+            "FILE_DOWNLOAD",
+            Some(&connection_id),
+            Some(&vfs_path.path),
+            "SUCCESS",
+            None,
+            Some(&format!("Downloaded: {}", vfs_path.path)),
+        )
+        .await;
     }
 
     // Handle ETag conditional caching: 304 Not Modified
@@ -418,7 +448,7 @@ pub struct DeleteResponse {
     pub message: String,
 }
 
-/// Delete one or more files / directories
+/// Delete one or more files / directories with bounded concurrency (8 workers)
 pub async fn delete_files(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -432,19 +462,39 @@ pub async fn delete_files(
         .await
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
 
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+    let mut tasks = tokio::task::JoinSet::new();
+
+    for p in payload.paths {
+        let provider = provider.clone();
+        let conn_id = connection_id.clone();
+        let sem = semaphore.clone();
+        tasks.spawn(async move {
+            let _permit = sem.acquire().await;
+            let vfs_path = VfsPath::new(&conn_id, &p);
+            let res = provider.delete(&vfs_path).await;
+            (p, res)
+        });
+    }
+
     let mut succeeded = Vec::new();
     let mut failed = Vec::new();
 
-    for p in &payload.paths {
-        let vfs_path = VfsPath::new(&connection_id, p);
-        match provider.delete(&vfs_path).await {
-            Ok(_) => succeeded.push(p.clone()),
-            Err(e) => failed.push(DeleteResultItem {
-                path: p.clone(),
-                error: e.to_string(),
-            }),
+    while let Some(join_res) = tasks.join_next().await {
+        if let Ok((path, del_res)) = join_res {
+            match del_res {
+                Ok(_) => succeeded.push(path),
+                Err(e) => failed.push(DeleteResultItem {
+                    path,
+                    error: e.to_string(),
+                }),
+            }
         }
     }
+
+    // Sort outputs for determinism
+    succeeded.sort();
+    failed.sort_by(|a, b| a.path.cmp(&b.path));
 
     let success = failed.is_empty();
     let message = if success {
@@ -468,17 +518,29 @@ pub async fn rename_entry(
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Rename).await?;
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
 
     let provider = state
         .get_provider(&connection_id)
         .await
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
 
-    let from_vfs = VfsPath::new(&connection_id, payload.from);
-    let to_vfs = VfsPath::new(&connection_id, payload.to);
+    let from_vfs = VfsPath::new(&connection_id, &payload.from);
+    let to_vfs = VfsPath::new(&connection_id, &payload.to);
 
     provider.rename(&from_vfs, &to_vfs).await?;
+
+    crate::auth::record_audit_log(
+        &state.db,
+        Some(&user.id),
+        "FILE_RENAME",
+        Some(&connection_id),
+        Some(&from_vfs.path),
+        "SUCCESS",
+        None,
+        Some(&format!("Renamed {} -> {}", from_vfs.path, to_vfs.path)),
+    )
+    .await;
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -500,10 +562,22 @@ pub async fn copy_entry(
         .await
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
 
-    let from_vfs = VfsPath::new(&connection_id, payload.from);
-    let to_vfs = VfsPath::new(&connection_id, payload.to);
+    let from_vfs = VfsPath::new(&connection_id, &payload.from);
+    let to_vfs = VfsPath::new(&connection_id, &payload.to);
 
     provider.copy(&from_vfs, &to_vfs).await?;
+
+    crate::auth::record_audit_log(
+        &state.db,
+        Some(&user.id),
+        "FILE_COPY",
+        Some(&connection_id),
+        Some(&from_vfs.path),
+        "SUCCESS",
+        None,
+        Some(&format!("Copied {} -> {}", from_vfs.path, to_vfs.path)),
+    )
+    .await;
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -511,7 +585,7 @@ pub async fn copy_entry(
     }))
 }
 
-/// Streaming multipart upload
+/// Streaming multipart upload with atomic .part staging
 pub async fn upload_file(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -545,34 +619,76 @@ pub async fn upload_file(
                 &connection_id,
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             );
+            let part_path = VfsPath::new(
+                &connection_id,
+                format!("{}.aerofs.part", target_path.path),
+            );
 
             // Bounded 64 KiB asynchronous duplex pipe with zero whole-file RAM buffering
             let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
             let write_handle = tokio::spawn({
                 let provider = provider.clone();
-                let target_path = target_path.clone();
+                let part_path = part_path.clone();
                 async move {
-                    provider.write_stream(&target_path, Box::new(duplex_reader)).await
+                    provider.write_stream(&part_path, Box::new(duplex_reader)).await
                 }
             });
 
             use tokio::io::AsyncWriteExt;
-            while let Some(chunk) = field
-                .chunk()
-                .await
-                .map_err(|e| AppError::BadRequest(format!("Upload stream error: {}", e)))?
-            {
-                duplex_writer
-                    .write_all(&chunk)
-                    .await
-                    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed writing upload chunk: {}", e)))?;
+            let mut stream_err = None;
+            while let Some(chunk) = match field.chunk().await {
+                Ok(c) => c,
+                Err(e) => {
+                    stream_err = Some(AppError::BadRequest(format!("Upload stream error: {}", e)));
+                    None
+                }
+            } {
+                if let Err(e) = duplex_writer.write_all(&chunk).await {
+                    stream_err = Some(AppError::Internal(anyhow::anyhow!("Failed writing upload chunk: {}", e)));
+                    break;
+                }
             }
             drop(duplex_writer);
 
-            write_handle
+            if let Some(err) = stream_err {
+                let _ = write_handle.await;
+                let _ = provider.delete(&part_path).await;
+                return Err(err);
+            }
+
+            let write_res = write_handle
                 .await
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e)))?
-                .map_err(AppError::from)?;
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e)))?;
+
+            if let Err(e) = write_res {
+                let _ = provider.delete(&part_path).await;
+                return Err(AppError::from(e));
+            }
+
+            // Stream completed cleanly -> promote .aerofs.part to final target
+            if let Err(rename_err) = provider.rename(&part_path, &target_path).await {
+                // If direct rename fails, attempt fallback copy + cleanup
+                if let Err(copy_err) = provider.copy(&part_path, &target_path).await {
+                    let _ = provider.delete(&part_path).await;
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "Failed finalizing uploaded file: rename error ({}), copy error ({})",
+                        rename_err, copy_err
+                    )));
+                }
+                let _ = provider.delete(&part_path).await;
+            }
+
+            crate::auth::record_audit_log(
+                &state.db,
+                Some(&user.id),
+                "FILE_UPLOAD",
+                Some(&connection_id),
+                Some(&target_path.path),
+                "SUCCESS",
+                None,
+                Some(&format!("Uploaded: {}", target_path.path)),
+            )
+            .await;
 
             uploaded_files.push(target_path.path);
         }
@@ -591,6 +707,8 @@ pub async fn chmod_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<ChmodRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
+
     let _provider = state
         .get_provider(&connection_id)
         .await
@@ -598,27 +716,47 @@ pub async fn chmod_file(
 
     let vfs_path = VfsPath::new(&connection_id, &payload.path);
 
-    // If local provider, apply chmod
-    if connection_id == "local" {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let root = if let Some(custom) = state.get_system_setting("local_root").await {
-                std::path::PathBuf::from(custom)
-            } else {
-                state.config.filesystem.default_local_root.clone()
-            };
-            let safe_path = crate::filesystem::safepath::SafePath::resolve(&root, &payload.path, state.config.security.allow_symlinks_outside_root)?;
-            let abs_path = safe_path.absolute();
+    if connection_id != "local" {
+        return Err(AppError::BadRequest(
+            "Permissions modification (CHMOD) is only supported on local filesystems".into(),
+        ));
+    }
 
-            let perms = std::fs::Permissions::from_mode(payload.mode);
-            std::fs::set_permissions(abs_path, perms.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to chmod: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let root = if let Some(custom) = state.get_system_setting("local_root").await {
+            std::path::PathBuf::from(custom)
+        } else {
+            state.config.filesystem.default_local_root.clone()
+        };
+        let safe_path = crate::filesystem::safepath::SafePath::resolve(
+            &root,
+            &payload.path,
+            state.config.security.allow_symlinks_outside_root,
+        )?;
+        let abs_path = safe_path.absolute();
 
-            if payload.recursive.unwrap_or(false) && abs_path.is_dir() {
-                apply_chmod_recursive(abs_path, payload.mode).await;
+        let perms = std::fs::Permissions::from_mode(payload.mode);
+        std::fs::set_permissions(abs_path, perms)
+            .map_err(|e| anyhow::anyhow!("Failed to chmod: {}", e))?;
+
+        if payload.recursive.unwrap_or(false) && abs_path.is_dir() {
+            let (succeeded, failed) = apply_chmod_recursive(abs_path, payload.mode).await;
+            if !failed.is_empty() {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "succeeded": succeeded,
+                    "failed": failed,
+                    "message": format!("Chmod partially completed: {} succeeded, {} failed", succeeded, failed.len())
+                })));
             }
         }
+    }
+
+    #[cfg(not(unix))]
+    {
+        return Err(AppError::BadRequest("CHMOD is only supported on Unix systems".into()));
     }
 
     crate::auth::record_audit_log(
@@ -633,25 +771,35 @@ pub async fn chmod_file(
     )
     .await;
 
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: format!("Permissions updated for {}", payload.path),
-    }))
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Permissions updated for {}", payload.path)
+    })))
 }
 
 #[cfg(unix)]
-async fn apply_chmod_recursive(dir: &std::path::Path, mode: u32) {
+async fn apply_chmod_recursive(dir: &std::path::Path, mode: u32) -> (usize, Vec<String>) {
     use std::os::unix::fs::PermissionsExt;
-    if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            let perms = std::fs::Permissions::from_mode(mode);
-            let _ = std::fs::set_permissions(&path, perms);
-            if path.is_dir() {
-                Box::pin(apply_chmod_recursive(&path, mode)).await;
+    let mut succeeded = 0;
+    let mut failed = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+
+    while let Some(curr_dir) = stack.pop() {
+        if let Ok(mut entries) = tokio::fs::read_dir(&curr_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let perms = std::fs::Permissions::from_mode(mode);
+                match std::fs::set_permissions(&path, perms) {
+                    Ok(_) => succeeded += 1,
+                    Err(e) => failed.push(format!("{}: {}", path.display(), e)),
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                }
             }
         }
     }
+    (succeeded, failed)
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -666,7 +814,7 @@ pub struct StorageInfoResponse {
     pub free_bytes: u64,
 }
 
-/// Get real disk and storage statistics for a connection
+/// Get real disk and storage statistics for a connection (Zero-blocking via statvfs)
 pub async fn get_storage_info(
     State(state): State<AppState>,
     _user: AuthenticatedUser,
@@ -695,11 +843,10 @@ pub async fn get_storage_info(
                     };
 
                     let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
-                    let source_size = calculate_dir_size_fast(&root).await;
 
                     return Ok(Json(StorageInfoResponse {
                         source_name: "Local Storage".to_string(),
-                        source_size_formatted: format_bytes_str(source_size),
+                        source_size_formatted: format_bytes_str(used),
                         disk_label: "Disk".to_string(),
                         disk_usage_text: format!("{}% · {:.0} GiB", pct, total_gib),
                         used_percent: pct,
@@ -757,30 +904,6 @@ pub async fn get_storage_info(
         used_bytes: 0,
         free_bytes: 0,
     }))
-}
-
-async fn calculate_dir_size_fast(dir: &std::path::Path) -> u64 {
-    let mut total_size = 0u64;
-    if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if let Ok(meta) = entry.metadata().await {
-                if meta.is_file() {
-                    total_size += meta.len();
-                } else if meta.is_dir() {
-                    if let Ok(mut sub) = tokio::fs::read_dir(entry.path()).await {
-                        while let Ok(Some(sub_entry)) = sub.next_entry().await {
-                            if let Ok(sub_meta) = sub_entry.metadata().await {
-                                if sub_meta.is_file() {
-                                    total_size += sub_meta.len();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    total_size
 }
 
 fn format_bytes_str(bytes: u64) -> String {
