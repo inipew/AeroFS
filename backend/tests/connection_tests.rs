@@ -124,7 +124,7 @@ async fn test_remote_connections_crud_and_test() {
     let resp = app.clone().oneshot(test_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 6. Delete SFTP connection as admin -> 200
+    // 5. Delete SFTP connection as admin -> 200
     let del_req = Request::builder()
         .uri(format!("/api/v1/connections/{}", sftp_id))
         .method("DELETE")
@@ -140,8 +140,7 @@ async fn test_remote_connections_crud_and_test() {
 async fn test_nonadmin_connection_creation_forbidden() {
     let (app, _cookie, _temp) = setup_app().await;
 
-    // Login as non-admin
-    // (Create connection without admin rights should return 403)
+    // Login as non-admin (Create connection without admin rights should return 401/403)
     let create_req = Request::builder()
         .uri("/api/v1/connections")
         .method("POST")
@@ -158,4 +157,34 @@ async fn test_nonadmin_connection_creation_forbidden() {
 
     let resp = app.clone().oneshot(create_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_s3_connection_creation() {
+    let (app, cookie, _temp) = setup_app().await;
+
+    let create_s3_req = Request::builder()
+        .uri("/api/v1/connections")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "name": "Cloudflare R2 Bucket",
+                "provider": "s3",
+                "host": "my-aerofs-bucket",
+                "username": "minio_access_key",
+                "secret": "minio_secret_key",
+                "base_path": "/backups"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(create_s3_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let val: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(val["success"], true);
 }

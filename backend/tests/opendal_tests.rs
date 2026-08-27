@@ -1,5 +1,6 @@
 use backend::domain::{FileKind, VfsPath};
-use backend::vfs::opendal::{build_fs_operator, OpenDalFileSystem};
+use backend::errors::VfsError;
+use backend::vfs::opendal::{build_fs_operator, build_s3_operator, OpenDalFileSystem};
 use backend::vfs::FileSystem;
 use tempfile::tempdir;
 use tokio::io::AsyncReadExt;
@@ -62,4 +63,81 @@ async fn test_opendal_fs_full_crud_workflow() {
     // 9. Root stat
     let root_meta = vfs.stat(&root_path).await.unwrap();
     assert_eq!(root_meta.kind, FileKind::Directory);
+}
+
+#[tokio::test]
+async fn test_opendal_strict_path_traversal_rejection() {
+    let temp = tempdir().unwrap();
+    let root_str = temp.path().to_string_lossy().to_string();
+    let op = build_fs_operator(&root_str).unwrap();
+    let vfs = OpenDalFileSystem::new("test_conn", op);
+
+    // P0 #1: Traversal paths must be strictly rejected
+    let traversal_paths = vec![
+        "../../etc/passwd",
+        "/documents/../../shadow",
+        "/../secret.key",
+    ];
+
+    for tp in traversal_paths {
+        let vfs_path = VfsPath {
+            connection_id: "test_conn".to_string(),
+            path: tp.to_string(),
+        };
+        let res = vfs.stat(&vfs_path).await;
+        assert!(
+            matches!(res, Err(VfsError::InvalidPath(_))),
+            "Expected InvalidPath for traversal '{}', got {:?}",
+            tp,
+            res
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_opendal_honest_root_stat() {
+    let temp = tempdir().unwrap();
+    let root_str = temp.path().to_string_lossy().to_string();
+    let op = build_fs_operator(&root_str).unwrap();
+    let vfs = OpenDalFileSystem::new("test_conn", op);
+
+    let root_path = VfsPath::root("test_conn");
+    let meta = vfs.stat(&root_path).await.unwrap();
+
+    // P0 #2: Honest root metadata
+    assert_eq!(meta.kind, FileKind::Directory);
+    assert_eq!(meta.path, "/");
+    assert_eq!(meta.created_at, None);
+    assert_eq!(meta.permissions, None);
+    assert_eq!(meta.etag, "\"od-root-test_conn\"");
+}
+
+#[tokio::test]
+async fn test_opendal_honest_capabilities() {
+    let temp = tempdir().unwrap();
+    let root_str = temp.path().to_string_lossy().to_string();
+    let op = build_fs_operator(&root_str).unwrap();
+    let vfs = OpenDalFileSystem::new("test_conn", op);
+
+    let caps = vfs.capabilities();
+    // P0 #3: Honest capabilities
+    assert_eq!(caps.atomic_rename, false);
+    assert_eq!(caps.atomic_write, false);
+    assert_eq!(caps.resume_upload, false);
+    assert_eq!(caps.resume_download, false);
+
+    // P2 #1: Local provider policy
+    #[cfg(unix)]
+    assert_eq!(caps.permissions, true);
+}
+
+#[tokio::test]
+async fn test_opendal_s3_capabilities() {
+    let op = build_s3_operator("test-bucket", Some("us-east-1"), None, None, None, None).unwrap();
+    let vfs = OpenDalFileSystem::new("test_s3", op);
+
+    let caps = vfs.capabilities();
+    // P2 #1: S3 specific capabilities
+    assert_eq!(caps.checksum, true);
+    assert_eq!(caps.server_side_copy, true);
 }

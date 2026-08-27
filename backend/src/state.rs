@@ -1,6 +1,7 @@
 use crate::auth::credentials::{decrypt_secret, derive_master_key};
 use crate::config::AppConfig;
 use crate::db::DbPool;
+use crate::domain::SftpAuth;
 use crate::transfer::TransferManager;
 use crate::vfs::opendal::{
     build_fs_operator, build_ftp_operator, build_s3_operator, build_sftp_operator,
@@ -18,6 +19,7 @@ pub struct AppState {
     pub config: Arc<AppConfig>,
     pub db: DbPool,
     pub providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
+    pub connection_errors: Arc<RwLock<HashMap<String, String>>>,
     pub transfer_manager: TransferManager,
 }
 
@@ -36,12 +38,14 @@ impl AppState {
 
         let master_key = derive_master_key(&config.security.session_secret);
         let providers_map = Arc::new(RwLock::new(HashMap::new()));
+        let connection_errors = Arc::new(RwLock::new(HashMap::new()));
         let transfer_manager = TransferManager::new(Arc::clone(&providers_map), db.clone());
 
         let state = Self {
             config: Arc::new(config),
             db,
             providers: providers_map,
+            connection_errors,
             transfer_manager,
         };
 
@@ -58,12 +62,29 @@ impl AppState {
 
     pub async fn register_provider(&self, connection_id: String, provider: Arc<dyn FileSystem>) {
         let mut providers = self.providers.write().await;
-        providers.insert(connection_id, provider);
+        providers.insert(connection_id.clone(), provider);
+        self.clear_connection_error(&connection_id).await;
     }
 
     pub async fn remove_provider(&self, connection_id: &str) {
         let mut providers = self.providers.write().await;
         providers.remove(connection_id);
+        self.clear_connection_error(connection_id).await;
+    }
+
+    pub async fn set_connection_error(&self, connection_id: &str, error: &str) {
+        let mut errors = self.connection_errors.write().await;
+        errors.insert(connection_id.to_string(), error.to_string());
+    }
+
+    pub async fn get_connection_error(&self, connection_id: &str) -> Option<String> {
+        let errors = self.connection_errors.read().await;
+        errors.get(connection_id).cloned()
+    }
+
+    pub async fn clear_connection_error(&self, connection_id: &str) {
+        let mut errors = self.connection_errors.write().await;
+        errors.remove(connection_id);
     }
 
     pub async fn get_system_setting(&self, key: &str) -> Option<String> {
@@ -111,25 +132,34 @@ impl AppState {
         Ok(())
     }
 
-    async fn load_providers_from_db(&self, master_key: &[u8; 32]) {
-        // Retrieve custom local root from DB if exists, else fallback to config
-        let local_root = if let Some(custom_root) = self.get_system_setting("local_root").await {
+    pub async fn load_providers_from_db(&self, master_key: &[u8; 32]) {
+        // 1. Initialize Default Local Provider
+        let local_root_setting = self.get_system_setting("local_root").await;
+        let local_root = if let Some(custom_root) = local_root_setting {
             PathBuf::from(custom_root)
         } else {
             self.config.filesystem.default_local_root.clone()
         };
 
-        // Ensure directory exists
-        let _ = tokio::fs::create_dir_all(&local_root).await;
-
-        // Register default local OpenDAL provider
-        let root_str = local_root.to_string_lossy().to_string();
-        if let Ok(op) = build_fs_operator(&root_str) {
-            let local_fs = Arc::new(OpenDalFileSystem::new("local", op));
-            self.register_provider("local".to_string(), local_fs).await;
+        if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
+            tracing::error!("Failed to create local root directory {:?}: {}", local_root, e);
+            self.set_connection_error("local", &format!("Failed to create local directory: {}", e)).await;
+        } else {
+            let root_str = local_root.to_string_lossy().to_string();
+            match build_fs_operator(&root_str) {
+                Ok(op) => {
+                    let local_fs = Arc::new(OpenDalFileSystem::new("local", op));
+                    self.register_provider("local".to_string(), local_fs).await;
+                    tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to init Local Storage provider: {}", e);
+                    self.set_connection_error("local", &e.to_string()).await;
+                }
+            }
         }
 
-        // Query database for other enabled connections
+        // 2. Query database for other enabled connections
         let rows: Vec<(
             String,
             String,
@@ -145,7 +175,7 @@ impl AppState {
         .await
         .unwrap_or_default();
 
-        for (id, _name, provider_type, host, port, username, base_path) in rows {
+        for (id, name, provider_type, host, port, username, base_path) in rows {
             if id == "local" {
                 continue;
             }
@@ -161,66 +191,71 @@ impl AppState {
 
             let decrypted_secret = secret_row.and_then(|r| decrypt_secret(master_key, &r.0).ok());
 
-            match provider_type.as_str() {
+            let build_result = match provider_type.as_str() {
                 "ftp" => {
                     let host_str = host.unwrap_or_else(|| "127.0.0.1".into());
                     let port_num = port.unwrap_or(21) as u16;
-                    if let Ok(op) = build_ftp_operator(
+                    build_ftp_operator(
                         &host_str,
                         port_num,
                         false,
                         username.as_deref(),
                         decrypted_secret.as_deref(),
                         Some(&base_path),
-                    ) {
-                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
-                        self.register_provider(id, fs).await;
-                    }
+                    )
                 }
                 "ftps" => {
                     let host_str = host.unwrap_or_else(|| "127.0.0.1".into());
                     let port_num = port.unwrap_or(990) as u16;
-                    if let Ok(op) = build_ftp_operator(
+                    build_ftp_operator(
                         &host_str,
                         port_num,
                         true,
                         username.as_deref(),
                         decrypted_secret.as_deref(),
                         Some(&base_path),
-                    ) {
-                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
-                        self.register_provider(id, fs).await;
-                    }
+                    )
                 }
                 "sftp" => {
                     let host_str = host.unwrap_or_else(|| "127.0.0.1".into());
                     let port_num = port.unwrap_or(22) as u16;
-                    if let Ok(op) = build_sftp_operator(
+                    let auth = decrypted_secret.map(|s| SftpAuth::Password { password: s });
+                    build_sftp_operator(
                         &host_str,
                         port_num,
                         username.as_deref(),
-                        decrypted_secret.as_deref(),
+                        auth.as_ref(),
                         Some(&base_path),
-                    ) {
-                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
-                        self.register_provider(id, fs).await;
-                    }
+                    )
                 }
                 "s3" => {
                     let bucket = host.unwrap_or_else(|| "default-bucket".into());
-                    if let Ok(op) = build_s3_operator(
+                    build_s3_operator(
                         &bucket,
                         None,
                         None,
                         username.as_deref(),
                         decrypted_secret.as_deref(),
                         Some(&base_path),
-                    ) {
-                        let fs = Arc::new(OpenDalFileSystem::new(&id, op));
-                        self.register_provider(id, fs).await;
-                    }
+                    )
                 }
-                _ => {}
+                other => {
+                    tracing::warn!("Unsupported provider type '{}' for connection '{}'", other, id);
+                    continue;
+                }
+            };
+
+            match build_result {
+                Ok(op) => {
+                    let fs = Arc::new(OpenDalFileSystem::new(&id, op));
+                    self.register_provider(id.clone(), fs).await;
+                    tracing::info!("Storage connection '{}' ('{}', {}) initialized successfully", id, name, provider_type);
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    tracing::error!("Failed to initialize storage connection '{}' ('{}', {}): {}", id, name, provider_type, err_msg);
+                    self.set_connection_error(&id, &err_msg).await;
+                }
             }
         }
     }

@@ -23,6 +23,49 @@ pub enum ConnectionStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SftpAuth {
+    Password {
+        password: String,
+    },
+    PrivateKey {
+        key: String,
+        passphrase: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "provider", rename_all = "lowercase")]
+pub enum ProviderConfig {
+    Local {
+        root: String,
+    },
+    Ftp {
+        host: String,
+        port: u16,
+        is_secure: bool,
+        username: Option<String>,
+        password: Option<String>,
+        root: Option<String>,
+    },
+    Sftp {
+        host: String,
+        port: u16,
+        username: Option<String>,
+        auth: Option<SftpAuth>,
+        root: Option<String>,
+    },
+    S3 {
+        bucket: String,
+        region: Option<String>,
+        endpoint: Option<String>,
+        access_key_id: Option<String>,
+        secret_access_key: Option<String>,
+        root: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Connection {
     pub id: String,
@@ -38,6 +81,8 @@ pub struct Connection {
     pub read_only: bool,
     pub enabled: bool,
     pub status: ConnectionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -56,6 +101,7 @@ impl Connection {
             read_only: false,
             enabled: true,
             status: ConnectionStatus::Connected,
+            error_message: None,
             created_at: now,
             updated_at: now,
         }

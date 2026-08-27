@@ -1,7 +1,7 @@
 use crate::auth::credentials::{derive_master_key, encrypt_secret};
 use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
-use crate::domain::{Capabilities, Connection, ConnectionStatus, ProviderKind};
+use crate::domain::{Capabilities, Connection, ConnectionStatus, ProviderKind, SftpAuth};
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
 use axum::{
@@ -61,7 +61,7 @@ pub async fn list_connections(
     )> = if user.is_admin {
         sqlx::query_as(
             "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at 
-             FROM connections WHERE enabled = 1",
+             FROM connections ORDER BY name ASC",
         )
         .fetch_all(&state.db)
         .await
@@ -70,7 +70,9 @@ pub async fn list_connections(
         sqlx::query_as(
             "SELECT c.id, c.name, c.provider, c.host, c.port, c.username, c.base_path, c.read_only, c.enabled, c.created_at, c.updated_at 
              FROM connections c
-             WHERE c.enabled = 1 AND (c.id = 'local' OR c.id IN (SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1))",
+             JOIN permissions p ON p.connection_id = c.id
+             WHERE p.user_id = ? AND p.can_read = 1
+             ORDER BY c.name ASC",
         )
         .bind(&user.id)
         .fetch_all(&state.db)
@@ -108,6 +110,17 @@ pub async fn list_connections(
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
 
+        // P0 #8 & P1 #2: Reflect honest live runtime status and error diagnostics
+        let is_active = state.get_provider(&id).await.is_some();
+        let error_message = state.get_connection_error(&id).await;
+        let status = if enabled == 0 {
+            ConnectionStatus::Disconnected
+        } else if is_active {
+            ConnectionStatus::Connected
+        } else {
+            ConnectionStatus::Failed
+        };
+
         connections.push(Connection {
             id,
             name,
@@ -118,7 +131,8 @@ pub async fn list_connections(
             base_path,
             read_only: read_only != 0,
             enabled: enabled != 0,
-            status: ConnectionStatus::Connected,
+            status,
+            error_message,
             created_at,
             updated_at,
         });
@@ -127,7 +141,7 @@ pub async fn list_connections(
     Ok(Json(connections))
 }
 
-/// Create a new connection with encrypted credential storage (Admin only, Transactional)
+/// Create a new connection with encrypted credential storage (Admin only, Fail-Closed Transactional)
 pub async fn create_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -152,7 +166,71 @@ pub async fn create_connection(
     let base_path = payload.base_path.unwrap_or_else(|| "/".to_string());
     let read_only = payload.read_only.unwrap_or(false);
 
-    // Transactional creation: connection + credential
+    // P0 #7 & P1 #1: Build live OpenDAL provider FIRST before DB commit (Fail-Closed)
+    let fs: Arc<dyn crate::vfs::FileSystem> = match payload.provider {
+        ProviderKind::Local => {
+            let op = crate::vfs::opendal::build_fs_operator(&base_path)
+                .map_err(|e| AppError::BadRequest(format!("Invalid local path: {}", e)))?;
+            Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op))
+        }
+        ProviderKind::Ftp => {
+            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let port = payload.port.unwrap_or(21);
+            let op = crate::vfs::opendal::build_ftp_operator(
+                &host,
+                port,
+                false,
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            )
+            .map_err(|e| AppError::BadRequest(format!("Failed to build FTP provider: {}", e)))?;
+            Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op))
+        }
+        ProviderKind::Ftps => {
+            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let port = payload.port.unwrap_or(990);
+            let op = crate::vfs::opendal::build_ftp_operator(
+                &host,
+                port,
+                true,
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            )
+            .map_err(|e| AppError::BadRequest(format!("Failed to build FTPS provider: {}", e)))?;
+            Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op))
+        }
+        ProviderKind::Sftp => {
+            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
+            let port = payload.port.unwrap_or(22);
+            let auth = payload.secret.as_ref().map(|s| SftpAuth::Password { password: s.clone() });
+            let op = crate::vfs::opendal::build_sftp_operator(
+                &host,
+                port,
+                payload.username.as_deref(),
+                auth.as_ref(),
+                Some(&base_path),
+            )
+            .map_err(|e| AppError::BadRequest(format!("Failed to build SFTP provider: {}", e)))?;
+            Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op))
+        }
+        ProviderKind::S3 => {
+            let bucket = payload.host.clone().unwrap_or_else(|| "default-bucket".into());
+            let op = crate::vfs::opendal::build_s3_operator(
+                &bucket,
+                None,
+                None,
+                payload.username.as_deref(),
+                payload.secret.as_deref(),
+                Some(&base_path),
+            )
+            .map_err(|e| AppError::BadRequest(format!("Failed to build S3 provider: {}", e)))?;
+            Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op))
+        }
+    };
+
+    // Transactional DB persistence
     let mut tx = state
         .db
         .begin()
@@ -199,68 +277,8 @@ pub async fn create_connection(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to commit connection transaction: {}", e))?;
 
-    // Register live OpenDAL provider in state
-    match payload.provider {
-        ProviderKind::Ftp => {
-            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
-            let port = payload.port.unwrap_or(21);
-            if let Ok(op) = crate::vfs::opendal::build_ftp_operator(
-                &host,
-                port,
-                false,
-                payload.username.as_deref(),
-                payload.secret.as_deref(),
-                Some(&base_path),
-            ) {
-                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
-                state.register_provider(id.clone(), fs).await;
-            }
-        }
-        ProviderKind::Ftps => {
-            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
-            let port = payload.port.unwrap_or(990);
-            if let Ok(op) = crate::vfs::opendal::build_ftp_operator(
-                &host,
-                port,
-                true,
-                payload.username.as_deref(),
-                payload.secret.as_deref(),
-                Some(&base_path),
-            ) {
-                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
-                state.register_provider(id.clone(), fs).await;
-            }
-        }
-        ProviderKind::Sftp => {
-            let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
-            let port = payload.port.unwrap_or(22);
-            if let Ok(op) = crate::vfs::opendal::build_sftp_operator(
-                &host,
-                port,
-                payload.username.as_deref(),
-                payload.secret.as_deref(),
-                Some(&base_path),
-            ) {
-                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
-                state.register_provider(id.clone(), fs).await;
-            }
-        }
-        ProviderKind::S3 => {
-            let bucket = payload.host.clone().unwrap_or_else(|| "default-bucket".into());
-            if let Ok(op) = crate::vfs::opendal::build_s3_operator(
-                &bucket,
-                None,
-                None,
-                payload.username.as_deref(),
-                payload.secret.as_deref(),
-                Some(&base_path),
-            ) {
-                let fs = Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op));
-                state.register_provider(id.clone(), fs).await;
-            }
-        }
-        _ => {}
-    }
+    // Register validated provider in runtime state
+    state.register_provider(id.clone(), fs).await;
 
     Ok((
         StatusCode::CREATED,
@@ -272,7 +290,7 @@ pub async fn create_connection(
     ))
 }
 
-/// Delete a connection (Admin only)
+/// Delete a connection
 pub async fn delete_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -280,25 +298,37 @@ pub async fn delete_connection(
 ) -> Result<impl IntoResponse, AppError> {
     if !user.is_admin {
         return Err(AppError::Forbidden(
-            "Only administrators can delete storage connections".into(),
+            "Access forbidden: Only administrators can delete storage connections".to_string(),
         ));
     }
 
     if id == "local" {
-        return Err(AppError::BadRequest("Default local connection cannot be deleted".into()));
+        return Err(AppError::BadRequest(
+            "Default local connection cannot be deleted".into(),
+        ));
     }
 
-    sqlx::query("DELETE FROM connections WHERE id = ?")
+    // Delete credentials first (cascade or explicit)
+    let _ = sqlx::query("DELETE FROM connection_credentials WHERE connection_id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await;
+
+    let res = sqlx::query("DELETE FROM connections WHERE id = ?")
         .bind(&id)
         .execute(&state.db)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to delete connection: {}", e))?;
 
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
+    }
+
     state.remove_provider(&id).await;
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": format!("Connection '{}' deleted", id)
+        "message": format!("Connection '{}' deleted", id),
     })))
 }
 
@@ -399,6 +429,17 @@ pub async fn get_connection(
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
 
+    // P0 #8 & P1 #2: Reflect honest live runtime status and diagnostics
+    let is_active = state.get_provider(&id).await.is_some();
+    let error_message = state.get_connection_error(&id).await;
+    let status = if enabled == 0 {
+        ConnectionStatus::Disconnected
+    } else if is_active {
+        ConnectionStatus::Connected
+    } else {
+        ConnectionStatus::Failed
+    };
+
     let connection = Connection {
         id,
         name,
@@ -409,7 +450,8 @@ pub async fn get_connection(
         base_path,
         read_only: read_only != 0,
         enabled: enabled != 0,
-        status: ConnectionStatus::Connected,
+        status,
+        error_message,
         created_at,
         updated_at,
     };

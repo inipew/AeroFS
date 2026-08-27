@@ -1,14 +1,14 @@
-use super::capabilities::map_opendal_capabilities;
+use super::capabilities::map_opendal_capabilities_for_scheme;
 use super::error::map_opendal_error;
 use super::metadata::{map_opendal_entry, map_opendal_metadata};
 use crate::domain::{Capabilities, FileEntry, FileKind, FileMetadata, VfsPath};
 use crate::errors::VfsError;
 use crate::vfs::traits::{AsyncReadBox, FileSystem};
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::StreamExt;
-use opendal::Operator;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use opendal::{ErrorKind, Operator};
+use tokio::io::AsyncReadExt;
+use tokio_util::bytes::BytesMut;
 
 /// Universal OpenDAL-backed VFS FileSystem implementation
 pub struct OpenDalFileSystem {
@@ -26,7 +26,8 @@ impl OpenDalFileSystem {
     pub fn new(connection_id: impl Into<String>, operator: Operator) -> Self {
         let conn_id = connection_id.into();
         let raw_cap = operator.info().capability();
-        let capabilities = map_opendal_capabilities(raw_cap);
+        let scheme = operator.info().scheme();
+        let capabilities = map_opendal_capabilities_for_scheme(raw_cap, scheme);
 
         Self {
             connection_id: conn_id,
@@ -48,30 +49,38 @@ impl OpenDalFileSystem {
         }
     }
 
-    /// Normalize VfsPath into OpenDAL-relative path format with containment
-    fn normalize_path(&self, vfs_path: &VfsPath) -> String {
-        let mut components = Vec::new();
-        for comp in std::path::Path::new(&vfs_path.path).components() {
+    /// Strict path validation: converts VfsPath to OpenDAL relative path.
+    /// Traversal attempts (`..`) and invalid prefixes are strictly REJECTED (P0 #1).
+    fn to_operator_path(&self, vfs_path: &VfsPath) -> Result<String, VfsError> {
+        let path_str = &vfs_path.path;
+        for comp in std::path::Path::new(path_str).components() {
             match comp {
-                std::path::Component::Normal(c) => components.push(c.to_string_lossy().to_string()),
                 std::path::Component::ParentDir => {
-                    components.pop();
+                    return Err(VfsError::InvalidPath(format!(
+                        "Path traversal attempt rejected in '{}'",
+                        path_str
+                    )));
+                }
+                std::path::Component::Prefix(_) => {
+                    return Err(VfsError::InvalidPath(format!(
+                        "Drive prefix rejected in '{}'",
+                        path_str
+                    )));
                 }
                 _ => {}
             }
         }
-        components.join("/")
+        let clean = path_str.trim_start_matches('/').trim_end_matches('/');
+        Ok(clean.to_string())
     }
 
-    /// Normalize directory path with trailing slash for OpenDAL directory semantics
-    fn normalize_dir_path(&self, vfs_path: &VfsPath) -> String {
-        let clean = self.normalize_path(vfs_path);
+    /// Convert VfsPath to directory path format with trailing slash
+    fn to_operator_dir_path(&self, vfs_path: &VfsPath) -> Result<String, VfsError> {
+        let clean = self.to_operator_path(vfs_path)?;
         if clean.is_empty() {
-            String::new()
-        } else if clean.ends_with('/') {
-            clean
+            Ok(String::new())
         } else {
-            format!("{}/", clean)
+            Ok(format!("{}/", clean))
         }
     }
 }
@@ -82,8 +91,9 @@ impl FileSystem for OpenDalFileSystem {
         self.capabilities.clone()
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn list(&self, path: &VfsPath) -> Result<Vec<FileEntry>, VfsError> {
-        let op_path = self.normalize_dir_path(path);
+        let op_path = self.to_operator_dir_path(path)?;
         let list_target = if op_path.is_empty() { "/" } else { &op_path };
 
         let entries = self
@@ -102,26 +112,34 @@ impl FileSystem for OpenDalFileSystem {
         Ok(results)
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn stat(&self, path: &VfsPath) -> Result<FileMetadata, VfsError> {
+        // P0 #2: Honest root stat handling without fake timestamps or invented permissions
         if path.is_root() {
-            let now = Utc::now();
+            let real_meta = self.operator.stat("/").await.ok();
+            let size = real_meta.as_ref().map(|m| m.content_length()).unwrap_or(0);
+            let modified_at = real_meta.as_ref().and_then(|m| m.last_modified()).map(|dt| {
+                let st: std::time::SystemTime = dt.into();
+                chrono::DateTime::<chrono::Utc>::from(st)
+            });
+
             return Ok(FileMetadata {
                 name: "root".to_string(),
                 path: "/".to_string(),
                 kind: FileKind::Directory,
-                size: 0,
-                modified_at: Some(now),
-                created_at: Some(now),
-                permissions: Some("0755".to_string()),
+                size,
+                modified_at,
+                created_at: None,
+                permissions: None,
                 mime_type: None,
-                etag: "\"od-root\"".to_string(),
+                etag: format!("\"od-root-{}\"", self.connection_id),
                 is_readonly: false,
                 is_hidden: false,
                 symlink_target: None,
             });
         }
 
-        let op_path = self.normalize_path(path);
+        let op_path = self.to_operator_path(path)?;
         let meta = self
             .operator
             .stat(&op_path)
@@ -131,46 +149,42 @@ impl FileSystem for OpenDalFileSystem {
         Ok(map_opendal_metadata(&meta, path, false))
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn read_stream(&self, path: &VfsPath) -> Result<AsyncReadBox, VfsError> {
-        let op_path = self.normalize_path(path);
+        let op_path = self.to_operator_path(path)?;
         let reader = self
             .operator
             .reader(&op_path)
             .await
             .map_err(|e| map_opendal_error(e, &format!("Failed to open reader for '{}'", path.path)))?;
 
-        // 64 KB Bounded Duplex Stream Pipe (O(1) memory consumption)
-        let (pipe_reader, mut pipe_writer) = tokio::io::duplex(64 * 1024);
+        // P0 #4: Stream error propagation using tokio_util StreamReader
+        let stream = reader
+            .into_bytes_stream(..)
+            .await
+            .map_err(|e| map_opendal_error(e, &format!("Failed to open bytes stream for '{}'", path.path)))?
+            .map(|res| {
+                res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            });
 
-        tokio::spawn(async move {
-            if let Ok(mut stream) = reader.into_bytes_stream(..).await {
-                while let Some(chunk_res) = stream.next().await {
-                    match chunk_res {
-                        Ok(chunk) => {
-                            if pipe_writer.write_all(&chunk).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-            let _ = pipe_writer.flush().await;
-        });
-
-        Ok(Box::new(pipe_reader))
+        let async_reader = tokio_util::io::StreamReader::new(stream);
+        Ok(Box::new(async_reader))
     }
 
+    #[tracing::instrument(skip(self, input), fields(conn = %self.connection_id, path = %path.path))]
     async fn write_stream(&self, path: &VfsPath, mut input: AsyncReadBox) -> Result<(), VfsError> {
-        let op_path = self.normalize_path(path);
+        let op_path = self.to_operator_path(path)?;
         let mut writer = self
             .operator
             .writer(&op_path)
             .await
             .map_err(|e| map_opendal_error(e, &format!("Failed to open writer for '{}'", path.path)))?;
 
-        let mut buf = [0u8; 64 * 1024];
+        // P2 #2: Zero-copy BytesMut buffer optimization
+        let mut buf = BytesMut::with_capacity(64 * 1024);
         loop {
+            buf.clear();
+            buf.resize(64 * 1024, 0);
             let n = input
                 .read(&mut buf)
                 .await
@@ -178,9 +192,9 @@ impl FileSystem for OpenDalFileSystem {
             if n == 0 {
                 break;
             }
-            let bytes = axum::body::Bytes::copy_from_slice(&buf[..n]);
+            buf.truncate(n);
             writer
-                .write(bytes)
+                .write(buf.split().freeze())
                 .await
                 .map_err(|e| map_opendal_error(e, &format!("Write chunk failed for '{}'", path.path)))?;
         }
@@ -193,8 +207,9 @@ impl FileSystem for OpenDalFileSystem {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn create_file(&self, path: &VfsPath) -> Result<(), VfsError> {
-        let op_path = self.normalize_path(path);
+        let op_path = self.to_operator_path(path)?;
         self.operator
             .write(&op_path, Vec::<u8>::new())
             .await
@@ -202,8 +217,9 @@ impl FileSystem for OpenDalFileSystem {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn create_dir(&self, path: &VfsPath) -> Result<(), VfsError> {
-        let op_path = self.normalize_dir_path(path);
+        let op_path = self.to_operator_dir_path(path)?;
         self.operator
             .create_dir(&op_path)
             .await
@@ -211,21 +227,26 @@ impl FileSystem for OpenDalFileSystem {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn delete(&self, path: &VfsPath) -> Result<(), VfsError> {
-        let op_path = self.normalize_path(path);
-        let res = self.operator.delete_with(&op_path).recursive(true).await;
-        if let Err(e) = res {
-            self.operator
-                .delete(&op_path)
-                .await
-                .map_err(|err| map_opendal_error(err, &format!("Failed to delete '{}' (fallback: {})", path.path, e)))?;
+        let op_path = self.to_operator_path(path)?;
+        // P0 #6: Selective delete fallback
+        match self.operator.delete_with(&op_path).recursive(true).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                self.operator
+                    .delete(&op_path)
+                    .await
+                    .map_err(|err| map_opendal_error(err, &format!("Failed to delete '{}'", path.path)))
+            }
+            Err(e) => Err(map_opendal_error(e, &format!("Failed to delete '{}'", path.path))),
         }
-        Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, from = %from.path, to = %to.path))]
     async fn rename(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError> {
-        let from_path = self.normalize_path(from);
-        let to_path = self.normalize_path(to);
+        let from_path = self.to_operator_path(from)?;
+        let to_path = self.to_operator_path(to)?;
 
         self.operator
             .rename(&from_path, &to_path)
@@ -239,19 +260,23 @@ impl FileSystem for OpenDalFileSystem {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(conn = %self.connection_id, from = %from.path, to = %to.path))]
     async fn copy(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError> {
-        let from_path = self.normalize_path(from);
-        let to_path = self.normalize_path(to);
+        let from_path = self.to_operator_path(from)?;
+        let to_path = self.to_operator_path(to)?;
 
-        // Try server-side/native copy first
-        let res = self.operator.copy(&from_path, &to_path).await;
-        if res.is_ok() {
-            return Ok(());
+        // P0 #5: Selective copy fallback
+        match self.operator.copy(&from_path, &to_path).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                let stream = self.read_stream(from).await?;
+                self.write_stream(to, stream).await?;
+                Ok(())
+            }
+            Err(e) => Err(map_opendal_error(
+                e,
+                &format!("Failed to copy '{}' to '{}'", from.path, to.path),
+            )),
         }
-
-        // Fallback to streaming copy if native copy is unsupported
-        let stream = self.read_stream(from).await?;
-        self.write_stream(to, stream).await?;
-        Ok(())
     }
 }
