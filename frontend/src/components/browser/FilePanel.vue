@@ -394,14 +394,69 @@ const panel = computed(() => workspaceStore.getPanel(props.panelId));
 const isActive = computed(() => workspaceStore.activePanelId === props.panelId);
 const isDragOver = ref(false);
 
-const displayedEntries = computed(() => panel.value.entries);
+const displayedEntries = computed(() => {
+  let list = [...panel.value.entries];
+
+  // 1. Filter by category (if filterType is active)
+  if (panel.value.filterType && panel.value.filterType !== 'all') {
+    switch (panel.value.filterType) {
+      case 'folders':
+        list = list.filter((e) => e.kind === 'directory');
+        break;
+      case 'images':
+        list = list.filter((e) => e.kind !== 'directory' && isImage(e));
+        break;
+      case 'videos':
+        list = list.filter((e) => e.kind !== 'directory' && isVideo(e));
+        break;
+      case 'audio':
+        list = list.filter((e) => e.kind !== 'directory' && isAudio(e));
+        break;
+      case 'code':
+        list = list.filter((e) => e.kind !== 'directory' && isTextOrCode(e));
+        break;
+      case 'archives':
+        list = list.filter((e) => e.kind !== 'directory' && ['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(getFileExt(e)));
+        break;
+    }
+  }
+
+  // 2. Sort entries (Client-side fast sort with natural numbers)
+  const field = panel.value.sortField || 'name';
+  const order = panel.value.sortOrder === 'desc' ? -1 : 1;
+
+  list.sort((a, b) => {
+    // Folders on top
+    if (a.kind === 'directory' && b.kind !== 'directory') return -1;
+    if (a.kind !== 'directory' && b.kind === 'directory') return 1;
+
+    if (field === 'size') {
+      const sizeA = a.size || 0;
+      const sizeB = b.size || 0;
+      return (sizeA - sizeB) * order;
+    } else if (field === 'modified') {
+      const dateA = a.modified_at ? new Date(a.modified_at).getTime() : 0;
+      const dateB = b.modified_at ? new Date(b.modified_at).getTime() : 0;
+      return (dateA - dateB) * order;
+    } else if (field === 'type') {
+      const extA = getFileExt(a);
+      const extB = getFileExt(b);
+      return extA.localeCompare(extB) * order;
+    } else {
+      // Natural numeric sort (e.g. 1.mp4, 2.mp4, 10.mp4)
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * order;
+    }
+  });
+
+  return list;
+});
 
 const displayedFolders = computed(() => {
-  return panel.value.entries.filter((e) => e.kind === 'directory');
+  return displayedEntries.value.filter((e) => e.kind === 'directory');
 });
 
 const displayedFiles = computed(() => {
-  return panel.value.entries.filter((e) => e.kind !== 'directory');
+  return displayedEntries.value.filter((e) => e.kind !== 'directory');
 });
 
 const isAllSelected = computed(() => {

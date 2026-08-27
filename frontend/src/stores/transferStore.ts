@@ -9,6 +9,7 @@ export const useTransferStore = defineStore('transfer', () => {
   const isConnected = ref<boolean>(false);
   let socket: WebSocket | null = null;
   let reconnectTimer: any = null;
+  let lastSequence = 0;
 
   const activeJobs = computed(() => {
     return jobs.value.filter(
@@ -38,12 +39,23 @@ export const useTransferStore = defineStore('transfer', () => {
 
     socket.onopen = () => {
       isConnected.value = true;
+      lastSequence = 0;
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
 
     socket.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
+
+        // Sequence Gap Detection & Auto-Resync
+        if (typeof payload.sequence === 'number') {
+          if (lastSequence > 0 && payload.sequence > lastSequence + 1) {
+            console.warn(`WS sequence gap detected (${lastSequence} -> ${payload.sequence}). Re-syncing transfer state.`);
+            fetchJobs();
+          }
+          lastSequence = payload.sequence;
+        }
+
         if (
           payload.type === 'transfer_progress' ||
           payload.type === 'transfer_completed' ||

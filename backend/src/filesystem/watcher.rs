@@ -1,0 +1,78 @@
+use crate::transfer::WsEvent;
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::broadcast;
+
+pub struct FileSystemWatcher {
+    _watcher: RecommendedWatcher,
+    root_path: PathBuf,
+    connection_id: String,
+}
+
+impl FileSystemWatcher {
+    pub fn new<P: AsRef<Path>>(
+        connection_id: String,
+        root_path: P,
+        event_sender: broadcast::Sender<crate::transfer::EventEnvelope>,
+        seq_counter: Arc<std::sync::atomic::AtomicU64>,
+    ) -> anyhow::Result<Self> {
+        let root = root_path.as_ref().to_path_buf();
+        let root_clone = root.clone();
+        let conn_id = connection_id.clone();
+
+        let mut watcher = RecommendedWatcher::new(
+            move |res: Result<Event, notify::Error>| {
+                if let Ok(event) = res {
+                    let action = match event.kind {
+                        EventKind::Create(_) => "create",
+                        EventKind::Modify(_) => "modify",
+                        EventKind::Remove(_) => "delete",
+                        _ => return,
+                    };
+
+                    for path in event.paths {
+                        // Compute relative VFS path
+                        let relative_str = if let Ok(rel) = path.strip_prefix(&root_clone) {
+                            format!("/{}", rel.to_string_lossy().replace('\\', "/"))
+                        } else {
+                            format!("/{}", path.to_string_lossy().replace('\\', "/"))
+                        };
+
+                        let ws_event = WsEvent::FileChange {
+                            connection_id: conn_id.clone(),
+                            path: relative_str,
+                            action: action.to_string(),
+                        };
+
+                        let envelope = crate::transfer::EventEnvelope {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            sequence: seq_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                            timestamp: chrono::Utc::now(),
+                            event: ws_event,
+                        };
+
+                        let _ = event_sender.send(envelope);
+                    }
+                }
+            },
+            Config::default(),
+        )?;
+
+        watcher.watch(&root, RecursiveMode::Recursive)?;
+
+        Ok(Self {
+            _watcher: watcher,
+            root_path: root,
+            connection_id,
+        })
+    }
+
+    pub fn root_path(&self) -> &Path {
+        &self.root_path
+    }
+
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+}

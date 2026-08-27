@@ -108,7 +108,7 @@
       </template>
     </div>
 
-    <!-- Right: Toolbar Controls (Search, View Mode, Sort, Select, Dual Pane, + New) -->
+    <!-- Right: Toolbar Controls (Search, View Mode, Sort & Filter, Select, Dual Pane, + New) -->
     <div class="flex items-center space-x-2 shrink-0">
       <!-- Search Input Box (Pill shape with ⌘K badge) -->
       <button
@@ -154,14 +154,123 @@
         </button>
       </div>
 
-      <!-- Sort Button -->
-      <button
-        @click="cycleSort"
-        class="p-2 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
-        :title="`Sort by ${activePanel.sortField} (${activePanel.sortOrder})`"
-      >
-        <FbIcon name="sort" size="18px" />
-      </button>
+      <!-- Interactive Sort & Filter Dropdown Popover -->
+      <div class="relative">
+        <button
+          @click="isSortMenuOpen = !isSortMenuOpen"
+          :class="[
+            'p-2 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 transition cursor-pointer flex items-center space-x-1',
+            isSortMenuOpen || (activePanel.filterType && activePanel.filterType !== 'all') || activePanel.sortField !== 'name'
+              ? 'text-blue-600 dark:text-blue-400 border-blue-500/40 bg-blue-50/50 dark:bg-blue-950/40 ring-1 ring-blue-500/20'
+              : 'text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'
+          ]"
+          :title="`Sort & Filter (${activePanel.sortField}, ${activePanel.sortOrder})`"
+        >
+          <FbIcon name="sort" size="18px" />
+          <span
+            v-if="activePanel.filterType && activePanel.filterType !== 'all'"
+            class="w-2 h-2 rounded-full bg-blue-600 dark:bg-blue-400 animate-pulse"
+          ></span>
+        </button>
+
+        <!-- Sort & Filter Popover Menu -->
+        <div
+          v-if="isSortMenuOpen"
+          @click.stop
+          class="absolute right-0 mt-2 w-60 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-2xl p-2.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-2.5 animate-in fade-in zoom-in-95 duration-100"
+        >
+          <!-- SECTION 1: SORT BY -->
+          <div>
+            <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+              SORT BY
+            </div>
+            <div class="space-y-0.5">
+              <button
+                v-for="field in sortFields"
+                :key="field.id"
+                @click="setSortField(field.id)"
+                :class="[
+                  'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition text-left cursor-pointer',
+                  activePanel.sortField === field.id
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold'
+                    : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
+                ]"
+              >
+                <span>{{ field.label }}</span>
+                <span v-if="activePanel.sortField === field.id" class="text-blue-600 dark:text-blue-400 font-bold">✓</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
+
+          <!-- SECTION 2: ORDER (ASC / DESC) -->
+          <div>
+            <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+              ORDER
+            </div>
+            <div class="grid grid-cols-2 gap-1 p-0.5 bg-gray-100 dark:bg-slate-800/80 rounded-xl">
+              <button
+                @click="setSortOrder('asc')"
+                :class="[
+                  'py-1.5 text-center rounded-lg font-medium transition cursor-pointer text-xs',
+                  activePanel.sortOrder === 'asc'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs font-semibold'
+                    : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
+                ]"
+              >
+                Ascending ↑
+              </button>
+              <button
+                @click="setSortOrder('desc')"
+                :class="[
+                  'py-1.5 text-center rounded-lg font-medium transition cursor-pointer text-xs',
+                  activePanel.sortOrder === 'desc'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs font-semibold'
+                    : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
+                ]"
+              >
+                Descending ↓
+              </button>
+            </div>
+          </div>
+
+          <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
+
+          <!-- SECTION 3: QUICK FILTER TYPE -->
+          <div>
+            <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider flex items-center justify-between">
+              <span>FILTER CATEGORY</span>
+              <button
+                v-if="activePanel.filterType && activePanel.filterType !== 'all'"
+                @click="setFilterType('all')"
+                class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer lowercase text-[10px] font-semibold"
+              >
+                Reset All
+              </button>
+            </div>
+            <div class="space-y-0.5 max-h-40 overflow-y-auto">
+              <button
+                v-for="flt in filterOptions"
+                :key="flt.id"
+                @click="setFilterType(flt.id)"
+                :class="[
+                  'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition text-left cursor-pointer',
+                  (activePanel.filterType || 'all') === flt.id
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold'
+                    : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
+                ]"
+              >
+                <div class="flex items-center space-x-2">
+                  <span class="text-sm">{{ flt.icon }}</span>
+                  <span>{{ flt.label }}</span>
+                </div>
+                <span v-if="(activePanel.filterType || 'all') === flt.id" class="text-blue-600 dark:text-blue-400 font-bold">✓</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Select Mode / Toggle All Button -->
       <button
@@ -270,6 +379,24 @@ const uiStore = useUiStore();
 
 const isNewMenuOpen = ref(false);
 const isSourceMenuOpen = ref(false);
+const isSortMenuOpen = ref(false);
+
+const sortFields = [
+  { id: 'name', label: 'Name' },
+  { id: 'size', label: 'File Size' },
+  { id: 'modified', label: 'Modified Date' },
+  { id: 'type', label: 'File Type / Ext' },
+];
+
+const filterOptions = [
+  { id: 'all', label: 'All Items', icon: '📁' },
+  { id: 'folders', label: 'Folders Only', icon: '📂' },
+  { id: 'images', label: 'Images / Photos', icon: '🖼️' },
+  { id: 'videos', label: 'Videos & Movies', icon: '🎬' },
+  { id: 'audio', label: 'Music & Audio', icon: '🎵' },
+  { id: 'code', label: 'Documents & Code', icon: '📝' },
+  { id: 'archives', label: 'Archives (Zip/Tar)', icon: '📦' },
+];
 
 const activePanel = computed(() => workspaceStore.getPanel(workspaceStore.activePanelId));
 
@@ -309,13 +436,17 @@ function handleSelectSource(connId: string) {
   isSourceMenuOpen.value = false;
 }
 
-function cycleSort() {
-  const fields = ['name', 'size', 'modified'];
-  const currentIdx = fields.indexOf(activePanel.value.sortField);
-  const nextField = fields[(currentIdx + 1) % fields.length];
-  activePanel.value.sortField = nextField;
-  workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
-  uiStore.showToast(`Sorted by ${nextField}`, 'info');
+function setSortField(field: string) {
+  activePanel.value.sortField = field;
+}
+
+function setSortOrder(order: 'asc' | 'desc') {
+  activePanel.value.sortOrder = order;
+}
+
+function setFilterType(type: string) {
+  activePanel.value.filterType = type;
+  isSortMenuOpen.value = false;
 }
 
 function toggleSelectAll() {
@@ -353,6 +484,9 @@ function handleOutsideClick(e: MouseEvent) {
   }
   if (isSourceMenuOpen.value && !target.closest('.relative')) {
     isSourceMenuOpen.value = false;
+  }
+  if (isSortMenuOpen.value && !target.closest('.relative')) {
+    isSortMenuOpen.value = false;
   }
 }
 

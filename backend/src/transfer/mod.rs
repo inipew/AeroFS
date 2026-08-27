@@ -1,3 +1,3 @@
 pub mod engine;
 
-pub use engine::{TransferJob, TransferManager, TransferStatus, TransferType, WsEvent};
+pub use engine::{EventEnvelope, TransferJob, TransferManager, TransferStatus, TransferType, WsEvent};

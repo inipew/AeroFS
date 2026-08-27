@@ -186,6 +186,15 @@ pub async fn get_file_content(
         resp_headers.insert(CONTENT_DISPOSITION, disposition.parse().unwrap());
     }
 
+    // Handle ETag conditional caching: 304 Not Modified
+    if let Some(if_none_match) = req_headers.get(header::IF_NONE_MATCH).and_then(|h| h.to_str().ok()) {
+        let clean_client = if_none_match.trim().trim_matches('"');
+        let clean_server = meta.etag.trim().trim_matches('"');
+        if clean_client == clean_server || if_none_match == "*" {
+            return Ok((StatusCode::NOT_MODIFIED, resp_headers, Body::empty()));
+        }
+    }
+
     // Handle HTTP Range header for seeking in video/audio players
     if let Some(range_val) = req_headers.get(header::RANGE).and_then(|r| r.to_str().ok()) {
         if let Some(range_spec) = range_val.strip_prefix("bytes=") {

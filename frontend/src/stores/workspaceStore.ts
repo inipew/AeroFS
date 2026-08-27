@@ -13,6 +13,7 @@ export interface PanelState {
   showHidden: boolean;
   sortField: string;
   sortOrder: 'asc' | 'desc';
+  filterType: string;
   searchQuery: string;
   loading: boolean;
   error: string | null;
@@ -41,6 +42,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     showHidden: leftHidden,
     sortField: 'name',
     sortOrder: 'asc',
+    filterType: 'all',
     searchQuery: '',
     loading: false,
     error: null,
@@ -63,6 +65,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     showHidden: rightHidden,
     sortField: 'name',
     sortOrder: 'asc',
+    filterType: 'all',
     searchQuery: '',
     loading: false,
     error: null,
