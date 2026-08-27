@@ -189,6 +189,19 @@ export const useTransferStore = defineStore('transfer', () => {
     }
   }
 
+  const isRefreshing = ref<boolean>(false);
+
+  const totalSpeedBytesPerSec = computed(() => {
+    let total = 0;
+    for (const job of activeJobs.value) {
+      if (job.status === 'running') {
+        const metric = speedMetrics.value[job.id];
+        total += metric?.speedBytesPerSec || job.speed_bytes_per_sec || 0;
+      }
+    }
+    return total;
+  });
+
   async function retryTransfer(jobId: string) {
     const job = jobs.value.find((j) => j.id === jobId);
     if (!job) return;
@@ -202,10 +215,26 @@ export const useTransferStore = defineStore('transfer', () => {
     );
   }
 
+  function removeJob(jobId: string) {
+    jobs.value = jobs.value.filter((j) => j.id !== jobId);
+    delete speedMetrics.value[jobId];
+  }
+
   function clearFinished() {
     jobs.value = jobs.value.filter(
       (j) => j.status === 'running' || j.status === 'queued'
     );
+  }
+
+  async function refreshJobs() {
+    isRefreshing.value = true;
+    try {
+      await fetchJobs();
+    } finally {
+      setTimeout(() => {
+        isRefreshing.value = false;
+      }, 300);
+    }
   }
 
   // --- CONFLICT RESOLUTION ---
@@ -250,13 +279,17 @@ export const useTransferStore = defineStore('transfer', () => {
     activeCount,
     isDrawerOpen,
     isConnected,
+    isRefreshing,
+    totalSpeedBytesPerSec,
     speedMetrics,
     conflictState,
     fetchJobs,
+    refreshJobs,
     connectWs,
     submitTransfer,
     cancelTransfer,
     retryTransfer,
+    removeJob,
     clearFinished,
     requestConflict,
     resolveConflict,

@@ -1,5 +1,5 @@
 <template>
-  <div v-if="transferStore.isDrawerOpen || !uiStore.isMobile">
+  <div v-if="transferStore.isDrawerOpen || transferStore.jobs.length > 0">
     <!-- Mobile Backdrop Overlay -->
     <div
       v-if="uiStore.isMobile && transferStore.isDrawerOpen"
@@ -7,68 +7,93 @@
       class="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 animate-in fade-in duration-150"
     ></div>
 
-    <!-- Container: Desktop Floating Button / Card vs Mobile Bottom Sheet -->
+    <!-- Container: Desktop Floating Button / Card (Safely above footer status bar) vs Mobile Bottom Sheet -->
     <div
       :class="[
         'z-40 select-none font-sans text-xs',
         uiStore.isMobile
           ? (transferStore.isDrawerOpen ? 'fixed inset-x-0 bottom-0 z-50' : 'hidden')
-          : 'fixed bottom-4 right-4 flex flex-col items-end'
+          : 'fixed bottom-12 right-5 flex flex-col items-end'
       ]"
     >
       <!-- Collapsed Floating Button (Desktop Only) -->
       <button
         v-if="!transferStore.isDrawerOpen && !uiStore.isMobile"
         @click="transferStore.isDrawerOpen = true"
-        class="flex items-center space-x-2 bg-white dark:bg-slate-900 hover:bg-gray-50 dark:hover:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-800 dark:text-slate-200 px-4 py-2.5 rounded-full shadow-2xl transition cursor-pointer"
+        class="flex items-center space-x-2 bg-white/95 dark:bg-slate-900/95 hover:bg-white dark:hover:bg-slate-800 border border-gray-200/90 dark:border-slate-700/90 text-gray-800 dark:text-slate-100 px-3.5 py-2 rounded-full shadow-2xl backdrop-blur-md transition-all cursor-pointer hover:scale-105 active:scale-95 group"
+        title="Open Transfer Manager"
       >
         <span class="text-sm">⚡</span>
-        <span class="font-semibold">Transfers</span>
+        <span class="font-semibold text-xs">Transfers</span>
         <span
           v-if="transferStore.activeCount > 0"
-          class="px-2 py-0.5 rounded-full bg-blue-600 text-white font-bold text-[10px] animate-pulse"
+          class="px-2 py-0.5 rounded-full bg-blue-600 text-white font-bold text-[10px] animate-pulse flex items-center space-x-1"
         >
-          {{ transferStore.activeCount }}
+          <span>{{ transferStore.activeCount }}</span>
+          <span v-if="transferStore.totalSpeedBytesPerSec > 0" class="text-[9px] font-normal opacity-90">
+            · {{ formatSpeed(transferStore.totalSpeedBytesPerSec) }}
+          </span>
+        </span>
+        <span
+          v-else-if="transferStore.jobs.length > 0"
+          class="px-1.5 py-0.2 rounded-full bg-gray-200 dark:bg-slate-800 text-gray-600 dark:text-slate-400 font-bold text-[10px]"
+        >
+          {{ transferStore.jobs.length }}
         </span>
       </button>
 
-      <!-- Expanded Drawer Panel (Bottom Sheet on Mobile, Floating Card on Desktop) -->
+      <!-- Expanded Drawer Panel (Bottom Sheet on Mobile, Floating Glass Card on Desktop) -->
       <div
         v-else-if="transferStore.isDrawerOpen"
         :class="[
-          'bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col',
+          'bg-white/95 dark:bg-[#0f1422]/95 border border-gray-200 dark:border-slate-800 shadow-2xl backdrop-blur-md overflow-hidden flex flex-col',
           uiStore.isMobile
             ? 'w-full rounded-t-3xl max-h-[80vh] pb-safe animate-in slide-in-from-bottom duration-200'
-            : 'w-80 sm:w-96 rounded-2xl animate-in slide-in-from-bottom-3 duration-150'
+            : 'w-84 sm:w-96 rounded-2xl animate-in slide-in-from-bottom-3 duration-150'
         ]"
       >
         <!-- Mobile Drag Indicator -->
         <div v-if="uiStore.isMobile" class="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-1"></div>
 
-        <!-- Header -->
-        <div class="p-3.5 bg-gray-50/80 dark:bg-slate-950/80 border-b border-gray-200 dark:border-slate-800/80 flex items-center justify-between">
+        <!-- Header with Refresh, Clear, and Close -->
+        <div class="p-3.5 bg-gray-50/90 dark:bg-slate-950/90 border-b border-gray-200 dark:border-slate-800/80 flex items-center justify-between">
           <div class="flex items-center space-x-2">
             <span class="text-sm">⚡</span>
             <span class="font-bold text-gray-900 dark:text-white">Transfer Manager</span>
             <span
               v-if="transferStore.activeCount > 0"
-              class="px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-600 dark:text-blue-400 font-bold text-[10px]"
+              class="px-1.5 py-0.2 rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-400 font-bold text-[10px] animate-pulse"
             >
               {{ transferStore.activeCount }} active
             </span>
           </div>
 
           <div class="flex items-center space-x-1">
+            <!-- Manual Sync / Refresh Button -->
             <button
-              @click="transferStore.clearFinished()"
-              class="text-[10px] text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white px-2 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
-              title="Clear completed"
+              @click="handleRefresh"
+              :disabled="transferStore.isRefreshing"
+              class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              title="Refresh transfer list"
+            >
+              <FbIcon name="refresh" size="13px" :class="{ 'animate-spin': transferStore.isRefreshing }" />
+            </button>
+
+            <!-- Clear Finished Button -->
+            <button
+              v-if="hasFinishedJobs"
+              @click="handleClear"
+              class="text-[10px] text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white px-2 py-0.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer font-medium"
+              title="Clear completed and failed transfers"
             >
               Clear
             </button>
+
+            <!-- Close Drawer Button -->
             <button
               @click="transferStore.isDrawerOpen = false"
-              class="text-gray-400 hover:text-gray-900 dark:hover:text-white p-1 text-sm cursor-pointer"
+              class="p-1 rounded-lg text-gray-400 hover:text-gray-900 dark:hover:text-white transition cursor-pointer font-bold text-xs"
+              title="Close Drawer"
             >
               ✕
             </button>
@@ -76,24 +101,35 @@
         </div>
 
         <!-- Transfer Jobs List -->
-        <div class="max-h-72 overflow-y-auto p-3 space-y-3 divide-y divide-gray-100 dark:divide-slate-800/60">
-          <div v-if="transferStore.jobs.length === 0" class="py-8 text-center text-gray-400 dark:text-slate-500 text-xs font-medium">
-            No active transfers
+        <div class="max-h-72 overflow-y-auto p-3 space-y-2.5 divide-y divide-gray-100 dark:divide-slate-800/60">
+          <div v-if="transferStore.jobs.length === 0" class="py-8 text-center text-gray-400 dark:text-slate-500 text-xs font-medium flex flex-col items-center justify-center space-y-1">
+            <span class="text-xl">✨</span>
+            <span>No active transfers</span>
           </div>
 
           <div
             v-for="job in transferStore.jobs"
             :key="job.id"
-            class="pt-2 first:pt-0 space-y-1.5"
+            class="pt-2 first:pt-0 space-y-1.5 group/item"
           >
             <div class="flex items-center justify-between text-[11px]">
-              <span class="font-semibold text-gray-800 dark:text-slate-200 truncate max-w-[200px]" :title="job.name">
-                {{ job.name }}
-              </span>
+              <div class="flex items-center space-x-1.5 truncate max-w-[210px]">
+                <FbIcon
+                  :name="getTransferTypeIcon(job.transfer_type)"
+                  size="13px"
+                  :class="[
+                    job.status === 'running' ? 'text-blue-500 animate-bounce' : 'text-gray-400 dark:text-slate-500'
+                  ]"
+                />
+                <span class="font-semibold text-gray-800 dark:text-slate-200 truncate" :title="job.name">
+                  {{ job.name }}
+                </span>
+              </div>
+
               <div class="flex items-center space-x-1.5 shrink-0">
                 <span
                   :class="[
-                    'text-[10px] font-bold uppercase px-1.5 py-0.2 rounded',
+                    'text-[9px] font-bold uppercase px-1.5 py-0.2 rounded-md',
                     job.status === 'running' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400 animate-pulse' : '',
                     job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
                     job.status === 'failed' ? 'bg-red-500/20 text-red-600 dark:text-red-400' : '',
@@ -104,20 +140,32 @@
                   {{ job.status }}
                 </span>
 
+                <!-- Retry for failed / cancelled -->
                 <button
                   v-if="job.status === 'failed' || job.status === 'cancelled'"
                   @click="transferStore.retryTransfer(job.id)"
-                  class="text-blue-500 hover:text-blue-600 font-medium px-1 cursor-pointer text-[10px]"
+                  class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
                   title="Retry Transfer"
                 >
                   Retry
                 </button>
 
+                <!-- Cancel for running / queued -->
                 <button
                   v-if="job.status === 'running' || job.status === 'queued'"
                   @click="transferStore.cancelTransfer(job.id)"
-                  class="text-red-500 hover:text-red-600 font-bold px-1 cursor-pointer"
+                  class="text-red-500 hover:text-red-600 font-bold px-1 cursor-pointer text-[11px]"
                   title="Cancel Transfer"
+                >
+                  ✕
+                </button>
+
+                <!-- Dismiss / Remove single item for completed / failed -->
+                <button
+                  v-else
+                  @click="transferStore.removeJob(job.id)"
+                  class="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 px-1 cursor-pointer text-[10px] transition"
+                  title="Dismiss from list"
                 >
                   ✕
                 </button>
@@ -129,7 +177,7 @@
               <div
                 :class="[
                   'h-1.5 transition-all duration-200 rounded-full',
-                  job.status === 'completed' ? 'bg-emerald-500' : (job.status === 'failed' ? 'bg-red-500' : 'bg-blue-600')
+                  job.status === 'completed' ? 'bg-emerald-500' : (job.status === 'failed' ? 'bg-red-500' : (job.status === 'cancelled' ? 'bg-gray-400 dark:bg-slate-600' : 'bg-gradient-to-r from-blue-600 to-sky-400'))
                 ]"
                 :style="{ width: `${calculatePercent(job)}%` }"
               ></div>
@@ -155,12 +203,21 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useTransferStore } from '../../stores/transferStore';
 import { useUiStore } from '../../stores/uiStore';
-import type { TransferJob } from '../../types/transfer';
+import FbIcon from '../common/FbIcon.vue';
+import type { TransferJob, TransferType } from '../../types/transfer';
+import type { IconName } from '../../utils/icons';
 
 const transferStore = useTransferStore();
 const uiStore = useUiStore();
+
+const hasFinishedJobs = computed(() => {
+  return transferStore.jobs.some(
+    (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled'
+  );
+});
 
 function calculatePercent(job: TransferJob): number {
   if (job.total_bytes === 0) return job.status === 'completed' ? 100 : 0;
@@ -196,4 +253,21 @@ function getLiveSpeed(job: TransferJob): string {
   }
   return str;
 }
+
+function getTransferTypeIcon(type: TransferType): IconName {
+  if (type === 'upload') return 'upload';
+  if (type === 'move') return 'move';
+  return 'copy';
+}
+
+async function handleRefresh() {
+  await transferStore.refreshJobs();
+  uiStore.showToast('Transfer list synced', 'info');
+}
+
+function handleClear() {
+  transferStore.clearFinished();
+  uiStore.showToast('Cleared finished transfers', 'info');
+}
 </script>
+
