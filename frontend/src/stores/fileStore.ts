@@ -39,7 +39,11 @@ export const useFileStore = defineStore('file', () => {
 
   const selectedCount = computed(() => selectedEntries.value.length);
 
+  // Request generation tracker to prevent rapid navigation race conditions
+  let requestGeneration = 0;
+
   async function fetchEntries(path: string = currentPath.value) {
+    const generation = ++requestGeneration;
     loading.value = true;
     error.value = null;
     try {
@@ -49,13 +53,21 @@ export const useFileStore = defineStore('file', () => {
         sort: sortField.value,
         order: sortOrder.value,
       });
+      // Discard stale responses from superseded navigation requests
+      if (generation !== requestGeneration) {
+        return;
+      }
       entries.value = data.entries;
       currentPath.value = data.path;
       selectedEntries.value = [];
     } catch (err: any) {
-      error.value = err.response?.data?.error?.message || 'Failed to list files';
+      if (generation === requestGeneration) {
+        error.value = err.response?.data?.error?.message || 'Failed to list files';
+      }
     } finally {
-      loading.value = false;
+      if (generation === requestGeneration) {
+        loading.value = false;
+      }
     }
   }
 

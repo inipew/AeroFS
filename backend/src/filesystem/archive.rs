@@ -94,25 +94,42 @@ pub async fn extract_zip(
         let mut zip = ZipArchive::new(cursor)
             .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
 
+        const MAX_ENTRIES: usize = 10_000;
+        const MAX_UNCOMPRESSED_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GB limit
+
+        if zip.len() > MAX_ENTRIES {
+            return Err(SecurityError::PathTraversal(format!(
+                "Zip archive rejected: contains too many entries ({} > {})",
+                zip.len(),
+                MAX_ENTRIES
+            ))
+            .into());
+        }
+
+        let mut total_uncompressed_bytes = 0u64;
+
         for i in 0..zip.len() {
             let mut file = zip.by_index(i)
                 .map_err(|e| VfsError::IoError(format!("Failed reading zip index {}: {}", i, e)))?;
 
             let raw_name = file.name().to_string();
 
-            // Strict Zip Slip Check: ensure no .. or null bytes in filename
-            if raw_name.contains('\0') || raw_name.contains("..") {
+            // Strict Zip Slip Check: component-based traversal, prefix, root, and null byte prevention
+            let path_obj = Path::new(&raw_name);
+            let has_traversal = raw_name.contains('\0')
+                || path_obj.is_absolute()
+                || path_obj.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                });
+
+            if has_traversal {
                 return Err(SecurityError::PathTraversal(format!(
                     "Zip Slip attempt detected: {}",
-                    raw_name
-                ))
-                .into());
-            }
-
-            let clean_path = Path::new(&raw_name);
-            if clean_path.is_absolute() {
-                return Err(SecurityError::PathTraversal(format!(
-                    "Absolute path in zip detected: {}",
                     raw_name
                 ))
                 .into());
@@ -121,6 +138,14 @@ pub async fn extract_zip(
             let is_dir = file.is_dir();
             let mut content = Vec::new();
             if !is_dir {
+                total_uncompressed_bytes += file.size();
+                if total_uncompressed_bytes > MAX_UNCOMPRESSED_BYTES {
+                    return Err(SecurityError::PathTraversal(
+                        "Zip bomb detected: exceeded max uncompressed size limit".into(),
+                    )
+                    .into());
+                }
+
                 file.read_to_end(&mut content)
                     .map_err(|e| VfsError::IoError(format!("Failed extracting {}: {}", raw_name, e)))?;
             }

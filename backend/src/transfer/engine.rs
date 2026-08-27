@@ -359,7 +359,9 @@ impl TransferManager {
         };
 
         // 1. Save to SQLite for durability
-        let _ = Self::save_job_to_db(&self.db, &job).await;
+        Self::save_job_to_db(&self.db, &job)
+            .await
+            .map_err(|e| format!("Database persistence error: {}", e))?;
 
         // 2. Insert into in-memory state
         {
@@ -388,24 +390,35 @@ impl TransferManager {
     }
 
     pub async fn cancel_job(&self, id: &str) -> bool {
-        let mut map = self.jobs.write().await;
-        if let Some(job) = map.get_mut(id) {
-            if job.status == TransferStatus::Queued
-                || job.status == TransferStatus::Running
-                || job.status == TransferStatus::CancellationRequested
-            {
-                job.status = TransferStatus::Cancelled;
-                job.updated_at = Utc::now();
-                let _ = Self::save_job_to_db(&self.db, job).await;
-                Self::send_enveloped_event(
-                    &self.event_tx,
-                    &self.sequence_counter,
-                    WsEvent::TransferFailed(job.clone()),
-                );
-                return true;
+        let updated_job = {
+            let mut map = self.jobs.write().await;
+            if let Some(job) = map.get_mut(id) {
+                if job.status == TransferStatus::Queued
+                    || job.status == TransferStatus::Running
+                    || job.status == TransferStatus::CancellationRequested
+                {
+                    job.status = TransferStatus::Cancelled;
+                    job.updated_at = Utc::now();
+                    Some(job.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+
+        if let Some(job) = updated_job {
+            let _ = Self::save_job_to_db(&self.db, &job).await;
+            Self::send_enveloped_event(
+                &self.event_tx,
+                &self.sequence_counter,
+                WsEvent::TransferFailed(job),
+            );
+            true
+        } else {
+            false
         }
-        false
     }
 
     /// Execute transfer with exponential backoff retry for transient network hiccups
@@ -437,7 +450,16 @@ impl TransferManager {
                         }
                     }
 
-                    if attempt >= max_attempts {
+                    // Classify permanent errors (404, 403, 401, Invalid Path, Unsupported)
+                    let err_msg = e.to_string().to_lowercase();
+                    let is_permanent = err_msg.contains("not found")
+                        || err_msg.contains("permission denied")
+                        || err_msg.contains("forbidden")
+                        || err_msg.contains("unauthorized")
+                        || err_msg.contains("invalid path")
+                        || err_msg.contains("unsupported");
+
+                    if is_permanent || attempt >= max_attempts {
                         return Err(e);
                     }
 

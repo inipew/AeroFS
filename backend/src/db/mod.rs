@@ -31,8 +31,9 @@ async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {
     if count.0 == 0 {
         let user_id = Uuid::new_v4().to_string();
         let username = "admin";
-        let default_password = "admin12345";
-        let password_hash = hash_password(default_password)?;
+        let default_password = std::env::var("AEROFS_ADMIN_PASSWORD")
+            .unwrap_or_else(|_| "admin12345".to_string());
+        let password_hash = hash_password(&default_password)?;
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
@@ -46,7 +47,7 @@ async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-        tracing::info!("Initialized default admin user: 'admin' (password: 'admin12345')");
+        tracing::info!("Initialized default admin user: 'admin'");
     }
 
     Ok(())

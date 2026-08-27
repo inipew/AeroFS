@@ -18,6 +18,9 @@ pub enum AppError {
     #[error("Authentication error: {0}")]
     Auth(#[from] AuthError),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Bad request: {0}")]
     BadRequest(String),
 
@@ -133,6 +136,11 @@ impl IntoResponse for AppError {
                 StatusCode::UNAUTHORIZED,
                 "SESSION_EXPIRED",
                 self.to_string(),
+            ),
+            AppError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                msg.clone(),
             ),
             AppError::Auth(AuthError::Unauthorized(_)) => {
                 (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string())

@@ -10,7 +10,13 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use utoipa::ToSchema;
+
+static FAILED_ATTEMPTS: LazyLock<Mutex<HashMap<String, Vec<Instant>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
@@ -30,13 +36,34 @@ pub struct AuthResponse {
     request_body = LoginRequest,
     responses(
         (status = 200, description = "Login successful", body = AuthResponse),
-        (status = 401, description = "Invalid credentials")
+        (status = 401, description = "Invalid credentials"),
+        (status = 429, description = "Too many failed attempts")
     )
 )]
 pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let client_key = payload.username.trim().to_lowercase();
+    let now = Instant::now();
+    let window = Duration::from_secs(60);
+    const MAX_FAILED_ATTEMPTS: usize = 5;
+
+    // 1. Rate limiting check (5 attempts / 60 seconds)
+    {
+        if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
+            if let Some(timestamps) = map.get_mut(&client_key) {
+                timestamps.retain(|t| now.duration_since(*t) < window);
+                if timestamps.len() >= MAX_FAILED_ATTEMPTS {
+                    return Err(AppError::Forbidden(
+                        "Too many failed login attempts. Please wait 60 seconds before trying again."
+                            .into(),
+                    ));
+                }
+            }
+        }
+    }
+
     let row: Option<(String, String, String, i64)> = sqlx::query_as(
         "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
     )
@@ -47,14 +74,30 @@ pub async fn login(
 
     let (user_id, username, password_hash, is_admin) = match row {
         Some(r) => r,
-        None => return Err(AppError::Auth(AuthError::InvalidCredentials)),
+        None => {
+            // Record failed attempt
+            if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
+                map.entry(client_key).or_default().push(now);
+            }
+            return Err(AppError::Auth(AuthError::InvalidCredentials));
+        }
     };
 
     if !verify_password(&payload.password, &password_hash) {
+        // Record failed attempt
+        if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
+            map.entry(client_key).or_default().push(now);
+        }
         return Err(AppError::Auth(AuthError::InvalidCredentials));
     }
 
-    let session_id = create_session(&state.db, &user_id, state.config.security.session_ttl_secs).await?;
+    // Success -> clear failed attempts history
+    if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
+        map.remove(&client_key);
+    }
+
+    let session_id =
+        create_session(&state.db, &user_id, state.config.security.session_ttl_secs).await?;
 
     let cookie_val = format!(
         "session_id={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",

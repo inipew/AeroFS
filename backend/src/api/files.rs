@@ -1,4 +1,4 @@
-use crate::auth::AuthenticatedUser;
+use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
 use crate::domain::{DirectoryListing, FileKind, VfsPath};
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
@@ -69,10 +69,12 @@ pub struct SuccessResponse {
 /// List files and directories in a given path for a connection
 pub async fn list_files(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<ListFilesQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -108,7 +110,12 @@ pub async fn list_files(
             (FileKind::File, FileKind::Directory) => std::cmp::Ordering::Greater,
             _ => match sort_field {
                 "size" => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
-                "modified" => a.modified_at.cmp(&b.modified_at),
+                "date" => a.modified_at.cmp(&b.modified_at),
+                "type" => {
+                    let ext_a = a.name.split('.').last().unwrap_or("");
+                    let ext_b = b.name.split('.').last().unwrap_or("");
+                    ext_a.to_lowercase().cmp(&ext_b.to_lowercase())
+                }
                 _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             },
         };
@@ -129,13 +136,15 @@ pub async fn list_files(
     }))
 }
 
-/// Get detailed file metadata
-pub async fn get_metadata(
+/// Get detailed metadata for a file or directory
+pub async fn stat_file(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -147,14 +156,23 @@ pub async fn get_metadata(
     Ok(Json(meta))
 }
 
+pub use stat_file as get_metadata;
+
 /// Stream file content or download with HTTP Range support (206 Partial Content)
 pub async fn get_file_content(
     State(state): State<AppState>,
     req_headers: HeaderMap,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let action = if query.download.unwrap_or(false) {
+        PermissionAction::Download
+    } else {
+        PermissionAction::Read
+    };
+    check_permission(&state.db, &user, &connection_id, action).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -279,6 +297,8 @@ pub async fn update_file_content(
     Path(connection_id): Path<String>,
     Json(payload): Json<UpdateContentRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -337,10 +357,12 @@ pub async fn update_file_content(
 /// Create an empty file
 pub async fn create_file(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -361,10 +383,12 @@ pub async fn create_file(
 /// Create a directory
 pub async fn create_directory(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -385,10 +409,12 @@ pub async fn create_directory(
 /// Delete one or more files / directories
 pub async fn delete_files(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<DeleteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Delete).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -408,10 +434,12 @@ pub async fn delete_files(
 /// Rename an entry
 pub async fn rename_entry(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Rename).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -431,10 +459,12 @@ pub async fn rename_entry(
 /// Copy an entry
 pub async fn copy_entry(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
+
     let provider = state
         .get_provider(&connection_id)
         .await
@@ -454,10 +484,11 @@ pub async fn copy_entry(
 /// Streaming multipart upload
 pub async fn upload_file(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Upload).await?;
     let provider = state
         .get_provider(&connection_id)
         .await

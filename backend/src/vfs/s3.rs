@@ -70,23 +70,7 @@ impl S3FileSystem {
 #[async_trait]
 impl FileSystem for S3FileSystem {
     fn capabilities(&self) -> Capabilities {
-        let mut caps = Capabilities::default();
-        caps.read = true;
-        caps.write = true;
-        caps.create_file = true;
-        caps.create_dir = true;
-        caps.delete = true;
-        caps.rename = true;
-        caps.copy = true;
-        caps.upload = true;
-        caps.download = true;
-        caps.checksum = true;
-        caps.server_side_copy = true;
-        caps.atomic_write = true;
-        caps.permissions = false;
-        caps.symlink = false;
-        caps.watch = false;
-        caps
+        Capabilities::default()
     }
 
     async fn list(&self, path: &VfsPath) -> Result<Vec<FileEntry>, VfsError> {

@@ -145,9 +145,12 @@ pub async fn restore_trash_item(
     let to_vfs = crate::domain::VfsPath::new(&connection_id, &original_path);
 
     // Move from .trash back to original
-    let _ = provider.rename(&from_vfs, &to_vfs).await;
+    provider
+        .rename(&from_vfs, &to_vfs)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to restore file from trash: {}", e)))?;
 
-    // Remove from trash database
+    // Remove from trash database only after successful rename
     sqlx::query("DELETE FROM trash_items WHERE id = ?")
         .bind(&id)
         .execute(&state.db)

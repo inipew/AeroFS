@@ -29,7 +29,7 @@ pub struct UpdateSettingsRequest {
 /// Get current system settings and filesystem paths
 pub async fn get_settings(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
     let local_root = if let Some(custom) = state.get_system_setting("local_root").await {
         custom
@@ -67,10 +67,16 @@ pub async fn get_settings(
         state.config.filesystem.read_only_default
     };
 
+    let sanitized_db_url = if user.is_admin {
+        state.config.database.url.clone()
+    } else {
+        "sqlite://[protected]".to_string()
+    };
+
     Ok(Json(SystemSettingsResponse {
         local_root,
         temp_dir,
-        database_url: state.config.database.url.clone(),
+        database_url: sanitized_db_url,
         allow_symlinks,
         show_hidden_default,
         read_only_default,

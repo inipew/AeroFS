@@ -1,3 +1,4 @@
+use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
 use crate::errors::AppError;
 use crate::state::AppState;
@@ -21,12 +22,48 @@ pub struct CreateTransferRequest {
     pub destination_path: String,
 }
 
-/// Queue a new transfer job
+/// Queue a new transfer job with full source and destination authorization
 pub async fn create_transfer(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Json(payload): Json<CreateTransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    // 1. Authorize source connection: Read / Download
+    check_permission(
+        &state.db,
+        &user,
+        &payload.source_connection_id,
+        PermissionAction::Read,
+    )
+    .await?;
+
+    // If Move transfer, user must also have Delete permission on source connection
+    if payload.transfer_type == TransferType::Move {
+        check_permission(
+            &state.db,
+            &user,
+            &payload.source_connection_id,
+            PermissionAction::Delete,
+        )
+        .await?;
+    }
+
+    // 2. Authorize destination connection: Write / Create
+    check_permission(
+        &state.db,
+        &user,
+        &payload.destination_connection_id,
+        PermissionAction::Write,
+    )
+    .await?;
+    check_permission(
+        &state.db,
+        &user,
+        &payload.destination_connection_id,
+        PermissionAction::Create,
+    )
+    .await?;
+
     let job_id = state
         .transfer_manager
         .submit_job(
@@ -50,12 +87,33 @@ pub async fn create_transfer(
     ))
 }
 
-/// List all active and historical transfer jobs
+/// List all active and historical transfer jobs (scoped by user connection permissions)
 pub async fn list_transfers(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let jobs = state.transfer_manager.list_jobs().await;
+    let mut jobs = state.transfer_manager.list_jobs().await;
+
+    if !user.is_admin {
+        // Query authorized connections for this user
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1",
+        )
+        .bind(&user.id)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        let mut allowed: std::collections::HashSet<String> =
+            rows.into_iter().map(|r| r.0).collect();
+        allowed.insert("local".to_string());
+
+        jobs.retain(|j| {
+            allowed.contains(&j.source_connection_id)
+                && allowed.contains(&j.destination_connection_id)
+        });
+    }
+
     Ok(Json(jobs))
 }
 
@@ -72,6 +130,9 @@ pub async fn cancel_transfer(
             "message": format!("Transfer job '{}' cancelled", id),
         })))
     } else {
-        Err(AppError::NotFound(format!("Transfer job '{}' not running or not found", id)))
+        Err(AppError::NotFound(format!(
+            "Transfer job '{}' not running or not found",
+            id
+        )))
     }
 }

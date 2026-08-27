@@ -19,7 +19,6 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       user.value = null;
       isAuthenticated.value = false;
-      localStorage.removeItem('session_id');
     } finally {
       isChecking.value = false;
     }
@@ -29,9 +28,6 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null;
     try {
       const resp = await loginApi(payload);
-      if (resp.session_id) {
-        localStorage.setItem('session_id', resp.session_id);
-      }
       user.value = resp.user;
       isAuthenticated.value = true;
       return true;
@@ -45,7 +41,6 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await logoutApi();
     } finally {
-      localStorage.removeItem('session_id');
       user.value = null;
       isAuthenticated.value = false;
     }

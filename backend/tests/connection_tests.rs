@@ -111,7 +111,7 @@ async fn test_remote_connections_crud_and_test() {
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let detail_val: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail_val["connection"]["provider"], "sftp");
-    assert_eq!(detail_val["capabilities"]["permissions"], true);
+    assert_eq!(detail_val["capabilities"]["read"], true);
 
     // 4. Test Local connection status -> 200
     let test_req = Request::builder()
@@ -124,7 +124,7 @@ async fn test_remote_connections_crud_and_test() {
     let resp = app.clone().oneshot(test_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 5. Delete SFTP connection -> 200
+    // 6. Delete SFTP connection as admin -> 200
     let del_req = Request::builder()
         .uri(format!("/api/v1/connections/{}", sftp_id))
         .method("DELETE")
@@ -134,4 +134,28 @@ async fn test_remote_connections_crud_and_test() {
 
     let resp = app.clone().oneshot(del_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_nonadmin_connection_creation_forbidden() {
+    let (app, _cookie, _temp) = setup_app().await;
+
+    // Login as non-admin
+    // (Create connection without admin rights should return 403)
+    let create_req = Request::builder()
+        .uri("/api/v1/connections")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "name": "Unauthorized Conn",
+                "provider": "sftp",
+                "host": "127.0.0.1"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

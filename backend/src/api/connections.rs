@@ -1,4 +1,5 @@
 use crate::auth::credentials::{derive_master_key, encrypt_secret};
+use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
 use crate::domain::{Capabilities, Connection, ConnectionStatus, ProviderKind};
 use crate::errors::{AppError, VfsError};
@@ -41,10 +42,10 @@ pub struct TestConnectionResponse {
     pub message: String,
 }
 
-/// List all available connections from database
+/// List all available connections from database (scoped to user's permissions)
 pub async fn list_connections(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
     let rows: Vec<(
         String,
@@ -58,13 +59,25 @@ pub async fn list_connections(
         i64,
         String,
         String,
-    )> = sqlx::query_as(
-        "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at 
-         FROM connections WHERE enabled = 1",
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+    )> = if user.is_admin {
+        sqlx::query_as(
+            "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at 
+             FROM connections WHERE enabled = 1",
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
+    } else {
+        sqlx::query_as(
+            "SELECT c.id, c.name, c.provider, c.host, c.port, c.username, c.base_path, c.read_only, c.enabled, c.created_at, c.updated_at 
+             FROM connections c
+             WHERE c.enabled = 1 AND (c.id = 'local' OR c.id IN (SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1))",
+        )
+        .bind(&user.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
+    };
 
     let mut connections = Vec::new();
     for (
@@ -114,12 +127,18 @@ pub async fn list_connections(
     Ok(Json(connections))
 }
 
-/// Create a new connection with encrypted credential storage
+/// Create a new connection with encrypted credential storage (Admin only, Transactional)
 pub async fn create_connection(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Json(payload): Json<CreateConnectionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin {
+        return Err(AppError::Forbidden(
+            "Only administrators can create storage connections".into(),
+        ));
+    }
+
     let id = format!("conn_{}", &Uuid::new_v4().to_string()[..8]);
     let now = Utc::now().to_rfc3339();
     let provider_str = match payload.provider {
@@ -131,6 +150,13 @@ pub async fn create_connection(
 
     let base_path = payload.base_path.unwrap_or_else(|| "/".to_string());
     let read_only = payload.read_only.unwrap_or(false);
+
+    // Transactional creation: connection + credential
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
 
     sqlx::query(
         "INSERT INTO connections (id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at)
@@ -146,7 +172,7 @@ pub async fn create_connection(
     .bind(if read_only { 1 } else { 0 })
     .bind(&now)
     .bind(&now)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| anyhow::anyhow!("Failed to save connection: {}", e))?;
 
@@ -162,11 +188,15 @@ pub async fn create_connection(
             .bind(&id)
             .bind(&encrypted)
             .bind(&now)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to save credential: {}", e))?;
         }
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit connection transaction: {}", e))?;
 
     // Register live provider in state
     match payload.provider {
@@ -219,12 +249,18 @@ pub async fn create_connection(
     ))
 }
 
-/// Delete a connection
+/// Delete a connection (Admin only)
 pub async fn delete_connection(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin {
+        return Err(AppError::Forbidden(
+            "Only administrators can delete storage connections".into(),
+        ));
+    }
+
     if id == "local" {
         return Err(AppError::BadRequest("Default local connection cannot be deleted".into()));
     }
@@ -246,7 +282,7 @@ pub async fn delete_connection(
 /// Test connection connectivity
 pub async fn test_connection(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if id == "local" {
@@ -256,6 +292,8 @@ pub async fn test_connection(
             message: "Local filesystem connected".to_string(),
         }));
     }
+
+    check_permission(&state.db, &user, &id, PermissionAction::Read).await?;
 
     let provider = state
         .get_provider(&id)
@@ -278,9 +316,11 @@ pub async fn test_connection(
 /// Get a specific connection and its capabilities
 pub async fn get_connection(
     State(state): State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &id, PermissionAction::Read).await?;
+
     let provider = state
         .get_provider(&id)
         .await

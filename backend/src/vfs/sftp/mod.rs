@@ -38,16 +38,28 @@ impl SftpFileSystem {
         }
     }
 
-    /// Resolve remote path by prepending base_path
+    /// Resolve remote path by prepending base_path with component containment
     fn resolve_remote_path(&self, vfs_path: &VfsPath) -> String {
         let clean_base = self.base_path.trim_end_matches('/');
-        let clean_vfs = vfs_path.path.trim_start_matches('/');
+        let mut components = Vec::new();
+        for comp in std::path::Path::new(&vfs_path.path).components() {
+            match comp {
+                std::path::Component::Normal(c) => components.push(c.to_string_lossy().to_string()),
+                std::path::Component::ParentDir => {
+                    components.pop();
+                }
+                _ => {}
+            }
+        }
+        let clean_vfs = components.join("/");
         if clean_vfs.is_empty() {
             if clean_base.is_empty() {
                 "/".to_string()
             } else {
                 clean_base.to_string()
             }
+        } else if clean_base.is_empty() {
+            format!("/{}", clean_vfs)
         } else {
             format!("{}/{}", clean_base, clean_vfs)
         }
@@ -77,19 +89,19 @@ impl FileSystem for SftpFileSystem {
             create_dir: true,
             delete: true,
             rename: true,
-            copy: true,
-            move_: true,
+            copy: false,
+            move_: false,
             upload: true,
             download: true,
-            resume_upload: true,
-            resume_download: true,
-            atomic_write: true,
-            atomic_rename: true,
-            server_side_copy: true,
-            symlink: true,
-            permissions: true,
+            resume_upload: false,
+            resume_download: false,
+            atomic_write: false,
+            atomic_rename: false,
+            server_side_copy: false,
+            symlink: false,
+            permissions: false,
             watch: false,
-            checksum: true,
+            checksum: false,
         }
     }
 

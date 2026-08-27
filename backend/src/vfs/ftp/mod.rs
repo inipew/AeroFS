@@ -6,7 +6,6 @@ use chrono::Utc;
 use std::io::Cursor;
 use std::time::Instant;
 use suppaftp::tokio::AsyncFtpStream;
-use tokio::io::AsyncReadExt;
 
 #[allow(dead_code)]
 pub struct FtpFileSystem {
@@ -40,16 +39,28 @@ impl FtpFileSystem {
         }
     }
 
-    /// Resolve remote path by prepending base_path
+    /// Resolve remote path by prepending base_path with component containment
     fn resolve_remote_path(&self, vfs_path: &VfsPath) -> String {
         let clean_base = self.base_path.trim_end_matches('/');
-        let clean_vfs = vfs_path.path.trim_start_matches('/');
+        let mut components = Vec::new();
+        for comp in std::path::Path::new(&vfs_path.path).components() {
+            match comp {
+                std::path::Component::Normal(c) => components.push(c.to_string_lossy().to_string()),
+                std::path::Component::ParentDir => {
+                    components.pop();
+                }
+                _ => {}
+            }
+        }
+        let clean_vfs = components.join("/");
         if clean_vfs.is_empty() {
             if clean_base.is_empty() {
                 "/".to_string()
             } else {
                 clean_base.to_string()
             }
+        } else if clean_base.is_empty() {
+            format!("/{}", clean_vfs)
         } else {
             format!("{}/{}", clean_base, clean_vfs)
         }
@@ -169,12 +180,12 @@ impl FileSystem for FtpFileSystem {
             upload: true,
             download: true,
             resume_upload: false,
-            resume_download: false,
+            resume_download: true,
             atomic_write: false,
-            atomic_rename: false,
+            atomic_rename: true,
             server_side_copy: false,
             symlink: false,
-            permissions: true,
+            permissions: false,
             watch: false,
             checksum: false,
         }
@@ -203,14 +214,13 @@ impl FileSystem for FtpFileSystem {
 
     async fn stat(&self, path: &VfsPath) -> Result<FileMetadata, VfsError> {
         if path.is_root() {
-            let now = Utc::now();
             return Ok(FileMetadata {
                 name: "root".to_string(),
                 path: "/".to_string(),
                 kind: FileKind::Directory,
                 size: 0,
-                modified_at: Some(now),
-                created_at: Some(now),
+                modified_at: None,
+                created_at: None,
                 permissions: Some("0755".to_string()),
                 mime_type: None,
                 etag: "\"ftp-root\"".to_string(),
@@ -222,12 +232,36 @@ impl FileSystem for FtpFileSystem {
 
         let remote_path = self.resolve_remote_path(path);
         let mut ftp = self.connect_ftp().await?;
-        let size = ftp.size(&remote_path).await.ok().map(|s| s as u64);
+
+        // 1. Try MDTM (modification time) and SIZE to check if it's a file
+        let mtime_res = ftp.mdtm(&remote_path).await;
+        let size_res = ftp.size(&remote_path).await;
+
+        let (is_dir, size, mtime) = if let Ok(sz) = size_res {
+            let mtime_opt = mtime_res.ok().map(|dt| {
+                chrono::DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)
+            });
+            (false, sz as u64, mtime_opt)
+        } else if let Ok(dt) = mtime_res {
+            let mtime_utc = chrono::DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc);
+            (false, 0u64, Some(mtime_utc))
+        } else {
+            // Check if directory by attempting CWD
+            let is_directory = ftp.cwd(&remote_path).await.is_ok();
+            (is_directory, 0u64, None)
+        };
+
         let _ = ftp.quit().await;
 
         let name = path.file_name().unwrap_or("entry").to_string();
-        let is_dir = size.is_none();
-        let now = Utc::now();
+
+        // 2. Deterministic ETag based on path, size, and modified time (never now())
+        let mtime_ts = mtime.map(|m| m.timestamp()).unwrap_or(0);
+        let etag = if is_dir {
+            format!("\"ftp-dir-{}\"", path.path)
+        } else {
+            format!("\"ftp-{}-{}-{}\"", path.path, size, mtime_ts)
+        };
 
         Ok(FileMetadata {
             name: name.clone(),
@@ -237,16 +271,16 @@ impl FileSystem for FtpFileSystem {
             } else {
                 FileKind::File
             },
-            size: size.unwrap_or(0),
-            modified_at: Some(now),
-            created_at: Some(now),
+            size,
+            modified_at: mtime,
+            created_at: None,
             permissions: Some(if is_dir { "0755" } else { "0644" }.to_string()),
             mime_type: if is_dir {
                 None
             } else {
                 Some(mime_guess::from_path(&name).first_or_octet_stream().to_string())
             },
-            etag: format!("\"ftp-{}-{}\"", size.unwrap_or(0), now.timestamp()),
+            etag,
             is_readonly: false,
             is_hidden: name.starts_with('.'),
             symlink_target: None,
@@ -261,28 +295,35 @@ impl FileSystem for FtpFileSystem {
             VfsError::ConnectionError(format!("Failed to retrieve FTP file '{}': {}", remote_path, e))
         })?;
 
-        let mut buffer = Vec::new();
-        data_stream.read_to_end(&mut buffer).await.map_err(|e| {
-            VfsError::IoError(format!("Failed to read FTP data stream: {}", e))
-        })?;
+        let (pipe_reader, mut pipe_writer) = tokio::io::duplex(64 * 1024);
 
-        let _ = ftp.finalize_retr_stream(data_stream).await;
-        let _ = ftp.quit().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                match data_stream.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if pipe_writer.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = pipe_writer.flush().await;
+            let _ = ftp.finalize_retr_stream(data_stream).await;
+            let _ = ftp.quit().await;
+        });
 
-        Ok(Box::new(Cursor::new(buffer)))
+        Ok(Box::new(pipe_reader))
     }
 
     async fn write_stream(&self, path: &VfsPath, mut input: AsyncReadBox) -> Result<(), VfsError> {
         let remote_path = self.resolve_remote_path(path);
-        let mut buffer = Vec::new();
-        input.read_to_end(&mut buffer).await.map_err(|e| {
-            VfsError::IoError(format!("Failed to read stream before FTP upload: {}", e))
-        })?;
-
         let mut ftp = self.connect_ftp().await?;
-        let mut cursor = Cursor::new(buffer);
 
-        ftp.put_file(&remote_path, &mut cursor).await.map_err(|e| {
+        ftp.put_file(&remote_path, &mut input).await.map_err(|e| {
             VfsError::ConnectionError(format!("Failed to upload FTP file '{}': {}", remote_path, e))
         })?;
 
