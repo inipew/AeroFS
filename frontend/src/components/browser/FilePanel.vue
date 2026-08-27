@@ -10,35 +10,65 @@
         : ''
     ]"
   >
-    <!-- Dual-Pane Subheader with Connection Switcher & Close / Disconnect Button -->
+    <!-- Dual-Pane Subheader with Navigation Engine, Connection Switcher & Actions -->
     <div
       v-if="workspaceStore.isDualPane"
       :class="[
-        'h-12 border-b px-4 flex items-center justify-between transition-colors text-xs shrink-0',
+        'h-12 border-b px-3 flex items-center justify-between transition-colors text-xs shrink-0',
         isActive
           ? 'bg-blue-50/40 dark:bg-blue-950/20 border-blue-100 dark:border-blue-900/30'
           : 'bg-gray-50/60 dark:bg-slate-900/60 border-gray-200/80 dark:border-slate-800/80'
       ]"
     >
-      <div class="flex items-center space-x-2 truncate">
+      <div class="flex items-center space-x-1.5 truncate">
+        <!-- Navigation Buttons: Back, Forward, Up -->
+        <button
+          @click.stop="workspaceStore.goBack(panelId)"
+          :disabled="panel.historyIndex <= 0"
+          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+          title="Back (Alt+Left)"
+        >
+          <FbIcon name="chevron-left" size="14px" />
+        </button>
+
+        <button
+          @click.stop="workspaceStore.goForward(panelId)"
+          :disabled="panel.historyIndex >= panel.history.length - 1"
+          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+          title="Forward (Alt+Right)"
+        >
+          <FbIcon name="chevron-right" size="14px" />
+        </button>
+
+        <button
+          @click.stop="workspaceStore.navigateUp(panelId)"
+          :disabled="panel.path === '/' || panel.path === ''"
+          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+          title="Up (Alt+Up)"
+        >
+          <FbIcon name="arrow-up" size="14px" />
+        </button>
+
+        <div class="h-4 w-px bg-gray-200 dark:bg-slate-800 mx-0.5"></div>
+
         <!-- Connection Switcher Dropdown -->
         <select
           :value="panel.connectionId"
           @change="handleConnectionChange(($event.target as HTMLSelectElement).value)"
-          class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-1.5 font-bold text-xs text-gray-800 dark:text-slate-100 cursor-pointer shadow-xs focus:outline-none focus:border-blue-500 transition"
+          class="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-2 py-1 font-bold text-xs text-gray-800 dark:text-slate-100 cursor-pointer shadow-xs focus:outline-none focus:border-blue-500 transition max-w-[130px] truncate"
         >
           <option v-for="conn in connStore.connections" :key="conn.id" :value="conn.id">
-            {{ conn.name }} ({{ conn.provider.toUpperCase() }})
+            {{ conn.name }}
           </option>
         </select>
 
-        <span class="text-gray-400 dark:text-slate-500 font-mono text-[11px] truncate max-w-[200px]">
+        <span class="text-gray-400 dark:text-slate-500 font-mono text-[11px] truncate max-w-[180px]" :title="panel.path">
           {{ panel.path }}
         </span>
       </div>
 
       <!-- Panel Action Buttons & Close Panel (✕) -->
-      <div class="flex items-center space-x-1">
+      <div class="flex items-center space-x-1 shrink-0">
         <button
           :disabled="panel.loading"
           @click.stop="workspaceStore.refreshPanel(panelId)"
@@ -70,6 +100,23 @@
         <FbIcon name="upload" size="20px" />
         <span>Drop files to copy into this folder</span>
       </div>
+    </div>
+
+    <!-- Graceful Warning / Stale Cache Banner -->
+    <div
+      v-if="panel.error && panel.entries.length > 0"
+      class="mx-4 mt-2 px-3 py-2 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 flex items-center justify-between text-xs shrink-0 animate-in fade-in"
+    >
+      <div class="flex items-center space-x-2 truncate mr-2">
+        <FbIcon name="frown" size="16px" class="shrink-0" />
+        <span class="truncate">{{ panel.error }} (Showing cached data)</span>
+      </div>
+      <button
+        @click.stop="workspaceStore.refresh(panelId)"
+        class="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition"
+      >
+        Retry
+      </button>
     </div>
 
     <!-- Drop Zone & File Listing Content -->
@@ -117,6 +164,7 @@
               :class="[
                 'border rounded-2xl px-4 py-3 flex items-center space-x-3 cursor-pointer transition-all duration-150 select-none shadow-xs group',
                 isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
+                workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 panel.selectedEntries.includes(folder.path)
                   ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
                   : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-md'
@@ -162,6 +210,7 @@
               :class="[
                 'border rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 flex flex-col group select-none shadow-xs',
                 isItemHidden(file) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
+                workspaceStore.isCutItem(panel.connectionId, file.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 panel.selectedEntries.includes(file.path)
                   ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
                   : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-xl hover:-translate-y-1 hover:border-blue-400 dark:hover:border-blue-500'
@@ -287,6 +336,7 @@
               :class="[
                 'cursor-pointer transition group',
                 isItemHidden(entry) ? 'opacity-65 hover:opacity-100 italic' : '',
+                workspaceStore.isCutItem(panel.connectionId, entry.path) ? 'opacity-40 italic' : '',
                 panel.selectedEntries.includes(entry.path)
                   ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-900 dark:text-blue-100'
                   : 'hover:bg-gray-50/80 dark:hover:bg-slate-800/60 text-gray-800 dark:text-slate-200'
@@ -379,7 +429,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import type { IconName } from '../../utils/icons';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -761,4 +811,63 @@ function formatDate(dateStr?: string): string {
     day: 'numeric',
   });
 }
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (!isActive.value) return;
+  // Ignore keyboard shortcuts when typing in inputs or dialogs
+  const tag = (e.target as HTMLElement)?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+    e.preventDefault();
+    panel.value.selectedEntries = panel.value.entries.map((item) => item.path);
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+    e.preventDefault();
+    workspaceStore.copySelection(props.panelId);
+    uiStore.showToast('Copied to clipboard', 'info');
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+    e.preventDefault();
+    workspaceStore.cutSelection(props.panelId);
+    uiStore.showToast('Cut to clipboard', 'info');
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+    e.preventDefault();
+    workspaceStore.paste(props.panelId);
+  } else if (e.key === 'Delete') {
+    e.preventDefault();
+    if (panel.value.selectedEntries.length > 0) {
+      handleBatchDelete();
+    }
+  } else if (e.key === 'F2') {
+    e.preventDefault();
+    if (panel.value.selectedEntries.length === 1) {
+      handleSingleRename();
+    }
+  } else if (e.altKey && e.key === 'ArrowLeft') {
+    e.preventDefault();
+    workspaceStore.goBack(props.panelId);
+  } else if (e.altKey && e.key === 'ArrowRight') {
+    e.preventDefault();
+    workspaceStore.goForward(props.panelId);
+  } else if (e.altKey && e.key === 'ArrowUp') {
+    e.preventDefault();
+    workspaceStore.navigateUp(props.panelId);
+  } else if (e.key === 'Enter') {
+    if (panel.value.selectedEntries.length === 1) {
+      const selected = panel.value.entries.find((i) => i.path === panel.value.selectedEntries[0]);
+      if (selected) {
+        handleEntryDoubleClick(selected);
+      }
+    }
+  } else if (e.key === 'Escape') {
+    panel.value.selectedEntries = [];
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown);
+});
 </script>

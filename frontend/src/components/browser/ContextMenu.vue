@@ -59,6 +59,34 @@
 
       <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
 
+      <!-- Copy & Cut Operations -->
+      <button
+        @click="handleCopy"
+        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
+      >
+        <span>📋 Copy</span>
+        <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+C</span>
+      </button>
+
+      <button
+        @click="handleCut"
+        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
+      >
+        <span>✂️ Cut</span>
+        <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+X</span>
+      </button>
+
+      <button
+        v-if="workspaceStore.clipboard"
+        @click="handlePaste"
+        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+      >
+        <span>📄 Paste</span>
+        <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
+      </button>
+
+      <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+
       <!-- Extract Archive if .zip or .tar.gz -->
       <button
         v-if="isArchive(uiStore.contextMenu.item.name)"
@@ -95,6 +123,15 @@
 
     <!-- Blank Area Context Menu -->
     <div v-else>
+      <button
+        v-if="workspaceStore.clipboard"
+        @click="handlePaste"
+        class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+      >
+        <span>📄 Paste Here</span>
+        <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
+      </button>
+      <div v-if="workspaceStore.clipboard" class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
       <button
         @click="uiStore.openCreate('file'); uiStore.closeContextMenu()"
         class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
@@ -169,7 +206,7 @@ watch(
       if (!menuRef.value) return;
 
       const menuWidth = menuRef.value.offsetWidth || 224;
-      const menuHeight = menuRef.value.offsetHeight || 360;
+      const menuHeight = menuRef.value.offsetHeight || 380;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
 
@@ -242,6 +279,26 @@ function handleProperties() {
   uiStore.closeContextMenu();
 }
 
+function handleCopy() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  workspaceStore.copySelection(panelId);
+  uiStore.showToast('Copied to clipboard', 'info');
+  uiStore.closeContextMenu();
+}
+
+function handleCut() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  workspaceStore.cutSelection(panelId);
+  uiStore.showToast('Cut to clipboard', 'info');
+  uiStore.closeContextMenu();
+}
+
+async function handlePaste() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  uiStore.closeContextMenu();
+  await workspaceStore.paste(panelId);
+}
+
 function isArchive(name: string): boolean {
   const n = name.toLowerCase();
   return n.endsWith('.zip') || n.endsWith('.tar.gz') || n.endsWith('.tgz');
@@ -254,7 +311,7 @@ function handleOpen() {
   const connId = activeConnectionId.value;
 
   if (item.kind === 'directory') {
-    workspaceStore.navigatePanel(panelId, item.path);
+    workspaceStore.navigateTo(panelId, item.path);
   } else {
     const url = getDownloadUrl(connId, item.path);
     window.open(url, '_blank');
