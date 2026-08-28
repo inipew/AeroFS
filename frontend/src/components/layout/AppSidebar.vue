@@ -9,7 +9,7 @@
   <!-- Sidebar Component (Desktop Sticky Column vs Mobile Slide-Over Drawer) -->
   <aside
     :class="[
-      'bg-gray-50/95 dark:bg-[#090d16] border-r border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between transition-all duration-200 select-none shrink-0',
+      'bg-gray-50/95 dark:bg-[#090d16] border-r border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between transition-[width,transform] duration-standard ease-spring select-none shrink-0',
       uiStore.isMobile
         ? (uiStore.isMobileSidebarOpen ? 'fixed inset-y-0 left-0 z-50 w-72 shadow-2xl animate-in slide-in-from-left duration-200' : 'hidden')
         : (isCollapsed ? 'h-full w-16 z-30' : 'h-full w-64 z-30')

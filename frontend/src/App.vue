@@ -1,270 +1,303 @@
 <template>
-  <div class="h-screen w-screen flex flex-col bg-white dark:bg-[#0b0f19] text-gray-800 dark:text-slate-100 font-sans antialiased overflow-hidden select-none">
-    <!-- Unauthenticated View: Fullscreen Auth Modal -->
+  <div class="h-screen w-screen overflow-hidden flex flex-col bg-white dark:bg-[#0b0f19] text-gray-800 dark:text-slate-100 font-sans select-none antialiased">
+    <!-- Unauthenticated Login View -->
     <LoginModal v-if="!authStore.isAuthenticated && !authStore.isChecking" />
 
-    <!-- Authenticated View: AeroFS Core Interface -->
-    <div v-else-if="authStore.isAuthenticated" class="flex h-full w-full overflow-hidden">
-      <!-- Full-Height Sidebar Navigation Drawer -->
-      <AppSidebar
-        @openConnectionDialog="isConnDialogOpen = true"
-        @openSharesDialog="isSharesDialogOpen = true"
-        @openTrashDialog="isTrashDialogOpen = true"
-        @openStarredDialog="isStarredDialogOpen = true"
-        @openSettingsDialog="isSettingsDialogOpen = true"
-        @showRecent="handleRecentView"
+    <!-- Authenticated Main Application Workspace Surface -->
+    <div v-else-if="authStore.isAuthenticated" class="h-full w-full flex flex-col min-h-0 overflow-hidden relative">
+      <!-- Universal App Header -->
+      <AppHeader
+        @open-connection-dialog="isConnDialogOpen = true"
+        @open-search-dialog="isSearchDialogOpen = true"
+        @open-settings-dialog="isSettingsDialogOpen = true"
+        @open-shares-dialog="isSharesDialogOpen = true"
+        @open-trash-dialog="isTrashDialogOpen = true"
+        @open-starred-dialog="isStarredDialogOpen = true"
+        @recent-view="handleRecentView"
       />
 
-      <!-- Right Area: Universal Header + Dynamic Workspace Panels + Mobile Bottom Bar -->
-      <div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden">
-        <!-- Universal App Header (Breadcrumb, Search, Sort & Filter, New Button) -->
-        <AppHeader
-          @openSearchDialog="isSearchDialogOpen = true"
-          @openConnectionDialog="isConnDialogOpen = true"
-          @openAuditLogDialog="isSettingsDialogOpen = true"
+      <!-- Workspace Body (Sidebar + Content Workspace Area) -->
+      <div class="flex-1 flex min-h-0 overflow-hidden relative">
+        <!-- Collapsible / Floating Navigation Sidebar -->
+        <AppSidebar
+          @open-connection-dialog="isConnDialogOpen = true"
+          @open-settings-dialog="isSettingsDialogOpen = true"
+          @open-shares-dialog="isSharesDialogOpen = true"
+          @open-trash-dialog="isTrashDialogOpen = true"
+          @open-starred-dialog="isStarredDialogOpen = true"
         />
 
-        <!-- Mobile Dual-Pane Modern Segmented Control (When Dual Pane is Enabled on Mobile) -->
-        <div
-          v-if="uiStore.isMobile && workspaceStore.isDualPane"
-          class="px-2.5 py-1.5 bg-gray-50/95 dark:bg-[#070a12]/95 border-b border-gray-200/80 dark:border-slate-800/80 backdrop-blur-md flex items-center select-none shrink-0"
-        >
-          <div class="w-full flex items-center p-1 bg-gray-200/70 dark:bg-slate-900/90 rounded-2xl border border-gray-200/70 dark:border-slate-800/80 shadow-2xs">
-            <!-- Left Panel Tab -->
+        <!-- Main Workspace Workspace Area -->
+        <div class="flex-1 flex flex-col min-w-0 overflow-hidden relative bg-white dark:bg-[#0b0f19]">
+          <!-- Mobile Dual Panel Switching Tabs (Top Navigation for Small Screens) -->
+          <div
+            v-if="uiStore.isMobile && workspaceStore.isDualPane"
+            class="h-10 bg-gray-100/90 dark:bg-[#080c14]/90 border-b border-gray-200/80 dark:border-slate-800/80 px-3 flex items-center shrink-0 z-10 select-none"
+          >
+            <div class="w-full flex items-center bg-gray-200/70 dark:bg-slate-900/70 p-0.5 rounded-xl">
+              <!-- Left Panel Tab -->
+              <button
+                @click="workspaceStore.setActivePanel('left')"
+                :class="[
+                  'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition-colors duration-fast text-xs font-semibold cursor-pointer truncate',
+                  workspaceStore.activePanelId === 'left'
+                    ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs ring-1 ring-blue-500/20'
+                    : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 hover:bg-white/30 dark:hover:bg-slate-800/40'
+                ]"
+              >
+                <FbIcon
+                  :name="workspaceStore.leftPanel.connectionId === 'local' ? 'folder' : 'share'"
+                  size="14px"
+                  :class="workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'"
+                />
+                <span class="truncate max-w-[100px]">{{ leftConnName }}</span>
+                <span class="text-[10px] font-mono opacity-60 truncate max-w-[65px]">/{{ getPanelDisplayPath(workspaceStore.leftPanel.path) }}</span>
+                <span v-if="workspaceStore.activePanelId === 'left'" class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+              </button>
+
+              <!-- Right Panel Tab -->
+              <button
+                @click="workspaceStore.setActivePanel('right')"
+                :class="[
+                  'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition-colors duration-fast text-xs font-semibold cursor-pointer truncate',
+                  workspaceStore.activePanelId === 'right'
+                    ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs ring-1 ring-blue-500/20'
+                    : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 hover:bg-white/30 dark:hover:bg-slate-800/40'
+                ]"
+              >
+                <FbIcon
+                  :name="workspaceStore.rightPanel.connectionId === 'local' ? 'folder' : 'share'"
+                  size="14px"
+                  :class="workspaceStore.activePanelId === 'right' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'"
+                />
+                <span class="truncate max-w-[100px]">{{ rightConnName }}</span>
+                <span class="text-[10px] font-mono opacity-60 truncate max-w-[65px]">/{{ getPanelDisplayPath(workspaceStore.rightPanel.path) }}</span>
+                <span v-if="workspaceStore.activePanelId === 'right'" class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Dynamic Workspace Shell (Continuous Surface) -->
+          <main
+            ref="mainContainerRef"
+            :style="{ '--split-ratio': workspaceStore.splitRatio }"
+            class="flex-1 flex overflow-hidden min-w-0 bg-white dark:bg-[#0b0f19] p-0 relative"
+          >
+            <!-- MOBILE VIEW: Continuous Dual-Slide Track with Real-Time Interactive Gesture Tracking -->
+            <div
+              v-if="uiStore.isMobile"
+              ref="mobileTrackWrapperRef"
+              class="w-full h-full flex flex-col min-w-0 overflow-hidden relative touch-pan-y"
+              @touchstart="handleTouchStart"
+              @touchmove="handleTouchMove"
+              @touchend="handleTouchEnd"
+              @touchcancel="handleTouchCancel"
+            >
+              <!-- Dual Slide Container when Dual-Pane is enabled -->
+              <div
+                v-if="workspaceStore.isDualPane"
+                class="w-[200%] h-full flex flex-row flex-nowrap will-change-transform"
+                :style="mobileTrackStyle"
+              >
+                <div class="w-1/2 h-full flex flex-col min-w-0 overflow-hidden shrink-0">
+                  <FilePanel panelId="left" @open-archive-viewer="handleOpenArchiveViewer" />
+                </div>
+                <div class="w-1/2 h-full flex flex-col min-w-0 overflow-hidden shrink-0">
+                  <FilePanel panelId="right" @open-archive-viewer="handleOpenArchiveViewer" />
+                </div>
+              </div>
+
+              <!-- Single Panel View on Mobile when Dual-Pane is disabled -->
+              <div v-else class="w-full h-full flex flex-col min-w-0 overflow-hidden">
+                <FilePanel panelId="left" @open-archive-viewer="handleOpenArchiveViewer" />
+              </div>
+            </div>
+
+            <!-- DESKTOP VIEW: Continuous Workspace Surface (Single or Split) -->
+            <template v-else>
+              <!-- Left Panel -->
+              <div
+                :style="{
+                  width: workspaceStore.isDualPane ? 'calc(var(--split-ratio) * 100% - 3px)' : '100%'
+                }"
+                class="h-full flex flex-col min-w-[200px]"
+              >
+                <FilePanel panelId="left" @open-archive-viewer="handleOpenArchiveViewer" />
+              </div>
+
+              <!-- Draggable Split Divider (Compositor-Synced 1px seam with subtle hover handle) -->
+              <div
+                v-if="workspaceStore.isDualPane"
+                @mousedown="startSplitResize"
+                class="w-1.5 relative flex items-center justify-center cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/30 group select-none transition-colors duration-fast shrink-0 bg-gray-200 dark:border-slate-800 bg-gray-100 dark:bg-[#070b14]"
+                title="Drag to resize panels"
+              >
+                <div class="w-0.5 h-10 bg-gray-300 dark:bg-slate-700 group-hover:bg-blue-500 rounded-full transition-colors duration-fast"></div>
+              </div>
+
+              <!-- Right Panel (when Dual Pane is enabled) -->
+              <div
+                v-if="workspaceStore.isDualPane"
+                :style="{
+                  width: 'calc((1 - var(--split-ratio)) * 100% - 3px)'
+                }"
+                class="h-full flex flex-col min-w-[200px]"
+              >
+                <FilePanel panelId="right" @open-archive-viewer="handleOpenArchiveViewer" />
+              </div>
+            </template>
+          </main>
+
+          <!-- Mobile Bottom Navigation Bar (Thumb Zone) -->
+          <nav
+            v-if="uiStore.isMobile"
+            class="h-14 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-gray-200 dark:border-slate-800 px-4 flex items-center justify-around text-gray-500 dark:text-slate-400 text-[10px] font-semibold shrink-0 z-20 pb-safe select-none"
+          >
             <button
               @click="workspaceStore.setActivePanel('left')"
               :class="[
-                'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition-all text-xs font-semibold cursor-pointer truncate',
-                workspaceStore.activePanelId === 'left'
-                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs ring-1 ring-blue-500/20'
-                  : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 hover:bg-white/30 dark:hover:bg-slate-800/40'
+                'flex flex-col items-center space-y-1 transition-colors duration-fast cursor-pointer',
+                workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400 font-bold' : ''
               ]"
             >
-              <FbIcon
-                :name="workspaceStore.leftPanel.connectionId === 'local' ? 'folder' : 'share'"
-                size="14px"
-                :class="workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'"
-              />
-              <span class="truncate max-w-[100px]">{{ leftConnName }}</span>
-              <span class="text-[10px] font-mono opacity-60 truncate max-w-[65px]">/{{ getPanelDisplayPath(workspaceStore.leftPanel.path) }}</span>
-              <span v-if="workspaceStore.activePanelId === 'left'" class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+              <FbIcon name="folder" size="18px" />
+              <span>Left</span>
             </button>
 
-            <!-- Right Panel Tab -->
             <button
+              v-if="workspaceStore.isDualPane"
               @click="workspaceStore.setActivePanel('right')"
               :class="[
-                'flex-1 py-1.5 px-3 rounded-xl flex items-center justify-center space-x-1.5 transition-all text-xs font-semibold cursor-pointer truncate',
-                workspaceStore.activePanelId === 'right'
-                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs ring-1 ring-blue-500/20'
-                  : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 hover:bg-white/30 dark:hover:bg-slate-800/40'
+                'flex flex-col items-center space-y-1 transition-colors duration-fast cursor-pointer',
+                workspaceStore.activePanelId === 'right' ? 'text-blue-600 dark:text-blue-400 font-bold' : ''
               ]"
             >
-              <FbIcon
-                :name="workspaceStore.rightPanel.connectionId === 'local' ? 'folder' : 'share'"
-                size="14px"
-                :class="workspaceStore.activePanelId === 'right' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400'"
-              />
-              <span class="truncate max-w-[100px]">{{ rightConnName }}</span>
-              <span class="text-[10px] font-mono opacity-60 truncate max-w-[65px]">/{{ getPanelDisplayPath(workspaceStore.rightPanel.path) }}</span>
-              <span v-if="workspaceStore.activePanelId === 'right'" class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+              <FbIcon name="folder" size="18px" />
+              <span>Right</span>
             </button>
-          </div>
+
+            <button
+              @click="isConnDialogOpen = true"
+              class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer"
+            >
+              <FbIcon name="share" size="18px" />
+              <span>Storage</span>
+            </button>
+
+            <button
+              @click="transferStore.isDrawerOpen = !transferStore.isDrawerOpen"
+              class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer relative"
+            >
+              <FbIcon name="refresh" size="18px" />
+              <span
+                v-if="transferStore.activeCount > 0"
+                class="absolute -top-1 right-2 w-2 h-2 rounded-full bg-blue-600 animate-pulse"
+              ></span>
+              <span>Transfers</span>
+            </button>
+
+            <button
+              @click="isSettingsDialogOpen = true"
+              class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer"
+            >
+              <FbIcon name="settings" size="18px" />
+              <span>Settings</span>
+            </button>
+          </nav>
         </div>
 
-        <!-- Dynamic Workspace Shell (Continuous Surface) -->
-        <main
-          ref="mainContainerRef"
-          class="flex-1 flex overflow-hidden min-w-0 bg-white dark:bg-[#0b0f19] p-0"
-        >
-          <!-- MOBILE VIEW: 100% Full-Width Active Panel with Touch Swipe Gestures -->
-          <div
-            v-if="uiStore.isMobile"
-            class="w-full h-full flex flex-col min-w-0 overflow-hidden"
-            @touchstart.passive="handleTouchStart"
-            @touchend="handleTouchEnd"
-          >
-            <Transition :name="slideTransition" mode="out-in">
-              <FilePanel
-                :key="workspaceStore.activePanelId"
-                :panelId="workspaceStore.activePanelId"
-                @open-archive-viewer="handleOpenArchiveViewer"
-              />
-            </Transition>
-          </div>
+        <!-- Context Menu -->
+        <ContextMenu
+          @openArchiveDialog="handleOpenArchive"
+          @openCreateShareDialog="handleOpenCreateShare"
+          @openPropertiesDialog="handleOpenProperties"
+          @openArchiveViewer="handleOpenArchiveViewer"
+        />
 
-          <!-- DESKTOP VIEW: Continuous Workspace Surface (Single or Split) -->
-          <template v-else>
-            <!-- Left Panel -->
-            <div
-              :style="{
-                width: workspaceStore.isDualPane ? `calc(${workspaceStore.splitRatio * 100}% - 3px)` : '100%'
-              }"
-              class="h-full flex flex-col min-w-[200px]"
-            >
-              <FilePanel panelId="left" @open-archive-viewer="handleOpenArchiveViewer" />
-            </div>
+        <!-- Dialogs & Modals -->
+        <CreateDialog />
+        <RenameDialog />
+        <DeleteDialog />
+        <UploadDialog />
+        <ConnectionDialog v-model="isConnDialogOpen" />
+        <ArchiveDialog
+          v-model="isArchiveDialogOpen"
+          :connectionId="fileStore.currentConnectionId"
+          :basePath="fileStore.currentPath"
+          :selectedPaths="archiveSelectedPaths"
+        />
+        <ArchiveViewerModal
+          v-model="isArchiveViewerOpen"
+          :connectionId="archiveViewerConnectionId"
+          :archivePath="archiveViewerPath"
+        />
+        <SearchModal v-model="isSearchDialogOpen" />
+        <SettingsModal v-model="isSettingsDialogOpen" />
+        <SharesModal v-model="isSharesDialogOpen" />
+        <TrashModal v-model="isTrashDialogOpen" />
+        <StarredModal v-model="isStarredDialogOpen" />
+        <PropertiesModal
+          v-model="isPropertiesDialogOpen"
+          :connectionId="propsTargetConnection"
+          :path="propsTargetPath"
+        />
+        <CreateShareModal
+          v-model="isCreateShareDialogOpen"
+          :connectionId="shareTargetConnection"
+          :path="shareTargetPath"
+        />
+        <ConflictDialog />
+        <CodeEditorModal />
+        <MediaViewerModal />
+        <CommandPaletteModal
+          @open-settings="isSettingsDialogOpen = true"
+          @open-connection-dialog="isConnDialogOpen = true"
+          @open-search-dialog="isSearchDialogOpen = true"
+        />
 
-            <!-- Draggable Split Divider (Continuous 1px seam with subtle hover handle) -->
-            <div
-              v-if="workspaceStore.isDualPane"
-              @mousedown="startSplitResize"
-              class="w-1.5 relative flex items-center justify-center cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/30 group select-none transition shrink-0 bg-gray-200 dark:border-slate-800 bg-gray-100 dark:bg-[#070b14]"
-              title="Drag to resize panels"
-            >
-              <div class="w-0.5 h-10 bg-gray-300 dark:bg-slate-700 group-hover:bg-blue-500 rounded-full transition-colors"></div>
-            </div>
-
-            <!-- Right Panel (when Dual Pane is enabled) -->
-            <div
-              v-if="workspaceStore.isDualPane"
-              :style="{
-                width: `calc(${(1 - workspaceStore.splitRatio) * 100}% - 3px)`
-              }"
-              class="h-full flex flex-col min-w-[200px]"
-            >
-              <FilePanel panelId="right" @open-archive-viewer="handleOpenArchiveViewer" />
-            </div>
-          </template>
-        </main>
-
-        <!-- Mobile Bottom Navigation Bar (Thumb Zone) -->
-        <nav
-          v-if="uiStore.isMobile"
-          class="h-14 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-gray-200 dark:border-slate-800 px-4 flex items-center justify-around text-gray-500 dark:text-slate-400 text-[10px] font-semibold shrink-0 z-20 pb-safe select-none"
-        >
-          <button
-            @click="workspaceStore.setActivePanel('left')"
-            :class="[
-              'flex flex-col items-center space-y-1 transition cursor-pointer',
-              workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400 font-bold' : ''
-            ]"
-          >
-            <FbIcon name="folder" size="18px" />
-            <span>Files</span>
-          </button>
-
-          <button
-            @click="uiStore.isMobileSidebarOpen = true"
-            class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
-          >
-            <FbIcon name="share" size="18px" />
-            <span>Storage</span>
-          </button>
-
-          <button
-            @click="transferStore.isDrawerOpen = !transferStore.isDrawerOpen"
-            class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer relative"
-          >
-            <FbIcon name="refresh" size="18px" />
-            <span
-              v-if="transferStore.activeCount > 0"
-              class="absolute -top-1 right-2 w-2 h-2 rounded-full bg-blue-600 animate-pulse"
-            ></span>
-            <span>Transfers</span>
-          </button>
-
-          <button
-            @click="isSettingsDialogOpen = true"
-            class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
-          >
-            <FbIcon name="settings" size="18px" />
-            <span>Settings</span>
-          </button>
-        </nav>
-      </div>
-
-      <!-- Context Menu -->
-      <ContextMenu
-        @openArchiveDialog="handleOpenArchive"
-        @openCreateShareDialog="handleOpenCreateShare"
-        @openPropertiesDialog="handleOpenProperties"
-        @openArchiveViewer="handleOpenArchiveViewer"
-      />
-
-      <!-- Dialogs & Modals -->
-      <CreateDialog />
-      <RenameDialog />
-      <DeleteDialog />
-      <UploadDialog />
-      <ConnectionDialog v-model="isConnDialogOpen" />
-      <ArchiveDialog
-        v-model="isArchiveDialogOpen"
-        :connectionId="fileStore.currentConnectionId"
-        :basePath="fileStore.currentPath"
-        :selectedPaths="archiveSelectedPaths"
-      />
-      <ArchiveViewerModal
-        v-model="isArchiveViewerOpen"
-        :connectionId="archiveViewerConnectionId"
-        :archivePath="archiveViewerPath"
-      />
-      <SearchModal v-model="isSearchDialogOpen" />
-      <SettingsModal v-model="isSettingsDialogOpen" />
-      <SharesModal v-model="isSharesDialogOpen" />
-      <TrashModal v-model="isTrashDialogOpen" />
-      <StarredModal v-model="isStarredDialogOpen" />
-      <PropertiesModal
-        v-model="isPropertiesDialogOpen"
-        :connectionId="propsTargetConnection"
-        :path="propsTargetPath"
-      />
-      <CreateShareModal
-        v-model="isCreateShareDialogOpen"
-        :connectionId="shareTargetConnection"
-        :path="shareTargetPath"
-      />
-      <ConflictDialog />
-      <CodeEditorModal />
-      <MediaViewerModal />
-      <CommandPaletteModal
-        @open-settings="isSettingsDialogOpen = true"
-        @open-connection-dialog="isConnDialogOpen = true"
-        @open-search-dialog="isSearchDialogOpen = true"
-      />
-
-      <!-- Toast Notifications Container -->
-      <div class="fixed bottom-5 right-5 z-[9999] flex flex-col space-y-2 pointer-events-none max-w-sm w-full">
-        <TransitionGroup
-          enter-active-class="transform ease-out duration-300 transition"
-          enter-from-class="translate-y-2 opacity-0 sm:translate-y-0 sm:translate-x-2"
-          enter-to-class="translate-y-0 opacity-100 sm:translate-x-0"
-          leave-active-class="transition ease-in duration-100"
-          leave-from-class="opacity-100"
-          leave-to-class="opacity-0"
-        >
-          <div
-            v-for="toast in uiStore.toasts"
-            :key="toast.id"
-            :class="[
-              'pointer-events-auto p-3 rounded-2xl shadow-2xl border flex items-center space-x-2.5 text-xs font-semibold backdrop-blur-md transition-all',
-              toast.type === 'success' ? 'bg-emerald-950/95 border-emerald-700/60 text-emerald-100' : '',
-              toast.type === 'error' ? 'bg-rose-950/95 border-rose-700/60 text-rose-100' : '',
-              toast.type === 'warning' ? 'bg-amber-950/95 border-amber-700/60 text-amber-100' : '',
-              toast.type === 'info' ? 'bg-slate-900/95 border-slate-700/60 text-slate-100' : ''
-            ]"
+        <!-- Toast Notifications Container with Apple Spring Transitions -->
+        <div class="fixed bottom-5 right-5 z-[9999] flex flex-col space-y-2 pointer-events-none max-w-sm w-full">
+          <TransitionGroup
+            enter-active-class="transition duration-[280ms] [transition-timing-function:var(--ease-spring)] transform"
+            enter-from-class="translate-y-3 scale-95 opacity-0 sm:translate-y-0 sm:translate-x-3"
+            enter-to-class="translate-y-0 scale-100 opacity-100 sm:translate-x-0"
+            leave-active-class="transition duration-[180ms] [transition-timing-function:var(--ease-apple-in)] transform"
+            leave-from-class="opacity-100 scale-100"
+            leave-to-class="opacity-0 scale-95"
           >
             <div
+              v-for="toast in uiStore.toasts"
+              :key="toast.id"
               :class="[
-                'w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-xs font-bold text-xs',
-                toast.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : '',
-                toast.type === 'error' ? 'bg-rose-500/20 text-rose-400' : '',
-                toast.type === 'warning' ? 'bg-amber-500/20 text-amber-400' : '',
-                toast.type === 'info' ? 'bg-blue-500/20 text-blue-400' : ''
+                'pointer-events-auto flex items-center space-x-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border text-xs font-semibold ring-1 ring-black/5 dark:ring-white/10 transition-all duration-200',
+                toast.type === 'success' ? 'bg-emerald-50/95 dark:bg-emerald-950/90 border-emerald-200 dark:border-emerald-800/80 text-emerald-900 dark:text-emerald-200' : '',
+                toast.type === 'error' ? 'bg-rose-50/95 dark:bg-rose-950/90 border-rose-200 dark:border-rose-800/80 text-rose-900 dark:text-rose-200' : '',
+                toast.type === 'warning' ? 'bg-amber-50/95 dark:bg-amber-950/90 border-amber-200 dark:border-amber-800/80 text-amber-900 dark:text-amber-200' : '',
+                toast.type === 'info' ? 'bg-blue-50/95 dark:bg-slate-900/90 border-blue-200 dark:border-slate-800/80 text-gray-900 dark:text-slate-100' : ''
               ]"
             >
-              <FbIcon v-if="toast.type === 'success'" name="check" size="13px" />
-              <FbIcon v-else-if="toast.type === 'error'" name="x" size="13px" />
-              <FbIcon v-else-if="toast.type === 'warning'" name="info" size="13px" />
-              <FbIcon v-else name="info" size="13px" />
+              <div
+                class="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
+                :class="[
+                  toast.type === 'success' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
+                  toast.type === 'error' ? 'bg-rose-500/20 text-rose-600 dark:text-rose-400' : '',
+                  toast.type === 'warning' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : '',
+                  toast.type === 'info' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400' : ''
+                ]"
+              >
+                <FbIcon v-if="toast.type === 'success'" name="check" size="13px" />
+                <FbIcon v-else-if="toast.type === 'error'" name="x" size="13px" />
+                <FbIcon v-else-if="toast.type === 'warning'" name="info" size="13px" />
+                <FbIcon v-else name="info" size="13px" />
+              </div>
+              <span class="flex-1 leading-snug">{{ toast.message }}</span>
             </div>
-            <span class="flex-1 leading-snug">{{ toast.message }}</span>
-          </div>
-        </TransitionGroup>
-      </div>
+          </TransitionGroup>
+        </div>
 
-      <!-- Floating Transfer Engine Manager -->
-      <TransferDrawer />
+        <!-- Floating Transfer Engine Manager -->
+        <TransferDrawer />
+      </div>
     </div>
 
     <!-- Initial App Booting Screen -->
@@ -342,6 +375,131 @@ function getPanelDisplayPath(path: string): string {
 
 const mainContainerRef = ref<HTMLElement | null>(null);
 let isResizingSplit = false;
+let splitResizeRafId: number | null = null;
+let currentPendingRatio = 0.5;
+
+// ==========================================================================
+// Mobile Real-Time Gesture Tracking with Apple Spring Physics & Rubber-Banding
+// ==========================================================================
+const isDraggingMobileTrack = ref(false);
+const dragDeltaX = ref(0);
+const mobileTrackWrapperRef = ref<HTMLElement | null>(null);
+
+let touchStartX = 0;
+let touchStartY = 0;
+let touchStartTime = 0;
+let lastTouchX = 0;
+let lastTouchTime = 0;
+let touchVelocityX = 0; // px / ms
+let isHorizontalGesture: boolean | null = null;
+let activeRafId: number | null = null;
+
+const mobileTrackStyle = computed(() => {
+  const baseOffset = workspaceStore.activePanelId === 'left' ? 0 : -50;
+
+  if (isDraggingMobileTrack.value) {
+    // When actively dragging, translate continuously with live delta
+    return {
+      transform: `translate3d(calc(${baseOffset}% + ${dragDeltaX.value}px), 0, 0)`,
+      transition: 'none'
+    };
+  }
+
+  // When settling or toggled via button, apply Apple spring curve
+  return {
+    transform: `translate3d(${baseOffset}%, 0, 0)`,
+    transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)'
+  };
+});
+
+function handleTouchStart(e: TouchEvent) {
+  if (!uiStore.isMobile || !workspaceStore.isDualPane || e.touches.length === 0) return;
+  const touch = e.touches[0];
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+  touchStartTime = performance.now();
+  lastTouchX = touch.clientX;
+  lastTouchTime = touchStartTime;
+  touchVelocityX = 0;
+  isHorizontalGesture = null;
+  dragDeltaX.value = 0;
+}
+
+function handleTouchMove(e: TouchEvent) {
+  if (!uiStore.isMobile || !workspaceStore.isDualPane || e.touches.length === 0) return;
+  const touch = e.touches[0];
+  const dx = touch.clientX - touchStartX;
+  const dy = touch.clientY - touchStartY;
+
+  // Determine gesture direction on initial movement
+  if (isHorizontalGesture === null) {
+    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+      isHorizontalGesture = Math.abs(dx) > Math.abs(dy) * 1.15;
+    }
+  }
+
+  if (isHorizontalGesture) {
+    e.preventDefault(); // Lock vertical scroll during horizontal panel swipe
+    isDraggingMobileTrack.value = true;
+
+    const now = performance.now();
+    const dt = now - lastTouchTime;
+    if (dt > 10) {
+      touchVelocityX = (touch.clientX - lastTouchX) / dt;
+      lastTouchX = touch.clientX;
+      lastTouchTime = now;
+    }
+
+    // Apply Apple-style Rubber-Banding Resistance when overscrolling boundaries
+    let effectiveDx = dx;
+    if (workspaceStore.activePanelId === 'left' && dx > 0) {
+      effectiveDx = dx * 0.3;
+    } else if (workspaceStore.activePanelId === 'right' && dx < 0) {
+      effectiveDx = dx * 0.3;
+    }
+
+    if (activeRafId) cancelAnimationFrame(activeRafId);
+    activeRafId = requestAnimationFrame(() => {
+      dragDeltaX.value = effectiveDx;
+    });
+  }
+}
+
+function handleTouchEnd() {
+  if (!uiStore.isMobile || !workspaceStore.isDualPane) return;
+  if (activeRafId) cancelAnimationFrame(activeRafId);
+
+  if (isDraggingMobileTrack.value) {
+    isDraggingMobileTrack.value = false;
+    const finalDeltaX = dragDeltaX.value;
+    dragDeltaX.value = 0;
+
+    const containerWidth = mobileTrackWrapperRef.value?.clientWidth || window.innerWidth;
+    const distanceThreshold = containerWidth * 0.26;
+    const velocityThreshold = 0.4; // px / ms
+
+    // Fast velocity flick or passed distance threshold
+    if (workspaceStore.activePanelId === 'left') {
+      if (finalDeltaX < -distanceThreshold || touchVelocityX < -velocityThreshold) {
+        workspaceStore.setActivePanel('right');
+      }
+    } else if (workspaceStore.activePanelId === 'right') {
+      if (finalDeltaX > distanceThreshold || touchVelocityX > velocityThreshold) {
+        workspaceStore.setActivePanel('left');
+      }
+    }
+  }
+
+  isHorizontalGesture = null;
+}
+
+function handleTouchCancel() {
+  if (isDraggingMobileTrack.value) {
+    isDraggingMobileTrack.value = false;
+    dragDeltaX.value = 0;
+  }
+  isHorizontalGesture = null;
+}
 
 const isConnDialogOpen = ref(false);
 const isSearchDialogOpen = ref(false);
@@ -368,29 +526,44 @@ const shareTargetConnection = ref('local');
 const shareTargetPath = ref('/');
 const archiveSelectedPaths = ref<string[]>([]);
 
+// ==========================================================================
+// Compositor-Synced Desktop Split Pane Resize (Direct CSS Var via rAF)
+// ==========================================================================
 function startSplitResize(e: MouseEvent) {
   e.preventDefault();
   isResizingSplit = true;
+  currentPendingRatio = workspaceStore.splitRatio;
   document.body.style.cursor = 'col-resize';
   document.body.style.userSelect = 'none';
-  window.addEventListener('mousemove', onSplitResizeMove);
+  window.addEventListener('mousemove', onSplitResizeMove, { passive: true });
   window.addEventListener('mouseup', stopSplitResize);
 }
 
 function onSplitResizeMove(e: MouseEvent) {
   if (!isResizingSplit || !mainContainerRef.value) return;
   const rect = mainContainerRef.value.getBoundingClientRect();
-  const ratio = (e.clientX - rect.left) / rect.width;
-  workspaceStore.setSplitRatio(ratio);
+  const rawRatio = (e.clientX - rect.left) / rect.width;
+  const ratio = Math.max(0.18, Math.min(0.82, rawRatio));
+  currentPendingRatio = ratio;
+
+  if (splitResizeRafId) cancelAnimationFrame(splitResizeRafId);
+  splitResizeRafId = requestAnimationFrame(() => {
+    if (mainContainerRef.value) {
+      mainContainerRef.value.style.setProperty('--split-ratio', `${ratio}`);
+    }
+  });
 }
 
 function stopSplitResize() {
   if (isResizingSplit) {
     isResizingSplit = false;
+    if (splitResizeRafId) cancelAnimationFrame(splitResizeRafId);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     window.removeEventListener('mousemove', onSplitResizeMove);
     window.removeEventListener('mouseup', stopSplitResize);
+    // Commit to Pinia store once on release
+    workspaceStore.setSplitRatio(currentPendingRatio);
   }
 }
 
@@ -521,7 +694,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // 8. Ctrl+Y / Cmd+Shift+Z: Redo
+  // 8. Ctrl+Y / Cmd+Y / Ctrl+Shift+Z: Reversible Redo
   if (
     ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
     ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
@@ -615,42 +788,6 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
-let touchStartX = 0;
-let touchStartY = 0;
-
-function handleTouchStart(e: TouchEvent) {
-  if (!uiStore.isMobile || !workspaceStore.isDualPane) return;
-  if (e.touches.length > 0) {
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-  }
-}
-
-function handleTouchEnd(e: TouchEvent) {
-  if (!uiStore.isMobile || !workspaceStore.isDualPane) return;
-  if (e.changedTouches.length > 0) {
-    const touchEndX = e.changedTouches[0].clientX;
-    const touchEndY = e.changedTouches[0].clientY;
-    const dx = touchEndX - touchStartX;
-    const dy = touchEndY - touchStartY;
-
-    // Minimum swipe threshold 45px, predominantly horizontal
-    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-      if (dx < 0 && workspaceStore.activePanelId === 'left') {
-        // Swipe Left -> switch to Right Panel
-        workspaceStore.setActivePanel('right');
-      } else if (dx > 0 && workspaceStore.activePanelId === 'right') {
-        // Swipe Right -> switch to Left Panel
-        workspaceStore.setActivePanel('left');
-      }
-    }
-  }
-}
-
-const slideTransition = computed(() => {
-  return workspaceStore.activePanelId === 'right' ? 'panel-slide-left' : 'panel-slide-right';
-});
-
 onMounted(async () => {
   initializeCommandRegistry();
   window.addEventListener('keydown', handleGlobalKeydown);
@@ -672,30 +809,3 @@ onUnmounted(() => {
   stopSplitResize();
 });
 </script>
-
-<style scoped>
-.panel-slide-left-enter-active,
-.panel-slide-left-leave-active,
-.panel-slide-right-enter-active,
-.panel-slide-right-leave-active {
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.panel-slide-left-enter-from {
-  opacity: 0;
-  transform: translateX(40px);
-}
-.panel-slide-left-leave-to {
-  opacity: 0;
-  transform: translateX(-40px);
-}
-
-.panel-slide-right-enter-from {
-  opacity: 0;
-  transform: translateX(-40px);
-}
-.panel-slide-right-leave-to {
-  opacity: 0;
-  transform: translateX(40px);
-}
-</style>

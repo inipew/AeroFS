@@ -36,8 +36,8 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
 async fn test_realtime_cancellation_with_token() {
     let (state, admin, _temp) = setup_test_context().await;
 
-    // 1. Create large source file (5 MB)
-    let test_data = vec![b'X'; 5 * 1024 * 1024];
+    // 1. Create large source file (8 MB)
+    let test_data = vec![b'X'; 8 * 1024 * 1024];
     FileService::create_or_write_file(
         &state,
         &admin,
@@ -85,8 +85,8 @@ async fn test_realtime_cancellation_with_token() {
 
     assert!(cancelled, "Transfer job should transition to Cancelled");
 
-    // 5. Verify staging .aerofs-part file is cleaned up
-    let part_path = format!("/dest_cancel_test.dat.aerofs-part-{}", job_id);
+    // 5. Verify staging hidden .aerofs-part file is cleaned up
+    let part_path = format!("/.dest_cancel_test.dat.aerofs-part-{}", job_id);
     let part_stat = FileService::stat_file(&state, &admin, "local", &part_path).await;
     assert!(
         part_stat.is_err(),

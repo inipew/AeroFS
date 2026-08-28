@@ -300,11 +300,6 @@ impl TransferManager {
                 let retries_task = Arc::clone(&retries_clone);
 
                 tokio::spawn(async move {
-                    let job_opt = {
-                        let map = jobs_worker.read().await;
-                        map.get(&job_id).cloned()
-                    };
-
                     let cancel_token = {
                         let mut tokens = cancel_tokens_worker.write().await;
                         tokens
@@ -313,35 +308,41 @@ impl TransferManager {
                             .clone()
                     };
 
-                    if let Some(mut job) = job_opt {
-                        // Handle cancelled or pending-cancellation jobs
-                        if job.status == TransferStatus::Cancelled {
-                            // Already marked cancelled
-                        } else if job.status == TransferStatus::CancellationRequested
-                            || cancel_token.is_cancelled()
-                        {
-                            job.status = TransferStatus::Cancelled;
-                            job.speed_bytes_per_sec = 0;
-                            job.eta_seconds = None;
-                            job.updated_at = Utc::now();
+                    let (should_run, job_opt) = {
+                        let mut map = jobs_worker.write().await;
+                        if let Some(j) = map.get_mut(&job_id) {
+                            if j.status == TransferStatus::Cancelled {
+                                (false, Some(j.clone()))
+                            } else if j.status == TransferStatus::CancellationRequested
+                                || cancel_token.is_cancelled()
                             {
-                                let mut map = jobs_worker.write().await;
-                                map.insert(job.id.clone(), job.clone());
+                                j.status = TransferStatus::Cancelled;
+                                j.speed_bytes_per_sec = 0;
+                                j.eta_seconds = None;
+                                j.updated_at = Utc::now();
+                                (false, Some(j.clone()))
+                            } else {
+                                j.status = TransferStatus::Running;
+                                j.updated_at = Utc::now();
+                                (true, Some(j.clone()))
                             }
-                            let _ = Self::save_job_to_db(&db_worker, &job).await;
-                            Self::send_enveloped_event(
-                                &event_tx_worker,
-                                &seq_worker,
-                                &hist_worker,
-                                WsEvent::TransferFailed(job),
-                            );
                         } else {
-                            job.status = TransferStatus::Running;
-                            job.updated_at = Utc::now();
-                            {
-                                let mut map = jobs_worker.write().await;
-                                map.insert(job.id.clone(), job.clone());
+                            (false, None)
+                        }
+                    };
+
+                    if let Some(mut job) = job_opt {
+                        if !should_run {
+                            if job.status == TransferStatus::Cancelled {
+                                let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                Self::send_enveloped_event(
+                                    &event_tx_worker,
+                                    &seq_worker,
+                                    &hist_worker,
+                                    WsEvent::TransferFailed(job),
+                                );
                             }
+                        } else {
                             let _ = Self::save_job_to_db(&db_worker, &job).await;
                             Self::send_enveloped_event(
                                 &event_tx_worker,
@@ -713,6 +714,8 @@ impl TransferManager {
                     job.eta_seconds = None;
                     job.updated_at = Utc::now();
                     (token, false, Some(job.clone()))
+                } else if job.status == TransferStatus::CancellationRequested {
+                    (token, false, None)
                 } else {
                     (None, false, None)
                 }
