@@ -14,40 +14,42 @@
     <div
       v-if="workspaceStore.isDualPane"
       :class="[
-        'h-11 border-b px-3 flex items-center justify-between transition-colors text-xs shrink-0',
+        'h-11 sm:h-12 border-b px-3 sm:px-4 flex items-center justify-between transition-colors text-xs shrink-0 backdrop-blur-md',
         isActive
-          ? 'bg-blue-50/30 dark:bg-[#0d1424] border-gray-200 dark:border-slate-800 text-gray-900 dark:text-white font-medium'
-          : 'bg-gray-50/50 dark:bg-[#080c16] border-gray-200/80 dark:border-slate-800/80 text-gray-500 dark:text-slate-400'
+          ? 'bg-blue-50/40 dark:bg-[#0d1424]/90 border-gray-200 dark:border-slate-800 text-gray-900 dark:text-white font-medium'
+          : 'bg-gray-50/60 dark:bg-[#080c16]/90 border-gray-200/80 dark:border-slate-800/80 text-gray-500 dark:text-slate-400'
       ]"
     >
       <div class="flex items-center space-x-1.5 truncate">
         <!-- Navigation Buttons: Back, Forward, Up -->
-        <button
-          @click.stop="workspaceStore.goBack(panelId)"
-          :disabled="panel.historyIndex <= 0"
-          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-          title="Back (Alt+Left)"
-        >
-          <FbIcon name="chevron-left" size="14px" />
-        </button>
+        <div class="flex items-center bg-gray-100/80 dark:bg-slate-800/60 rounded-xl p-0.5 border border-gray-200/70 dark:border-slate-700/60">
+          <button
+            @click.stop="workspaceStore.goBack(panelId)"
+            :disabled="panel.historyIndex <= 0"
+            class="p-1 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Back (Alt+Left)"
+          >
+            <FbIcon name="chevron-left" size="13px" />
+          </button>
 
-        <button
-          @click.stop="workspaceStore.goForward(panelId)"
-          :disabled="panel.historyIndex >= panel.history.length - 1"
-          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-          title="Forward (Alt+Right)"
-        >
-          <FbIcon name="chevron-right" size="14px" />
-        </button>
+          <button
+            @click.stop="workspaceStore.goForward(panelId)"
+            :disabled="panel.historyIndex >= panel.history.length - 1"
+            class="p-1 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Forward (Alt+Right)"
+          >
+            <FbIcon name="chevron-right" size="13px" />
+          </button>
 
-        <button
-          @click.stop="workspaceStore.navigateUp(panelId)"
-          :disabled="panel.path === '/' || panel.path === ''"
-          class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-          title="Up (Alt+Up)"
-        >
-          <FbIcon name="arrow-up" size="14px" />
-        </button>
+          <button
+            @click.stop="workspaceStore.navigateUp(panelId)"
+            :disabled="panel.path === '/' || panel.path === ''"
+            class="p-1 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Up (Alt+Up)"
+          >
+            <FbIcon name="arrow-up" size="13px" />
+          </button>
+        </div>
 
         <div class="h-3.5 w-px bg-gray-200 dark:bg-slate-800 mx-1 shrink-0"></div>
 
@@ -61,7 +63,7 @@
             @keydown.tab.prevent="autocompleteFirstPath"
             @blur="handleAddressBlur"
             type="text"
-            class="w-full bg-white dark:bg-[#0f1422] border border-blue-500 rounded-lg px-2.5 py-1 text-xs font-mono text-gray-800 dark:text-slate-100 outline-none shadow-xs"
+            class="w-full bg-white dark:bg-[#0f1422] border border-blue-500 rounded-xl px-2.5 py-1 text-xs font-mono text-gray-800 dark:text-slate-100 outline-none shadow-xs"
             placeholder="/path/to/folder"
           />
           <!-- Autocomplete Dropdown -->
@@ -84,19 +86,21 @@
         <!-- Interactive Clickable Segmented Breadcrumb Path -->
         <div
           v-else
-          class="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5 space-x-0.5"
+          class="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5 space-x-1"
         >
           <!-- Root Button (/) -->
           <button
             @click.stop="workspaceStore.navigateTo(panelId, '/')"
             :class="[
-              'px-1.5 py-0.5 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center space-x-1 shrink-0',
-              panel.path === '/' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'text-gray-500 dark:text-slate-400'
+              'px-2 py-0.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center space-x-1.5 shrink-0 border',
+              panel.path === '/'
+                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold'
+                : 'bg-transparent text-gray-600 dark:text-slate-400 border-transparent hover:border-gray-200 dark:hover:border-slate-700 font-medium'
             ]"
             title="Root (/)"
           >
-            <FbIcon name="folder" size="13px" class="text-blue-500 shrink-0" />
-            <span class="font-semibold text-xs">{{ currentConnName }}</span>
+            <FbIcon :name="panel.connectionId === 'local' ? 'folder' : 'share'" size="13px" class="text-blue-500 shrink-0" />
+            <span class="text-xs font-semibold">{{ currentConnName }}</span>
           </button>
 
           <!-- Breadcrumb Segments -->
@@ -105,9 +109,9 @@
             <button
               @click.stop="workspaceStore.navigateTo(panelId, seg.path)"
               :class="[
-                'px-1.5 py-0.5 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs truncate max-w-[120px] sm:max-w-[160px]',
+                'px-1.5 py-0.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs truncate max-w-[120px] sm:max-w-[160px]',
                 idx === breadcrumbSegments.length - 1
-                  ? 'font-bold text-gray-900 dark:text-white'
+                  ? 'font-bold text-gray-900 dark:text-white bg-gray-100/70 dark:bg-slate-800/60'
                   : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
               ]"
               :title="seg.path"
@@ -119,7 +123,7 @@
           <!-- Edit Path Pencil / Trigger Button -->
           <button
             @click.stop="openAddressBar"
-            class="p-1 rounded-md text-gray-400 hover:text-gray-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0 ml-0.5"
+            class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0 ml-0.5"
             title="Edit path directly (Ctrl+L)"
           >
             <FbIcon name="rename" size="11px" />
@@ -127,21 +131,30 @@
         </div>
       </div>
 
-      <!-- Panel Action Buttons: Reload, Swap & Close -->
+      <!-- Panel Action Buttons: View Switcher, Reload, Swap & Close -->
       <div class="flex items-center space-x-1 shrink-0">
+        <!-- Grid / List Toggle -->
+        <button
+          @click.stop="panel.viewMode = panel.viewMode === 'grid' ? 'list' : 'grid'"
+          class="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+          :title="panel.viewMode === 'grid' ? 'Switch to List View' : 'Switch to Grid View'"
+        >
+          <FbIcon :name="panel.viewMode === 'grid' ? 'list' : 'grid'" size="13px" />
+        </button>
+
         <button
           :disabled="panel.loading"
           @click.stop="workspaceStore.refreshPanel(panelId)"
-          class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
-          title="Reload panel"
+          class="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
+          title="Reload panel (F5)"
         >
           <FbIcon name="refresh" size="13px" :class="{ 'animate-spin': panel.loading }" />
         </button>
 
         <button
           @click.stop="workspaceStore.swapPanels()"
-          class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
-          title="Swap Left & Right Panels"
+          class="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs font-semibold"
+          title="Swap Left & Right Panels (Alt+S)"
         >
           ⇄
         </button>
@@ -203,7 +216,7 @@
       @touchmove="onContainerTouchMove"
       @touchend="onContainerTouchEnd"
       @touchcancel="onContainerTouchEnd"
-      class="flex-1 overflow-y-auto p-4 sm:p-6 relative"
+      class="flex-1 overflow-y-auto p-4 sm:p-5 relative"
     >
       <!-- Pull-to-Refresh Indicator Banner -->
       <div
@@ -233,29 +246,33 @@
       <div v-if="panel.viewMode === 'grid'" class="space-y-6">
         <!-- 1. FOLDERS SECTION -->
         <div v-if="displayedFolders.length > 0 || (panel.path !== '/' && panel.path !== '')">
-          <h2 class="text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-2.5 px-1 flex items-center justify-between">
-            <span>FOLDERS</span>
-            <span class="text-[10px] font-mono text-gray-400 font-normal">({{ displayedFolders.length }})</span>
-          </h2>
+          <div class="flex items-center justify-between mb-3 px-0.5">
+            <div class="flex items-center space-x-2">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">Folders</span>
+              <span class="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-mono font-bold text-[10px]">
+                {{ displayedFolders.length }}
+              </span>
+            </div>
+          </div>
 
-          <div class="grid gap-2.5 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));">
+          <div class="grid gap-3 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">
             <!-- Parent Folder Navigation Card (..) -->
             <div
               v-if="panel.path !== '/' && panel.path !== ''"
               @click="workspaceStore.navigateUp(panelId)"
               @dblclick="workspaceStore.navigateUp(panelId)"
-              class="border rounded-2xl p-2.5 sm:p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-150 select-none shadow-xs group bg-gray-50/70 dark:bg-slate-900/60 border-dashed border-gray-300 dark:border-slate-700 hover:border-blue-500 hover:bg-blue-50/30 text-gray-600 dark:text-slate-300 active:scale-[0.98] min-h-[120px] sm:min-h-[135px]"
+              class="border border-dashed border-gray-300/80 dark:border-slate-700/80 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-200 select-none shadow-xs group bg-gray-50/60 dark:bg-slate-900/40 hover:bg-blue-50/40 dark:hover:bg-blue-950/30 hover:-translate-y-0.5 active:scale-[0.98] min-h-[124px] sm:min-h-[132px]"
               title="Go to parent directory (..)"
             >
               <div class="flex-1 flex items-center justify-center w-full py-1">
-                <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <FbIcon name="chevron-left" size="20px" class="group-hover:-translate-x-1 transition-transform" />
+                <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-200 ring-1 ring-blue-500/20">
+                  <FbIcon name="arrow-up" size="18px" class="group-hover:-translate-y-0.5 transition-transform" />
                 </div>
               </div>
-              <span class="font-bold text-xs truncate text-gray-700 dark:text-slate-300 w-full block">.. (Parent)</span>
+              <span class="font-bold text-xs truncate text-gray-700 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 w-full block">.. Parent</span>
             </div>
 
-            <!-- Modern Sky-Blue Folder Card matching Filestash / Dolphin -->
+            <!-- Modern Azure Folder Card matching Filestash / Dolphin -->
             <div
               v-for="folder in displayedFolders"
               :key="folder.path"
@@ -274,23 +291,21 @@
               @dragleave.stop="handleFolderDragLeave(folder)"
               @drop.stop.prevent="handleDrop($event, folder)"
               :class="[
-                'border rounded-2xl p-2.5 sm:p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-150 select-none shadow-xs group active:scale-[0.98] min-h-[120px] sm:min-h-[135px]',
+                'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-200 select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
                 isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
                 workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 hoveredFolderDrop === folder.path
                   ? 'ring-2 ring-blue-500 scale-[1.04] bg-blue-100/70 dark:bg-blue-900/60 border-blue-500 shadow-lg'
                   : (panel.selectedEntries.includes(folder.path)
-                    ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
-                    : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:-translate-y-0.5')
+                    ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
+                    : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1')
               ]"
             >
               <!-- Large Prominent Sky-Blue / Azure Folder Icon -->
               <div class="flex-1 flex items-center justify-center w-full py-1">
-                <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 sm:w-14 sm:h-14 drop-shadow-2xs group-hover:scale-105 transition-transform duration-200">
-                  <!-- Back Folder Tab -->
-                  <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-400 dark:fill-sky-500" />
-                  <!-- Front Folder Flap -->
-                  <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-300 dark:fill-sky-400" />
+                <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 sm:w-13 sm:h-13 drop-shadow-xs group-hover:scale-110 transition-transform duration-200">
+                  <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-500 dark:fill-sky-600" />
+                  <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-400 dark:fill-sky-400" />
                 </svg>
               </div>
 
@@ -309,12 +324,16 @@
 
         <!-- 2. FILES SECTION -->
         <div v-if="displayedFiles.length > 0">
-          <h2 class="text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-2.5 px-1 flex items-center justify-between">
-            <span>FILES</span>
-            <span class="text-[10px] font-mono text-gray-400 font-normal">({{ displayedFiles.length }})</span>
-          </h2>
+          <div class="flex items-center justify-between mb-3 px-0.5">
+            <div class="flex items-center space-x-2">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">Files</span>
+              <span class="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 font-mono font-bold text-[10px]">
+                {{ displayedFiles.length }}
+              </span>
+            </div>
+          </div>
 
-          <div class="grid gap-2.5 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));">
+          <div class="grid gap-3 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">
             <div
               v-for="file in displayedFiles"
               :key="file.path"
@@ -330,17 +349,17 @@
               @dblclick="handleEntryDoubleClick(file)"
               @contextmenu="openContextMenu($event, file)"
               :class="[
-                'border rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[135px] sm:min-h-[150px]',
+                'border rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[136px] sm:min-h-[148px]',
                 isItemHidden(file) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
                 workspaceStore.isCutItem(panel.connectionId, file.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 panel.selectedEntries.includes(file.path)
-                  ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 ring-2 ring-blue-500/20'
-                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:-translate-y-0.5 hover:border-blue-400 dark:hover:border-blue-500'
+                  ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
+                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1 hover:border-blue-400 dark:hover:border-blue-500'
               ]"
             >
               <!-- Card Thumbnail Area (Centered Absolute Overlays) -->
               <div
-                class="flex-1 w-full bg-slate-50/70 dark:bg-slate-950/60 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-[85px]"
+                class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-[85px]"
               >
                 <!-- Real Image Preview -->
                 <template v-if="isImage(file)">
@@ -365,7 +384,7 @@
                     class="w-full h-full object-cover group-hover:scale-105 transition duration-300 pointer-events-none rounded-lg"
                   ></video>
                   <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent group-hover:opacity-90 transition"></div>
-                  <!-- Perfectly Centered Play Button -->
+                  <!-- Centered Play Button -->
                   <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div class="w-8 h-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
                       <FbIcon name="play" size="12px" class="fill-white" />
@@ -388,15 +407,30 @@
                   </div>
                 </template>
 
-                <!-- Document / Code / Other Files matching Filestash Grey Card with Badge -->
-                <div v-else class="flex flex-col items-center justify-center w-full h-full">
-                  <div class="w-10 h-13 sm:w-11 sm:h-14 bg-gray-400 dark:bg-slate-600 rounded-md relative flex items-center justify-center shadow-xs group-hover:scale-105 transition-transform duration-200">
-                    <!-- Dog-ear corner fold -->
-                    <div class="absolute top-0 right-0 w-3 h-3 bg-slate-50/70 dark:bg-slate-950/60 rounded-bl-md"></div>
-                    <div class="absolute top-0 right-0 w-3 h-3 border-l border-b border-gray-300 dark:border-slate-500 rounded-bl-md bg-gray-300 dark:bg-slate-500"></div>
-                    <!-- Format Badge -->
-                    <span class="px-1.5 py-0.5 rounded bg-gray-900 dark:bg-slate-950 text-white font-mono text-[8px] sm:text-[9px] font-bold uppercase tracking-wider shadow-xs max-w-[42px] truncate">
-                      {{ (getFileExt(file) || 'FILE').slice(0, 4) }}
+                <!-- Dynamic Color-Coded Document / Code / Config / Database / Binary Illustration -->
+                <div v-else class="flex flex-col items-center justify-center w-full h-full relative">
+                  <div :class="['absolute inset-0 bg-gradient-to-b opacity-60 pointer-events-none rounded-t-2xl', getFileTypeMeta(file).cardBg]"></div>
+
+                  <!-- Sleek Document Illustration -->
+                  <div
+                    class="w-10 h-13 sm:w-11 sm:h-14 rounded-lg relative flex flex-col items-center justify-between py-1.5 px-1 shadow-xs border group-hover:scale-110 group-hover:shadow-md transition-all duration-200 bg-white/90 dark:bg-slate-900/90"
+                    :class="getFileTypeMeta(file).badgeBorder"
+                  >
+                    <!-- Folded dog-ear corner -->
+                    <div
+                      class="absolute top-0 right-0 w-2.5 h-2.5 bg-gray-100 dark:bg-slate-950 rounded-bl-md border-l border-b"
+                      :class="getFileTypeMeta(file).badgeBorder"
+                    ></div>
+
+                    <!-- Category Emoji Symbol -->
+                    <span class="text-xs mt-0.5 select-none">{{ getFileTypeMeta(file).symbol }}</span>
+
+                    <!-- Format Pill Badge -->
+                    <span
+                      class="px-1.5 py-0.5 rounded-md font-mono text-[8px] sm:text-[9px] font-bold uppercase tracking-wider border shadow-2xs max-w-[44px] truncate text-center"
+                      :class="[getFileTypeMeta(file).badgeBg, getFileTypeMeta(file).badgeText, getFileTypeMeta(file).badgeBorder]"
+                    >
+                      {{ getFileTypeMeta(file).label }}
                     </span>
                   </div>
                 </div>
@@ -412,7 +446,7 @@
                     dot
                   </span>
                 </div>
-                <div class="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5 font-normal truncate w-full">
+                <div class="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5 font-normal font-mono truncate w-full">
                   {{ formatBytes(file.size || 0) }}
                 </div>
               </div>
@@ -600,6 +634,7 @@ import FbIcon from '../common/FbIcon.vue';
 import FilePanelSelectionBar from './FilePanelSelectionBar.vue';
 import FilePanelStatusBar from './FilePanelStatusBar.vue';
 import type { IconName } from '../../utils/icons';
+import { getFileTypeMeta, getFileExt, isTextOrCode } from '../../utils/fileTypes';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useFileStore } from '../../stores/fileStore';
@@ -798,50 +833,12 @@ function isAudio(entry: FileEntry): boolean {
   return ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg'].includes(ext);
 }
 
-function isArchiveFile(entry: { name: string }): boolean {
-  const name = entry.name.toLowerCase();
-  return (
-    name.endsWith('.zip') ||
-    name.endsWith('.tar') ||
-    name.endsWith('.tar.gz') ||
-    name.endsWith('.tgz') ||
-    name.endsWith('.tar.bz2') ||
-    name.endsWith('.tbz2') ||
-    name.endsWith('.tar.xz') ||
-    name.endsWith('.txz') ||
-    name.endsWith('.7z') ||
-    name.endsWith('.rar') ||
-    name.endsWith('.gz') ||
-    name.endsWith('.bz2') ||
-    name.endsWith('.xz')
-  );
-}
-
-function isTextOrCode(entry: FileEntry): boolean {
-  if (isArchiveFile(entry)) return false;
-  if (entry.name.startsWith('.')) return true; // All dotfiles are editable config/code/text!
-  const ext = getFileExt(entry);
-  const textExts = [
-    'txt', 'md', 'log', 'env', 'json', 'yaml', 'yml', 'toml', 'xml', 'csv', 'tsv',
-    'rs', 'ts', 'js', 'jsx', 'tsx', 'vue', 'html', 'css', 'scss', 'sass', 'less',
-    'py', 'sh', 'bash', 'zsh', 'fish', 'c', 'cpp', 'h', 'hpp', 'go', 'java', 'kt',
-    'php', 'rb', 'pl', 'lua', 'sql', 'conf', 'cfg', 'ini', 'properties', 'dockerfile',
-    'lock', 'mod', 'sum', 'gradle', 'service', 'gitignore', 'gitattributes', 'npmrc',
-    'bashrc', 'profile', 'zshrc', 'vimrc', 'eslintrc', 'prettierrc'
-  ];
-  return textExts.includes(ext);
-}
-
-function getFileExt(entry: FileEntry): string {
-  return entry.name.split('.').pop()?.toLowerCase() || '';
-}
-
 function getCategoryIcon(entry: FileEntry): IconName {
   const ext = getFileExt(entry);
   if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(ext)) return 'archive';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return 'image';
-  if (['mp4', 'webm', 'mov', 'mkv'].includes(ext)) return 'video';
-  if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) return 'audio';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)) return 'image';
+  if (['mp4', 'webm', 'mov', 'mkv', 'avi'].includes(ext)) return 'video';
+  if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio';
   if (['pdf'].includes(ext)) return 'pdf';
   if (isTextOrCode(entry)) return 'code';
   return 'file';
