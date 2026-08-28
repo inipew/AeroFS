@@ -66,28 +66,13 @@ export const useTransferStore = defineStore('transfer', () => {
   }
 
   function updateJobProgress(job: TransferJob) {
+    speedMetrics.value[job.id] = {
+      speedBytesPerSec: job.speed_bytes_per_sec || 0,
+      etaSeconds: job.eta_seconds ?? null,
+    };
+
     const idx = jobs.value.findIndex((j) => j.id === job.id);
     if (idx >= 0) {
-      // Calculate speed and ETA
-      const prev = speedMetrics.value[job.id];
-      if (prev && job.status === 'running') {
-        const deltaBytes = (job.transferred_bytes || 0) - (jobs.value[idx].transferred_bytes || 0);
-        if (deltaBytes > 0) {
-          const speed = deltaBytes; // approximate 1-second delta
-          const remainingBytes = (job.total_bytes || 0) - (job.transferred_bytes || 0);
-          const eta = speed > 0 ? Math.ceil(remainingBytes / speed) : null;
-          speedMetrics.value[job.id] = {
-            speedBytesPerSec: speed,
-            etaSeconds: eta,
-          };
-        }
-      } else {
-        speedMetrics.value[job.id] = {
-          speedBytesPerSec: 0,
-          etaSeconds: null,
-        };
-      }
-
       jobs.value[idx] = job;
     } else {
       jobs.value.unshift(job);

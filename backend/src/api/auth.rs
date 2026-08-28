@@ -27,7 +27,6 @@ pub struct LoginRequest {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthResponse {
     pub user: UserInfo,
-    pub session_id: String,
 }
 
 #[utoipa::path(
@@ -99,9 +98,15 @@ pub async fn login(
     let session_id =
         create_session(&state.db, &user_id, state.config.security.session_ttl_secs).await?;
 
+    let secure_flag = if state.config.server.host != "127.0.0.1" && state.config.server.host != "localhost" {
+        "; Secure"
+    } else {
+        ""
+    };
+
     let cookie_val = format!(
-        "session_id={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
-        session_id, state.config.security.session_ttl_secs
+        "session_id={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+        session_id, state.config.security.session_ttl_secs, secure_flag
     );
 
     let mut headers = HeaderMap::new();
@@ -118,7 +123,6 @@ pub async fn login(
         headers,
         Json(AuthResponse {
             user: user_info,
-            session_id,
         }),
     ))
 }

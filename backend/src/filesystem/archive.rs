@@ -409,10 +409,30 @@ pub async fn extract_targz(
             .entries()
             .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
 
+        const MAX_ENTRIES: usize = 50_000;
+        const MAX_UNCOMPRESSED_BYTES: u64 = 50 * 1024 * 1024 * 1024; // 50 GB limit
+        let mut total_uncompressed_bytes: u64 = 0;
+        let mut entry_count: usize = 0;
+
         let mut list = Vec::new();
         for entry_res in entries {
+            entry_count += 1;
+            if entry_count > MAX_ENTRIES {
+                return Err(SecurityError::PathTraversal(format!(
+                    "Tar archive rejected: contains too many entries (> {})",
+                    MAX_ENTRIES
+                ))
+                .into());
+            }
+
             let mut entry = entry_res
                 .map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
+
+            let entry_type = entry.header().entry_type();
+            // Block special devices, fifos, block devices, symlinks pointing outside
+            if entry_type.is_symlink() || entry_type.is_hard_link() || entry_type.is_fifo() || entry_type.is_character_special() || entry_type.is_block_special() {
+                continue; // Skip dangerous special nodes
+            }
 
             let path_buf = entry
                 .path()
@@ -422,7 +442,7 @@ pub async fn extract_targz(
             let raw_name = path_buf.to_string_lossy().to_string();
             let safe_name = validate_archive_entry_path(&raw_name)?;
 
-            let is_dir = entry.header().entry_type().is_dir();
+            let is_dir = entry_type.is_dir();
             let dest_on_disk = staging_clone.join(&safe_name);
 
             if is_dir {
@@ -436,8 +456,16 @@ pub async fn extract_targz(
 
                 let mut out_file = std::fs::File::create(&dest_on_disk)
                     .map_err(|e| VfsError::IoError(format!("Failed creating output file: {}", e)))?;
-                std::io::copy(&mut entry, &mut out_file)
+                let copied = std::io::copy(&mut entry, &mut out_file)
                     .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
+                
+                total_uncompressed_bytes += copied;
+                if total_uncompressed_bytes > MAX_UNCOMPRESSED_BYTES {
+                    return Err(SecurityError::PathTraversal(
+                        "Tar archive decompression size limit exceeded (50 GB)".to_string(),
+                    )
+                    .into());
+                }
             }
 
             list.push(ExtractedItem {

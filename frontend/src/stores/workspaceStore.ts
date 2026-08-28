@@ -200,6 +200,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function saveState() {
+    const prefsJson = localStorage.getItem('fb:user_preferences');
+    let rememberLastDir = true;
+    if (prefsJson) {
+      try {
+        const parsed = JSON.parse(prefsJson);
+        if (parsed.remember_last_directories !== undefined) {
+          rememberLastDir = Boolean(parsed.remember_last_directories);
+        } else if (parsed.remember_last_dir !== undefined) {
+          rememberLastDir = Boolean(parsed.remember_last_dir);
+        }
+      } catch {}
+    }
+
     const persisted: PersistedWorkspace = {
       version: 1,
       layout: layout.value,
@@ -207,7 +220,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       splitRatio: splitRatio.value,
       left: {
         connectionId: leftPanel.value.location.connectionId,
-        path: leftPanel.value.location.path,
+        path: rememberLastDir ? leftPanel.value.location.path : '/',
         viewMode: leftPanel.value.view.viewMode,
         showHidden: leftPanel.value.view.showHidden,
         sortField: leftPanel.value.view.sortField,
@@ -215,7 +228,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       },
       right: {
         connectionId: rightPanel.value.location.connectionId,
-        path: rightPanel.value.location.path,
+        path: rememberLastDir ? rightPanel.value.location.path : '/',
         viewMode: rightPanel.value.view.viewMode,
         showHidden: rightPanel.value.view.showHidden,
         sortField: rightPanel.value.view.sortField,

@@ -1,8 +1,10 @@
 # Rust / Backend Build Artifacts
 /backend/target/
-/backend/filemanager.db
-/backend/filemanager.db-shm
-/backend/filemanager.db-wal
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 /backend/.trash/
 
 # Node / Frontend Build Artifacts

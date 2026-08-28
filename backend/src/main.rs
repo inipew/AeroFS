@@ -33,23 +33,42 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // 0. Acquire singleton daemon lock file
+    // 0. Acquire exclusive singleton daemon lock file
     let lock_path = if let Ok(data_dir) = std::env::var("AEROFS_DATA_DIR") {
         std::path::PathBuf::from(data_dir).join("aerofs.lock")
     } else {
         std::path::PathBuf::from("./aerofs.lock")
     };
 
-    let pid = std::process::id();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&lock_path)
-    {
-        use std::io::Write;
-        let _ = write!(f, "{}", pid);
-    }
+    #[cfg(unix)]
+    let _lock_file = {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+
+        let fd = file.as_raw_fd();
+        let flock_res = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if flock_res != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EWOULDBLOCK) || err.raw_os_error() == Some(libc::EAGAIN) {
+                eprintln!(
+                    "❌ AeroFS daemon is already running (exclusive lock held at: {}). Exiting.",
+                    lock_path.display()
+                );
+                std::process::exit(1);
+            }
+        }
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f_mut = &file;
+        let _ = f_mut.set_len(0);
+        let _ = f_mut.seek(SeekFrom::Start(0));
+        let _ = write!(f_mut, "{}", std::process::id());
+        file
+    };
 
     // 1. Hierarchically load configuration (CLI > Env > TOML > Defaults)
     let mut config = AppConfig::load(cli.config.as_deref())?;

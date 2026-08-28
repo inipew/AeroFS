@@ -426,7 +426,6 @@ impl TransferManager {
                 }
                 match (&j.user_id, user_id) {
                     (Some(owner), Some(uid)) => owner == uid,
-                    (None, _) => true,
                     _ => false,
                 }
             })
@@ -441,10 +440,9 @@ impl TransferManager {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
                 if !is_admin {
-                    if let (Some(owner), Some(uid)) = (&job.user_id, user_id) {
-                        if owner != uid {
-                            return Err("Permission denied: cannot cancel another user's transfer".into());
-                        }
+                    match (&job.user_id, user_id) {
+                        (Some(owner), Some(uid)) if owner == uid => {}
+                        _ => return Err("Permission denied: cannot cancel another user's transfer".into()),
                     }
                 }
                 if job.status == TransferStatus::Queued
@@ -480,10 +478,9 @@ impl TransferManager {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
                 if !is_admin {
-                    if let (Some(owner), Some(uid)) = (&job.user_id, user_id) {
-                        if owner != uid {
-                            return Err("Permission denied: cannot dismiss another user's transfer".into());
-                        }
+                    match (&job.user_id, user_id) {
+                        (Some(owner), Some(uid)) if owner == uid => {}
+                        _ => return Err("Permission denied: cannot dismiss another user's transfer".into()),
                     }
                 }
                 job.dismissed_at = Some(Utc::now());
@@ -521,14 +518,7 @@ impl TransferManager {
                 .execute(&self.db)
                 .await
             } else {
-                sqlx::query(
-                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND dismissed_at IS NULL",
-                )
-                .bind(&now)
-                .bind(&now)
-                .bind(id)
-                .execute(&self.db)
-                .await
+                return Err("Permission denied: cannot dismiss unowned transfer".into());
             };
 
             match res {
@@ -557,7 +547,6 @@ impl TransferManager {
                     } else {
                         match (&job.user_id, user_id) {
                             (Some(owner), Some(uid)) => owner == uid,
-                            (None, _) => true,
                             _ => false,
                         }
                     };
@@ -981,10 +970,14 @@ impl TransferManager {
             Ok::<(u64, String), anyhow::Error>((transferred, checksum_hex))
         });
 
-        // 5. Destination writes directly from the streaming pipe
+        // 5. Destination writes into an isolated .part staging file
+        let part_vfs = VfsPath::new(
+            &job.destination_connection_id,
+            format!("{}.aerofs-part-{}", dst_vfs.path, job.id),
+        );
         let existing_dst_perms = dst_fs.stat(&dst_vfs).await.ok().and_then(|m| m.permissions);
         let write_res = dst_fs
-            .write_stream(&dst_vfs, Box::new(pipe_reader))
+            .write_stream(&part_vfs, Box::new(pipe_reader))
             .await;
 
         let pump_res = pump_handle
@@ -992,7 +985,15 @@ impl TransferManager {
             .map_err(|e| anyhow::anyhow!("Stream pump task panicked: {}", e))?;
 
         let (transferred_bytes, checksum) = pump_res?;
-        write_res.map_err(|e| anyhow::anyhow!("Destination write failed: {}", e))?;
+        if let Err(e) = write_res {
+            let _ = dst_fs.delete(&part_vfs).await;
+            return Err(anyhow::anyhow!("Destination write failed: {}", e));
+        }
+
+        // Atomically promote part file to destination path
+        if let Err(e) = dst_fs.rename(&part_vfs, &dst_vfs).await {
+            tracing::warn!("Rename promotion fallback for {}: {}", dst_vfs.path, e);
+        }
 
         if let Some(ref perms) = existing_dst_perms {
             let _ = dst_fs.set_permissions(&dst_vfs, perms).await;

@@ -125,19 +125,42 @@ impl Default for AdvancedSettings {
     }
 }
 
+fn default_language() -> String { "en".to_string() }
+fn default_theme() -> String { "dark".to_string() }
+fn default_view() -> String { "grid".to_string() }
+fn default_density() -> String { "comfortable".to_string() }
+fn default_sort() -> String { "name".to_string() }
+fn default_sort_direction() -> String { "asc".to_string() }
+fn default_layout() -> String { "split".to_string() }
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct UserPreferences {
+    #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_view")]
     pub default_view: String, // "grid" | "list"
+    #[serde(default = "default_density")]
+    pub list_density: String, // "comfortable" | "compact" | "dense"
+    #[serde(default = "default_sort", alias = "sort_field")]
     pub default_sort: String, // "name" | "size" | "modified"
+    #[serde(default = "default_sort_direction", alias = "sort_order")]
     pub sort_direction: String, // "asc" | "desc"
+    #[serde(default)]
     pub show_hidden: bool,
+    #[serde(default = "default_true")]
     pub confirm_destructive: bool,
+    #[serde(default = "default_layout")]
     pub default_layout: String, // "single" | "split"
+    #[serde(default = "default_true")]
     pub show_breadcrumbs: bool,
+    #[serde(default = "default_true")]
     pub show_file_size: bool,
+    #[serde(default = "default_true")]
     pub show_permissions: bool,
+    #[serde(default = "default_true", alias = "remember_last_dir")]
     pub remember_last_directories: bool,
 }
 
@@ -147,6 +170,7 @@ impl Default for UserPreferences {
             language: "en".to_string(),
             theme: "dark".to_string(),
             default_view: "grid".to_string(),
+            list_density: "comfortable".to_string(),
             default_sort: "name".to_string(),
             sort_direction: "asc".to_string(),
             show_hidden: false,

@@ -8,7 +8,6 @@ export interface LoginPayload {
 
 export interface AuthResponse {
   user: UserInfo;
-  session_id: string;
 }
 
 export async function loginApi(payload: LoginPayload): Promise<AuthResponse> {

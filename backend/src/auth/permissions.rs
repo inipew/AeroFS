@@ -13,6 +13,19 @@ pub enum PermissionAction {
     Download,
 }
 
+impl PermissionAction {
+    pub fn is_mutating(&self) -> bool {
+        matches!(
+            self,
+            PermissionAction::Write
+                | PermissionAction::Create
+                | PermissionAction::Delete
+                | PermissionAction::Rename
+                | PermissionAction::Upload
+        )
+    }
+}
+
 /// Verify if a user is authorized to perform a specific action on a connection
 pub async fn check_permission(
     db: &DbPool,
@@ -20,12 +33,32 @@ pub async fn check_permission(
     connection_id: &str,
     action: PermissionAction,
 ) -> Result<(), AppError> {
-    // Administrator has full permissions on all connections
+    // 1. Centralized connection read_only policy enforcement
+    if action.is_mutating() && connection_id != "local" {
+        let conn_row: Option<(i64,)> = sqlx::query_as(
+            "SELECT read_only FROM connections WHERE id = ?",
+        )
+        .bind(connection_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| anyhow::anyhow!("Database error checking connection status: {}", e))?;
+
+        if let Some((read_only,)) = conn_row {
+            if read_only != 0 {
+                return Err(AppError::Forbidden(format!(
+                    "Storage connection '{}' is configured as read-only. Mutation {:?} is rejected.",
+                    connection_id, action
+                )));
+            }
+        }
+    }
+
+    // Administrator has full permissions on all non-read-only connections
     if user.is_admin {
         return Ok(());
     }
 
-    // Query permissions table
+    // 2. Query permissions table
     let row: Option<(i64, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT can_read, can_write, can_create, can_delete, can_rename, can_upload, can_download
          FROM permissions
