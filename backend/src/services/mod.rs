@@ -19,7 +19,7 @@ pub use archive_service::ArchiveService;
 pub use audit_service::AuditService;
 pub use auth_service::AuthService;
 pub use authorization_service::AuthorizationService;
-pub use connection_service::ConnectionService;
+pub use connection_service::{ConnectionService, CreateConnectionRequest};
 pub use editor_service::EditorService;
 pub use file_service::FileService;
 pub use health_service::HealthService;

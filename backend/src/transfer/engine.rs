@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -195,6 +196,7 @@ pub struct EventEnvelope {
 #[derive(Clone)]
 pub struct TransferManager {
     jobs: Arc<RwLock<HashMap<String, TransferJob>>>,
+    cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     queue_tx: mpsc::Sender<String>,
     event_tx: broadcast::Sender<EventEnvelope>,
     sequence_counter: Arc<AtomicU64>,
@@ -215,6 +217,8 @@ impl TransferManager {
         let (event_tx, _) = broadcast::channel::<EventEnvelope>(400);
 
         let jobs: Arc<RwLock<HashMap<String, TransferJob>>> = Arc::new(RwLock::new(HashMap::new()));
+        let cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>> =
+            Arc::new(RwLock::new(HashMap::new()));
         let sequence_counter = Arc::new(AtomicU64::new(1));
         let event_history = Arc::new(RwLock::new(VecDeque::with_capacity(500)));
         let max_concurrent_workers_arc =
@@ -223,6 +227,7 @@ impl TransferManager {
         let worker_notify = Arc::new(tokio::sync::Notify::new());
 
         let jobs_clone = Arc::clone(&jobs);
+        let cancel_tokens_clone = Arc::clone(&cancel_tokens);
         let event_tx_clone = event_tx.clone();
         let db_clone = db.clone();
         let queue_tx_clone = queue_tx.clone();
@@ -273,6 +278,7 @@ impl TransferManager {
                 active_workers.fetch_add(1, Ordering::SeqCst);
 
                 let jobs_worker = Arc::clone(&jobs_clone);
+                let cancel_tokens_worker = Arc::clone(&cancel_tokens_clone);
                 let providers_worker = Arc::clone(&providers);
                 let event_tx_worker = event_tx_clone.clone();
                 let seq_worker = Arc::clone(&sequence_counter_clone);
@@ -288,10 +294,19 @@ impl TransferManager {
                         map.get(&job_id).cloned()
                     };
 
+                    let cancel_token = {
+                        let mut tokens = cancel_tokens_worker.write().await;
+                        tokens
+                            .entry(job_id.clone())
+                            .or_insert_with(CancellationToken::new)
+                            .clone()
+                    };
+
                     if let Some(mut job) = job_opt {
                         // Skip cancelled or already finished jobs
                         if job.status != TransferStatus::Cancelled
                             && job.status != TransferStatus::CancellationRequested
+                            && !cancel_token.is_cancelled()
                         {
                             job.status = TransferStatus::Running;
                             job.updated_at = Utc::now();
@@ -307,9 +322,10 @@ impl TransferManager {
                                 WsEvent::TransferProgress(job.clone()),
                             );
 
-                            // Execute robust bounded-stream transfer with retry
+                            // Execute robust bounded-stream transfer with retry & instant CancellationToken abort
                             let result = Self::execute_job_with_retry(
                                 &mut job,
+                                &cancel_token,
                                 &providers_worker,
                                 &jobs_worker,
                                 &event_tx_worker,
@@ -328,6 +344,7 @@ impl TransferManager {
 
                             if current_status == TransferStatus::Cancelled
                                 || current_status == TransferStatus::CancellationRequested
+                                || cancel_token.is_cancelled()
                             {
                                 job.status = TransferStatus::Cancelled;
                                 job.speed_bytes_per_sec = 0;
@@ -387,6 +404,9 @@ impl TransferManager {
                         }
                     }
 
+                    // Clean up cancellation token
+                    cancel_tokens_worker.write().await.remove(&job_id);
+
                     active_workers_task.fetch_sub(1, Ordering::SeqCst);
                     notify_task.notify_waiters();
                 });
@@ -395,6 +415,7 @@ impl TransferManager {
 
         Self {
             jobs,
+            cancel_tokens,
             queue_tx,
             event_tx,
             sequence_counter,
@@ -517,10 +538,14 @@ impl TransferManager {
             .await
             .map_err(|e| format!("Database persistence error: {}", e))?;
 
-        // 2. Insert into in-memory state
+        // 2. Insert into in-memory state and register CancellationToken
         {
             let mut map = self.jobs.write().await;
             map.insert(id.clone(), job.clone());
+        }
+        {
+            let mut tokens = self.cancel_tokens.write().await;
+            tokens.insert(id.clone(), CancellationToken::new());
         }
 
         Self::send_enveloped_event(
@@ -591,7 +616,7 @@ impl TransferManager {
         user_id: Option<&str>,
         is_admin: bool,
     ) -> Result<bool, String> {
-        let updated_job = {
+        let (token_opt, is_queued, updated_job) = {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
                 if !is_admin {
@@ -604,31 +629,86 @@ impl TransferManager {
                         }
                     }
                 }
-                if job.status == TransferStatus::Queued
-                    || job.status == TransferStatus::Running
-                    || job.status == TransferStatus::CancellationRequested
-                {
+
+                let token = self.cancel_tokens.read().await.get(id).cloned();
+
+                if job.status == TransferStatus::Queued {
                     job.status = TransferStatus::Cancelled;
+                    job.speed_bytes_per_sec = 0;
+                    job.eta_seconds = None;
                     job.updated_at = Utc::now();
-                    Some(job.clone())
+                    (token, true, Some(job.clone()))
+                } else if job.status == TransferStatus::Running {
+                    job.status = TransferStatus::CancellationRequested;
+                    job.speed_bytes_per_sec = 0;
+                    job.eta_seconds = None;
+                    job.updated_at = Utc::now();
+                    (token, false, Some(job.clone()))
                 } else {
-                    None
+                    (None, false, None)
                 }
             } else {
-                None
+                (None, false, None)
             }
         };
 
+        if let Some(token) = token_opt {
+            token.cancel();
+        }
+
         if let Some(job) = updated_job {
             let _ = Self::save_job_to_db(&self.db, &job).await;
-            Self::send_enveloped_event(
-                &self.event_tx,
-                &self.sequence_counter,
-                &self.event_history,
-                WsEvent::TransferFailed(job),
-            );
+            if is_queued {
+                Self::send_enveloped_event(
+                    &self.event_tx,
+                    &self.sequence_counter,
+                    &self.event_history,
+                    WsEvent::TransferFailed(job),
+                );
+            } else {
+                Self::send_enveloped_event(
+                    &self.event_tx,
+                    &self.sequence_counter,
+                    &self.event_history,
+                    WsEvent::TransferProgress(job),
+                );
+            }
             Ok(true)
         } else {
+            // DB Fallback if job is not in RAM
+            if let Ok(Some(row)) = sqlx::query("SELECT user_id, status FROM transfer_jobs WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.db)
+                .await
+            {
+                let db_user_id: Option<String> = row.try_get("user_id").ok();
+                let db_status_str: String = row.try_get("status").unwrap_or_default();
+                let db_status = TransferStatus::from_str(&db_status_str);
+
+                if !is_admin {
+                    match (&db_user_id, user_id) {
+                        (Some(owner), Some(uid)) if owner == uid => {}
+                        _ => {
+                            return Err(
+                                "Permission denied: cannot cancel another user's transfer".into()
+                            )
+                        }
+                    }
+                }
+
+                if db_status == TransferStatus::Queued
+                    || db_status == TransferStatus::Running
+                    || db_status == TransferStatus::CancellationRequested
+                {
+                    let now_str = Utc::now().to_rfc3339();
+                    let res = sqlx::query("UPDATE transfer_jobs SET status = 'cancelled', updated_at = ? WHERE id = ?")
+                        .bind(&now_str)
+                        .bind(id)
+                        .execute(&self.db)
+                        .await;
+                    return Ok(res.map(|r| r.rows_affected() > 0).unwrap_or(false));
+                }
+            }
             Ok(false)
         }
     }
@@ -780,6 +860,7 @@ impl TransferManager {
     #[allow(clippy::too_many_arguments)]
     async fn execute_job_with_retry(
         job: &mut TransferJob,
+        cancel_token: &CancellationToken,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         jobs_map: &Arc<RwLock<HashMap<String, TransferJob>>>,
         event_tx: &broadcast::Sender<EventEnvelope>,
@@ -791,10 +872,15 @@ impl TransferManager {
         let mut attempt = 0;
 
         loop {
+            if cancel_token.is_cancelled() {
+                return Err(anyhow::anyhow!("Transfer cancelled by user"));
+            }
+
             attempt += 1;
             let max_attempts = max_retries.load(Ordering::Relaxed).max(1);
             match Self::execute_job(
                 job,
+                cancel_token,
                 providers,
                 jobs_map,
                 event_tx,
@@ -807,6 +893,9 @@ impl TransferManager {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // Check if job was cancelled
+                    if cancel_token.is_cancelled() {
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
                     {
                         let map = jobs_map.read().await;
                         if let Some(j) = map.get(&job.id) {
@@ -818,9 +907,10 @@ impl TransferManager {
                         }
                     }
 
-                    // Classify permanent errors (404, 403, 401, Invalid Path, Unsupported)
+                    // Classify permanent errors (404, 403, 401, Invalid Path, Unsupported, Cancelled)
                     let err_msg = e.to_string().to_lowercase();
-                    let is_permanent = err_msg.contains("not found")
+                    let is_permanent = err_msg.contains("cancelled")
+                        || err_msg.contains("not found")
                         || err_msg.contains("permission denied")
                         || err_msg.contains("forbidden")
                         || err_msg.contains("unauthorized")
@@ -864,16 +954,22 @@ impl TransferManager {
                         WsEvent::TransferProgress(job.clone()),
                     );
 
-                    tokio::time::sleep(backoff).await;
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                        }
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
                 }
             }
         }
     }
 
-    /// True Bounded-Buffer Asynchronous Streaming Transfer with SHA-256 Checksum Calculation
+    /// True Bounded-Buffer Asynchronous Streaming Transfer with SHA-256 Checksum Calculation & Instant CancellationToken Abort
     #[allow(clippy::too_many_arguments)]
     async fn execute_job(
         job: &mut TransferJob,
+        cancel_token: &CancellationToken,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         jobs_map: &Arc<RwLock<HashMap<String, TransferJob>>>,
         event_tx: &broadcast::Sender<EventEnvelope>,
@@ -881,6 +977,10 @@ impl TransferManager {
         event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
         db: &DbPool,
     ) -> anyhow::Result<()> {
+        if cancel_token.is_cancelled() {
+            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+        }
+
         let src_fs = {
             let p = providers.read().await;
             p.get(&job.source_connection_id).cloned().ok_or_else(|| {
@@ -949,6 +1049,9 @@ impl TransferManager {
         }
 
         if meta.kind == crate::domain::FileKind::Directory {
+            const MAX_TRANSFER_DIR_ENTRIES: usize = 100_000;
+            const MAX_TRANSFER_DIR_DEPTH: usize = 64;
+
             // Recursive directory transfer!
             #[derive(Debug)]
             struct ItemToTransfer {
@@ -959,11 +1062,29 @@ impl TransferManager {
 
             async fn scan_dir_recursive(
                 fs: &Arc<dyn FileSystem>,
+                cancel_token: &CancellationToken,
                 conn_id: &str,
                 base_vfs: &VfsPath,
                 current_rel: &str,
+                depth: usize,
                 items: &mut Vec<ItemToTransfer>,
             ) -> anyhow::Result<()> {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                }
+                if depth > MAX_TRANSFER_DIR_DEPTH {
+                    return Err(anyhow::anyhow!(
+                        "Directory recursion depth limit exceeded (max {})",
+                        MAX_TRANSFER_DIR_DEPTH
+                    ));
+                }
+                if items.len() >= MAX_TRANSFER_DIR_ENTRIES {
+                    return Err(anyhow::anyhow!(
+                        "Directory entries count limit exceeded (max {})",
+                        MAX_TRANSFER_DIR_ENTRIES
+                    ));
+                }
+
                 let current_vfs = if current_rel.is_empty() {
                     base_vfs.clone()
                 } else {
@@ -978,6 +1099,9 @@ impl TransferManager {
                     .await
                     .map_err(|e| anyhow::anyhow!("List failed: {}", e))?;
                 for entry in entries {
+                    if cancel_token.is_cancelled() {
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
                     let child_rel = if current_rel.is_empty() {
                         entry.name.clone()
                     } else {
@@ -990,8 +1114,16 @@ impl TransferManager {
                             is_dir: true,
                             size: 0,
                         });
-                        Box::pin(scan_dir_recursive(fs, conn_id, base_vfs, &child_rel, items))
-                            .await?;
+                        Box::pin(scan_dir_recursive(
+                            fs,
+                            cancel_token,
+                            conn_id,
+                            base_vfs,
+                            &child_rel,
+                            depth + 1,
+                            items,
+                        ))
+                        .await?;
                     } else {
                         items.push(ItemToTransfer {
                             rel_path: child_rel,
@@ -1004,8 +1136,16 @@ impl TransferManager {
             }
 
             let mut items = Vec::new();
-            scan_dir_recursive(&src_fs, &job.source_connection_id, &src_vfs, "", &mut items)
-                .await?;
+            scan_dir_recursive(
+                &src_fs,
+                cancel_token,
+                &job.source_connection_id,
+                &src_vfs,
+                "",
+                0,
+                &mut items,
+            )
+            .await?;
 
             let total_bytes: u64 = items.iter().map(|i| i.size).sum();
             job.total_bytes = total_bytes;
@@ -1026,10 +1166,20 @@ impl TransferManager {
             );
 
             // 1. Create root destination directory
-            dst_fs
-                .create_dir(&dst_vfs)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed creating destination dir: {}", e))?;
+            if let Err(e) = dst_fs.create_dir(&dst_vfs).await {
+                if !dst_fs
+                    .stat(&dst_vfs)
+                    .await
+                    .map(|m| m.kind == crate::domain::FileKind::Directory)
+                    .unwrap_or(false)
+                {
+                    return Err(anyhow::anyhow!(
+                        "Failed creating root destination directory '{}': {}",
+                        dst_vfs.path,
+                        e
+                    ));
+                }
+            }
             if let Some(perms) = crate::domain::resolve_destination_permissions(
                 &dst_fs,
                 &dst_vfs,
@@ -1043,11 +1193,27 @@ impl TransferManager {
 
             // 2. Create all subdirectories first
             for item in items.iter().filter(|i| i.is_dir) {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                }
                 let dst_dir_vfs = VfsPath::new(
                     &job.destination_connection_id,
                     format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path),
                 )?;
-                let _ = dst_fs.create_dir(&dst_dir_vfs).await;
+                if let Err(e) = dst_fs.create_dir(&dst_dir_vfs).await {
+                    if !dst_fs
+                        .stat(&dst_dir_vfs)
+                        .await
+                        .map(|m| m.kind == crate::domain::FileKind::Directory)
+                        .unwrap_or(false)
+                    {
+                        return Err(anyhow::anyhow!(
+                            "Failed creating subdirectory '{}': {}",
+                            dst_dir_vfs.path,
+                            e
+                        ));
+                    }
+                }
                 if let Some(perms) = crate::domain::resolve_destination_permissions(
                     &dst_fs,
                     &dst_dir_vfs,
@@ -1073,16 +1239,8 @@ impl TransferManager {
             }
 
             for item in items.iter().filter(|i| !i.is_dir) {
-                // Check cancellation
-                {
-                    let map = jobs_map.read().await;
-                    if let Some(j) = map.get(&job.id) {
-                        if j.status == TransferStatus::Cancelled
-                            || j.status == TransferStatus::CancellationRequested
-                        {
-                            return Err(anyhow::anyhow!("Transfer cancelled"));
-                        }
-                    }
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
                 }
 
                 let src_file_vfs = VfsPath::new(
@@ -1107,6 +1265,7 @@ impl TransferManager {
                 let event_hist_clone = Arc::clone(event_history);
                 let file_size = item.size;
                 let current_base_transferred = transferred_so_far;
+                let cancel_token_pump = cancel_token.clone();
 
                 let pump_handle = tokio::spawn(async move {
                     let mut buffer = vec![0u8; 64 * 1024];
@@ -1114,11 +1273,28 @@ impl TransferManager {
                     let mut last_emit = Instant::now();
 
                     loop {
-                        let n = reader.read(&mut buffer).await?;
+                        if cancel_token_pump.is_cancelled() {
+                            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                        }
+
+                        let n = tokio::select! {
+                            _ = cancel_token_pump.cancelled() => {
+                                return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                            }
+                            res = reader.read(&mut buffer) => res?,
+                        };
+
                         if n == 0 {
                             break;
                         }
-                        pipe_writer.write_all(&buffer[..n]).await?;
+
+                        tokio::select! {
+                            _ = cancel_token_pump.cancelled() => {
+                                return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                            }
+                            res = pipe_writer.write_all(&buffer[..n]) => res?,
+                        };
+
                         file_transferred += n as u64;
 
                         let total_transferred = current_base_transferred + file_transferred;
@@ -1163,21 +1339,31 @@ impl TransferManager {
                     Ok::<u64, anyhow::Error>(file_transferred)
                 });
 
-                let write_res = tokio::time::timeout(
-                    Duration::from_secs(120),
-                    dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader)),
-                )
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "Destination write stream timed out for file '{}'",
-                        item.rel_path
-                    )
-                })?;
+                let write_fut = dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader));
+                let write_res = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        let _ = dst_fs.delete(&dst_file_vfs).await;
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
+                    res = tokio::time::timeout(Duration::from_secs(120), write_fut) => {
+                        res.map_err(|_| {
+                            anyhow::anyhow!(
+                                "Destination write stream timed out for file '{}'",
+                                item.rel_path
+                            )
+                        })?
+                    }
+                };
 
-                let pump_res = pump_handle
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?;
+                let pump_res = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        let _ = dst_fs.delete(&dst_file_vfs).await;
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
+                    res = pump_handle => {
+                        res.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?
+                    }
+                };
                 let file_bytes = pump_res?;
                 write_res.map_err(|e| anyhow::anyhow!("Write failed: {}", e))?;
 
@@ -1262,6 +1448,7 @@ impl TransferManager {
         let seq_counter_clone = Arc::clone(seq_counter);
         let event_hist_clone = Arc::clone(event_history);
         let db_clone = db.clone();
+        let cancel_token_pump = cancel_token.clone();
 
         job.phase = TransferPhase::Transferring;
         {
@@ -1281,19 +1468,17 @@ impl TransferManager {
             let mut last_db_save = Instant::now();
 
             loop {
-                // Check cancellation state machine
-                {
-                    let map = jobs_map_clone.read().await;
-                    if let Some(j) = map.get(&job_id) {
-                        if j.status == TransferStatus::Cancelled
-                            || j.status == TransferStatus::CancellationRequested
-                        {
-                            return Err(anyhow::anyhow!("Transfer cancelled"));
-                        }
-                    }
+                if cancel_token_pump.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
                 }
 
-                let n = reader.read(&mut buffer).await?;
+                let n = tokio::select! {
+                    _ = cancel_token_pump.cancelled() => {
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
+                    res = reader.read(&mut buffer) => res?,
+                };
+
                 if n == 0 {
                     break;
                 }
@@ -1302,7 +1487,12 @@ impl TransferManager {
                 hasher.update(&buffer[..n]);
 
                 // Write chunk into bounded pipe (awaits if destination consumer is slower)
-                pipe_writer.write_all(&buffer[..n]).await?;
+                tokio::select! {
+                    _ = cancel_token_pump.cancelled() => {
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
+                    res = pipe_writer.write_all(&buffer[..n]) => res?,
+                };
                 transferred += n as u64;
 
                 // Update metrics & emit progress events
@@ -1387,18 +1577,38 @@ impl TransferManager {
             format!("{}.aerofs-part-{}", dst_vfs.path, job.id),
         )?;
 
-        let write_res = tokio::time::timeout(
-            Duration::from_secs(120),
-            dst_fs.write_stream(&part_vfs, Box::new(pipe_reader)),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Destination write stream timed out after 120s"))?;
+        // Best effort cleanup of any stale part file from previous attempt
+        let _ = dst_fs.delete(&part_vfs).await;
 
-        let pump_res = pump_handle
-            .await
-            .map_err(|e| anyhow::anyhow!("Stream pump task panicked: {}", e))?;
+        let write_fut = dst_fs.write_stream(&part_vfs, Box::new(pipe_reader));
+        let write_res = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                let _ = dst_fs.delete(&part_vfs).await;
+                return Err(anyhow::anyhow!("Transfer cancelled by user"));
+            }
+            res = tokio::time::timeout(Duration::from_secs(120), write_fut) => {
+                res.map_err(|_| anyhow::anyhow!("Destination write stream timed out after 120s"))?
+            }
+        };
 
-        let (transferred_bytes, checksum) = pump_res?;
+        let pump_res = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                let _ = dst_fs.delete(&part_vfs).await;
+                return Err(anyhow::anyhow!("Transfer cancelled by user"));
+            }
+            res = pump_handle => {
+                res.map_err(|e| anyhow::anyhow!("Stream pump task panicked: {}", e))?
+            }
+        };
+
+        let (transferred_bytes, checksum) = match pump_res {
+            Ok(val) => val,
+            Err(e) => {
+                let _ = dst_fs.delete(&part_vfs).await;
+                return Err(e);
+            }
+        };
+
         if let Err(e) = write_res {
             let _ = dst_fs.delete(&part_vfs).await;
             return Err(anyhow::anyhow!("Destination write failed: {}", e));

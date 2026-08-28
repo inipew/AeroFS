@@ -46,7 +46,7 @@ export const useTransferStore = defineStore('transfer', () => {
 
   const activeCount = computed(() => activeJobs.value.length);
 
-  // Background fallback poll while jobs are active (400ms responsive interval)
+  // Background fallback poll while jobs are active (5,000ms safety interval)
   function startPollingIfNeeded() {
     if (pollInterval) return;
     pollInterval = setInterval(async () => {
@@ -56,7 +56,7 @@ export const useTransferStore = defineStore('transfer', () => {
         clearInterval(pollInterval);
         pollInterval = null;
       }
-    }, 400);
+    }, 5000);
   }
 
   async function fetchJobs() {
@@ -105,11 +105,15 @@ export const useTransferStore = defineStore('transfer', () => {
       socket = new WebSocket(url);
 
       socket.onopen = () => {
+        const wasDisconnected = !isConnected.value;
         isConnected.value = true;
-        lastSequence = 0;
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
+        }
+        // Resync state on initial open / reconnect
+        if (wasDisconnected || lastSequence === 0) {
+          fetchJobs();
         }
       };
 
@@ -140,7 +144,6 @@ export const useTransferStore = defineStore('transfer', () => {
 
       socket.onclose = () => {
         isConnected.value = false;
-        socket = null;
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
@@ -150,10 +153,11 @@ export const useTransferStore = defineStore('transfer', () => {
       };
 
       socket.onerror = () => {
+        isConnected.value = false;
         socket?.close();
       };
-    } catch (err) {
-      console.error('WebSocket connection error', err);
+    } catch (e) {
+      console.error('Failed creating WebSocket', e);
     }
   }
 
@@ -180,10 +184,19 @@ export const useTransferStore = defineStore('transfer', () => {
   }
 
   async function cancelTransfer(jobId: string) {
+    // Optimistically transition to cancellation_requested for instant UI feedback
+    const idx = jobs.value.findIndex((j) => j.id === jobId);
+    if (idx >= 0) {
+      jobs.value[idx] = {
+        ...jobs.value[idx],
+        status: 'cancellation_requested',
+        speed_bytes_per_sec: 0,
+        eta_seconds: undefined,
+      };
+      jobs.value = [...jobs.value];
+    }
     try {
       await apiClient.post(`/transfers/${jobId}/cancel`);
-      const job = jobs.value.find((j) => j.id === jobId);
-      if (job) job.status = 'cancelled';
     } catch (err) {
       console.error('Failed to cancel transfer', err);
     }

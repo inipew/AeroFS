@@ -461,6 +461,18 @@ impl ConnectionService {
             return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
         }
 
+        // Cancel all active transfers using this connection (Plan 39 P1.18)
+        let active_jobs = state.transfer_manager.list_jobs(None, true, false).await;
+        for job in active_jobs {
+            if (job.source_connection_id == id || job.destination_connection_id == id)
+                && (job.status == crate::transfer::TransferStatus::Running
+                    || job.status == crate::transfer::TransferStatus::Queued
+                    || job.status == crate::transfer::TransferStatus::CancellationRequested)
+            {
+                let _ = state.transfer_manager.cancel_job(&job.id, None, true).await;
+            }
+        }
+
         state.registry.remove(id).await;
 
         Ok(())
