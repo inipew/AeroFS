@@ -156,7 +156,11 @@ pub async fn get_file_content(
     resp_headers.insert(ETAG, meta.etag.parse().unwrap());
     resp_headers.insert(
         header::CACHE_CONTROL,
-        "private, max-age=3600, must-revalidate".parse().unwrap(),
+        "no-store, no-cache, must-revalidate".parse().unwrap(),
+    );
+    resp_headers.insert(
+        header::PRAGMA,
+        "no-cache".parse().unwrap(),
     );
 
     if let Some(mtime) = meta.modified_at {
@@ -277,7 +281,17 @@ pub async fn update_file_content(
     Path(connection_id): Path<String>,
     Json(payload): Json<UpdateContentRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let expected_etag = headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok());
+    let force_overwrite = headers
+        .get("X-Force-Overwrite")
+        .and_then(|h| h.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+
+    let expected_etag = if force_overwrite {
+        None
+    } else {
+        headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok())
+    };
 
     let meta = FileService::create_or_write_file(
         &state,

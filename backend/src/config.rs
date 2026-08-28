@@ -47,6 +47,13 @@ pub struct SecurityConfig {
     pub session_ttl_secs: u64,
     pub allow_symlinks_outside_root: bool,
     pub allow_private_network_connections: bool,
+    /// Comma-separated list of allowed CORS origins (e.g. "http://192.168.1.5:8080").
+    /// Empty means mirror-request in dev, same-origin only in production.
+    pub allowed_origins: Vec<String>,
+    /// If true, set the Secure flag on session cookies regardless of host detection.
+    /// If false (default), Secure is only set when the server host is not a loopback address.
+    /// Set to false explicitly when serving over plain HTTP on LAN/Android.
+    pub cookie_secure: bool,
 }
 
 impl Default for SecurityConfig {
@@ -56,6 +63,8 @@ impl Default for SecurityConfig {
             session_ttl_secs: 86400 * 7,
             allow_symlinks_outside_root: false,
             allow_private_network_connections: true,
+            allowed_origins: Vec::new(),
+            cookie_secure: false,
         }
     }
 }
@@ -234,6 +243,22 @@ impl AppConfig {
                 ))
             })?;
             self.security.session_ttl_secs = ttl;
+        }
+
+        // AEROFS_ALLOWED_ORIGINS: comma-separated list of allowed CORS origins.
+        // Example: "http://192.168.1.5:8080,http://10.0.2.2:8080"
+        if let Ok(origins_str) = env::var("AEROFS_ALLOWED_ORIGINS") {
+            self.security.allowed_origins = origins_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        // AEROFS_COOKIE_SECURE: explicit control over the Secure cookie flag.
+        // Set to "false" or "0" when serving over plain HTTP (LAN / Android).
+        if let Ok(val) = env::var("AEROFS_COOKIE_SECURE") {
+            self.security.cookie_secure = val == "1" || val.to_lowercase() == "true";
         }
 
         if let Ok(max_upload_mb_str) =

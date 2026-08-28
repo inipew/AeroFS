@@ -785,6 +785,7 @@ const editorEl = ref<HTMLElement | null>(null);
 const editor = ref<ace.Ace.Editor | null>(null);
 
 const isDirty = ref(false);
+const savedContent = ref('');
 const saving = ref(false);
 const isSettingsOpen = ref(false);
 const isSyntaxMenuOpen = ref(false);
@@ -1159,6 +1160,7 @@ function initAce() {
     value: uiStore.editorContent,
   });
 
+  savedContent.value = uiStore.editorContent;
   currentMode.value = detectMode(uiStore.editorFile.name);
   lineCount.value = editor.value.session.getLength();
   charCount.value = uiStore.editorContent.length;
@@ -1167,7 +1169,7 @@ function initAce() {
   }
 
   editor.value.session.on('change', () => {
-    isDirty.value = !editor.value?.session.getUndoManager().isClean();
+    isDirty.value = (editor.value?.getValue() ?? '') !== savedContent.value;
     lineCount.value = editor.value?.session.getLength() || 1;
     charCount.value = editor.value?.getValue().length || 0;
     if (isMarkdownFile.value && showMarkdownPreview.value) {
@@ -1330,6 +1332,8 @@ async function handleSave(): Promise<boolean> {
       uiStore.editorEtag = resp.headers['etag'];
     }
 
+    savedContent.value = currentText;
+    uiStore.editorContent = currentText;
     editor.value.session.getUndoManager().markClean();
     isDirty.value = false;
     uiStore.showToast(`Saved ${uiStore.editorFile.name}`, 'success');
@@ -1370,6 +1374,8 @@ async function handleForceSave() {
     if (forceResp.headers['etag']) {
       uiStore.editorEtag = forceResp.headers['etag'];
     }
+    savedContent.value = currentText;
+    uiStore.editorContent = currentText;
     editor.value.session.getUndoManager().markClean();
     isDirty.value = false;
     isConflictModalOpen.value = false;

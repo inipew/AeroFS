@@ -42,8 +42,11 @@ export async function readFileApi(
   path: string
 ): Promise<{ content: string; etag: string }> {
   const resp = await apiClient.get<string>(`/connections/${connectionId}/files/content`, {
-    params: { path },
+    params: { path, _t: Date.now() },
     responseType: 'text',
+    headers: {
+      'Cache-Control': 'no-cache',
+    },
   });
   return {
     content: resp.data,

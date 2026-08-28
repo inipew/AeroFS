@@ -334,12 +334,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useStarredStore } from '../../stores/starredStore';
 import { useUiStore } from '../../stores/uiStore';
-import { getDownloadUrl } from '../../api/files';
+import { getDownloadUrl, readFileApi } from '../../api/files';
 import { extractArchiveApi } from '../../api/archive';
 import { isArchiveFile } from '../../domain/capabilities';
 import { normalizeApiError } from '../../utils/errorNormalizer';
@@ -426,11 +425,8 @@ async function handleEditInEditor() {
   uiStore.closeContextMenu();
 
   try {
-    const resp = await apiClient.get(`/connections/${connId}/files/content`, {
-      params: { path: item.path },
-      responseType: 'text',
-    });
-    uiStore.openEditor(item, resp.data, resp.headers['etag'] || '');
+    const resp = await readFileApi(connId, item.path);
+    uiStore.openEditor(item, resp.content, resp.etag);
   } catch (err: unknown) {
     const norm = normalizeApiError(err);
     uiStore.showToast(norm.message || 'Failed to open file in editor', 'error');

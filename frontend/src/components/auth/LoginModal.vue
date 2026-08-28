@@ -83,18 +83,21 @@ const loading = ref(false);
 
 async function handleLogin() {
   loading.value = true;
-  const ok = await authStore.login({
-    username: username.value,
-    password: password.value,
-  });
-  if (ok) {
-    transferStore.connectWs();
-    await transferStore.fetchJobs();
-    await workspaceStore.fetchPanelEntries('left');
-    if (workspaceStore.isDualPane) {
-      await workspaceStore.fetchPanelEntries('right');
+  try {
+    const ok = await authStore.login({
+      username: username.value,
+      password: password.value,
+    });
+    if (ok) {
+      transferStore.connectWs();
+      await transferStore.fetchJobs();
+      await workspaceStore.fetchPanelEntries('left');
+      if (workspaceStore.isDualPane) {
+        await workspaceStore.fetchPanelEntries('right');
+      }
     }
+  } finally {
+    loading.value = false;
   }
-  loading.value = false;
 }
 </script>

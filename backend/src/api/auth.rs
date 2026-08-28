@@ -49,16 +49,23 @@ pub async fn login(
     let (user_info, session_id) =
         AuthService::login(&state, &payload.username, &payload.password, &client_ip).await?;
 
-    let secure_flag =
-        if state.config.server.host != "127.0.0.1" && state.config.server.host != "localhost" {
-            "; Secure"
-        } else {
-            ""
-        };
+    // Determine whether to set the Secure flag on the session cookie.
+    // Use the explicit config field (cookie_secure, default false).
+    // On Android/LAN plain-HTTP deployments keep this false (the default).
+    let secure_flag = if state.config.security.cookie_secure { "; Secure" } else { "" };
+
+    // SameSite=Lax works for same-site navigation but breaks cross-origin requests
+    // (e.g. WebView on Android hitting a LAN IP). Use SameSite=Lax only when Secure
+    // is set (HTTPS); otherwise fall back to SameSite=Lax without Secure for HTTP LAN.
+    let same_site = if secure_flag.is_empty() {
+        "SameSite=Lax"
+    } else {
+        "SameSite=None"
+    };
 
     let cookie_val = format!(
-        "session_id={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
-        session_id, state.config.security.session_ttl_secs, secure_flag
+        "session_id={}; Path=/; HttpOnly; {}; Max-Age={}{}",
+        session_id, same_site, state.config.security.session_ttl_secs, secure_flag
     );
 
     let mut resp_headers = HeaderMap::new();

@@ -2,8 +2,11 @@ use crate::api::{archive, audit, auth, connections, files, search, transfers, ws
 use crate::state::AppState;
 use axum::{
     http::{
-        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE},
-        HeaderValue, Method,
+        header::{
+            ACCEPT, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_RANGE, CONTENT_TYPE, COOKIE, ETAG,
+            IF_MATCH, IF_NONE_MATCH, RANGE,
+        },
+        HeaderName, HeaderValue, Method,
     },
     middleware::{self, Next},
     response::Response,
@@ -40,30 +43,72 @@ pub fn create_router(state: AppState) -> Router {
         == "development"
         || cfg!(test);
 
-    let cors = if is_dev {
-        CorsLayer::new()
-            .allow_origin(AllowOrigin::mirror_request())
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::DELETE,
-                Method::OPTIONS,
-                Method::PATCH,
-            ])
-            .allow_headers([CONTENT_TYPE, AUTHORIZATION, ACCEPT, COOKIE])
-            .allow_credentials(true)
-    } else {
-        CorsLayer::new()
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::DELETE,
-                Method::OPTIONS,
-                Method::PATCH,
-            ])
-            .allow_headers([CONTENT_TYPE, AUTHORIZATION, ACCEPT, COOKIE])
+    // Build CORS layer:
+    // 1. If explicit allowed_origins are configured, use them (supports LAN IPs, Android).
+    // 2. Otherwise, mirror the request origin in dev mode (permissive).
+    // 3. In production with no explicit origins, be restrictive (no wildcard).
+    let cors = {
+        let allowed_methods = [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+            Method::PATCH,
+        ];
+        let allowed_headers = [
+            CONTENT_TYPE,
+            AUTHORIZATION,
+            ACCEPT,
+            COOKIE,
+            IF_MATCH,
+            IF_NONE_MATCH,
+            RANGE,
+            HeaderName::from_static("x-force-overwrite"),
+            HeaderName::from_static("x-idempotency-key"),
+        ];
+        let exposed_headers = [
+            ETAG,
+            CONTENT_RANGE,
+            CONTENT_DISPOSITION,
+            HeaderName::from_static("x-request-id"),
+            HeaderName::from_static("x-idempotency-key"),
+        ];
+
+        if !state.config.security.allowed_origins.is_empty() {
+            // Explicit origin allowlist — works for LAN IPs and Android WebView.
+            let origins: Vec<HeaderValue> = state
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .filter_map(|o| o.parse::<HeaderValue>().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(allowed_methods)
+                .allow_headers(allowed_headers)
+                .expose_headers(exposed_headers)
+                .allow_credentials(true)
+        } else if is_dev {
+            // Dev fallback: mirror any origin (permissive for local development).
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::mirror_request())
+                .allow_methods(allowed_methods)
+                .allow_headers(allowed_headers)
+                .expose_headers(exposed_headers)
+                .allow_credentials(true)
+        } else {
+            // Production with no explicit origins: mirror request origin with credentials.
+            // This allows the same-origin embedded SPA to work while still permitting
+            // apps that present a proper Origin header (including Android WebView).
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::mirror_request())
+                .allow_methods(allowed_methods)
+                .allow_headers(allowed_headers)
+                .expose_headers(exposed_headers)
+                .allow_credentials(true)
+        }
     };
 
     let auth_routes = Router::new()

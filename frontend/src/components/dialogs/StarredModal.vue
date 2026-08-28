@@ -81,7 +81,7 @@ import { useStarredStore } from '../../stores/starredStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useUiStore } from '../../stores/uiStore';
-import { apiClient } from '../../api/client';
+import { readFileApi } from '../../api/files';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -125,10 +125,8 @@ async function handleOpenItem(item: any) {
 
     if (textExts.includes(ext)) {
       try {
-        const resp = await apiClient.get(
-          `/connections/${item.connectionId}/files/content?path=${encodeURIComponent(item.entry.path)}`
-        );
-        uiStore.openEditor(item.entry, resp.data, resp.headers['etag']);
+        const resp = await readFileApi(item.connectionId, item.entry.path);
+        uiStore.openEditor(item.entry, resp.content, resp.etag);
       } catch (err: any) {
         uiStore.showToast('Failed to load file', 'error');
       }
