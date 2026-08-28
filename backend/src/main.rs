@@ -1,30 +1,34 @@
-use backend::cli::{Cli, Commands};
-use backend::{config::AppConfig, create_router, db::init_db, AppState};
+mod api;
+mod auth;
+mod cli;
+mod config;
+mod db;
+mod domain;
+mod errors;
+mod filesystem;
+mod middleware;
+mod router;
+mod state;
+mod static_files;
+mod transfer;
+mod vfs;
+
+use router::create_router;
 use clap::Parser;
+use cli::{Cli, Commands};
+use config::AppConfig;
+use db::init_db;
+use state::AppState;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // If a management subcommand is invoked, execute and exit
-    if let Some(ref cmd) = cli.command {
-        match cmd {
-            Commands::Config(..)
-            | Commands::Status
-            | Commands::Doctor(..)
-            | Commands::Db(..)
-            | Commands::Transfer(..)
-            | Commands::Admin(..) => {
-                return backend::cli::run_cli(cli).await;
-            }
-            Commands::Serve(..) => {}
-        }
-    }
-
-    // Initialize tracing logger for server mode
+    // Initialize structured logging / tracing subscriber
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -111,33 +115,44 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new_with_db(config, db).await;
 
-    // 5. Background housekeeping worker: cleans up expired sessions & old dismissed jobs every hour
+    // 5. Background task cancellation & lifecycle coordination
+    let cancel_token = CancellationToken::new();
+
+    // Background housekeeping worker: cleans up expired sessions & old dismissed jobs every hour
     let housekeeping_db = state.db.clone();
+    let housekeeping_token = cancel_token.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         loop {
-            interval.tick().await;
-            let now = chrono::Utc::now().to_rfc3339();
-            // Delete expired sessions
-            let del_sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
-                .bind(&now)
-                .execute(&housekeeping_db)
-                .await;
-            if let Ok(res) = del_sessions {
-                if res.rows_affected() > 0 {
-                    tracing::info!("Housekeeping: purged {} expired sessions", res.rows_affected());
+            tokio::select! {
+                _ = housekeeping_token.cancelled() => {
+                    tracing::info!("Housekeeping worker received shutdown cancellation");
+                    break;
                 }
-            }
+                _ = interval.tick() => {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    // Delete expired sessions
+                    let del_sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
+                        .bind(&now)
+                        .execute(&housekeeping_db)
+                        .await;
+                    if let Ok(res) = del_sessions {
+                        if res.rows_affected() > 0 {
+                            tracing::info!("Housekeeping: purged {} expired sessions", res.rows_affected());
+                        }
+                    }
 
-            // Delete dismissed transfer jobs older than 30 days
-            let del_transfers = sqlx::query(
-                "DELETE FROM transfer_jobs WHERE dismissed_at IS NOT NULL AND dismissed_at < datetime('now', '-30 days')",
-            )
-            .execute(&housekeeping_db)
-            .await;
-            if let Ok(res) = del_transfers {
-                if res.rows_affected() > 0 {
-                    tracing::info!("Housekeeping: purged {} old dismissed transfer jobs", res.rows_affected());
+                    // Delete dismissed transfer jobs older than 30 days
+                    let del_transfers = sqlx::query(
+                        "DELETE FROM transfer_jobs WHERE dismissed_at IS NOT NULL AND dismissed_at < datetime('now', '-30 days')",
+                    )
+                    .execute(&housekeeping_db)
+                    .await;
+                    if let Ok(res) = del_transfers {
+                        if res.rows_affected() > 0 {
+                            tracing::info!("Housekeeping: purged {} old dismissed transfer jobs", res.rows_affected());
+                        }
+                    }
                 }
             }
         }
@@ -148,8 +163,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("🚀 AeroFS server listening on http://{}", addr);
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(cancel_token.clone()))
         .await?;
+
+    // Signal all workers to stop and wait
+    cancel_token.cancel();
+    tracing::info!("Shutdown coordinator: released background workers, cleaning lock file...");
 
     if lock_path.exists() {
         let _ = std::fs::remove_file(&lock_path);
@@ -158,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(cancel_token: CancellationToken) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -177,9 +196,13 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C (SIGINT) shutdown signal");
+        },
+        _ = terminate => {
+            tracing::info!("Received SIGTERM shutdown signal");
+        },
     }
 
-    tracing::info!("Shutdown signal received, starting graceful shutdown");
+    cancel_token.cancel();
 }

@@ -279,8 +279,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return target;
   }
 
-  function closePanel(panelId: PanelId) {
+  function abortPanel(panelId: PanelId) {
     if (panelId === 'left') {
+      if (leftAbortController) {
+        leftAbortController.abort();
+        leftAbortController = null;
+      }
+      leftRequestGen++;
+    } else {
+      if (rightAbortController) {
+        rightAbortController.abort();
+        rightAbortController = null;
+      }
+      rightRequestGen++;
+    }
+  }
+
+  function closePanel(panelId: PanelId) {
+    abortPanel(panelId);
+    if (panelId === 'left') {
+      abortPanel('right');
       // Promote right panel to single left panel
       leftPanel.value = clonePanel(rightPanel.value, 'left');
     }
@@ -290,6 +308,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function swapPanels() {
+    abortPanel('left');
+    abortPanel('right');
     const tempLeft = clonePanel(leftPanel.value, 'left');
     leftPanel.value = clonePanel(rightPanel.value, 'left');
     rightPanel.value = clonePanel(tempLeft, 'right');
@@ -409,10 +429,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function switchPanelConnection(panelId: PanelId, connectionId: string, basePath: string = '/') {
+    abortPanel(panelId);
     const p = getPanel(panelId);
     p.location.connectionId = connectionId;
     p.navigation.history = [basePath];
     p.navigation.historyIndex = 0;
+    p.selection.paths = [];
+    p.selection.focusedPath = undefined;
     p.runtime.initialized = false;
     const res = await fetchPanelEntries(panelId, basePath);
     if (!res.ok) {
