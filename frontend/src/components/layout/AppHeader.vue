@@ -94,52 +94,54 @@
           </button>
 
           <!-- Storage Dropdown Popover Menu -->
-          <div
-            v-if="isSourceMenuOpen"
-            @click="isSourceMenuOpen = false"
-            class="absolute left-0 top-full mt-2 w-64 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-2xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
-          >
-            <div class="px-3 py-1.5 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
-              STORAGE SOURCES
+          <Transition name="ios-popover">
+            <div
+              v-if="isSourceMenuOpen"
+              @click="isSourceMenuOpen = false"
+              class="absolute left-0 top-full mt-2 w-64 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-2xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5"
+            >
+              <div class="px-3 py-1.5 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+                STORAGE SOURCES
+              </div>
+              <button
+                v-for="conn in connStore.connections"
+                :key="conn.id"
+                @click="handleSelectSource(conn.id)"
+                :class="[
+                  'w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition text-left cursor-pointer group',
+                  activePanel.connectionId === conn.id
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold ring-1 ring-blue-500/20'
+                    : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
+                ]"
+              >
+                <div class="flex items-center space-x-2.5 truncate">
+                  <FbIcon
+                    :name="conn.provider === 'local' ? 'folder' : 'share'"
+                    size="15px"
+                    :class="activePanel.connectionId === conn.id ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 group-hover:text-gray-600 dark:group-hover:text-slate-200'"
+                  />
+                  <span class="truncate font-medium">{{ conn.name }}</span>
+                </div>
+                <div class="flex items-center space-x-1.5 shrink-0 ml-2">
+                  <span
+                    v-if="conn.provider !== 'local'"
+                    class="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-gray-200/70 dark:bg-slate-800 text-gray-500 dark:text-slate-400"
+                  >
+                    {{ conn.provider }}
+                  </span>
+                  <span v-if="activePanel.connectionId === conn.id" class="text-blue-600 dark:text-blue-400 text-xs font-bold">✓</span>
+                </div>
+              </button>
+              <div class="my-1 border-t border-gray-100 dark:border-slate-800/80"></div>
+              <button
+                @click="emit('openConnectionDialog')"
+                class="w-full flex items-center space-x-2 px-3 py-2 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-semibold transition text-left cursor-pointer"
+              >
+                <FbIcon name="plus" size="14px" />
+                <span>Add Storage Connection...</span>
+              </button>
             </div>
-            <button
-              v-for="conn in connStore.connections"
-              :key="conn.id"
-              @click="handleSelectSource(conn.id)"
-              :class="[
-                'w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition text-left cursor-pointer group',
-                activePanel.connectionId === conn.id
-                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold ring-1 ring-blue-500/20'
-                  : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
-              ]"
-            >
-              <div class="flex items-center space-x-2.5 truncate">
-                <FbIcon
-                  :name="conn.provider === 'local' ? 'folder' : 'share'"
-                  size="15px"
-                  :class="activePanel.connectionId === conn.id ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 group-hover:text-gray-600 dark:group-hover:text-slate-200'"
-                />
-                <span class="truncate font-medium">{{ conn.name }}</span>
-              </div>
-              <div class="flex items-center space-x-1.5 shrink-0 ml-2">
-                <span
-                  v-if="conn.provider !== 'local'"
-                  class="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-gray-200/70 dark:bg-slate-800 text-gray-500 dark:text-slate-400"
-                >
-                  {{ conn.provider }}
-                </span>
-                <span v-if="activePanel.connectionId === conn.id" class="text-blue-600 dark:text-blue-400 text-xs font-bold">✓</span>
-              </div>
-            </button>
-            <div class="my-1 border-t border-gray-100 dark:border-slate-800/80"></div>
-            <button
-              @click="emit('openConnectionDialog')"
-              class="w-full flex items-center space-x-2 px-3 py-2 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-semibold transition text-left cursor-pointer"
-            >
-              <FbIcon name="plus" size="14px" />
-              <span>Add Storage Connection...</span>
-            </button>
-          </div>
+          </Transition>
         </div>
 
         <!-- Desktop Breadcrumbs Chain with Smart Truncation -->
@@ -253,88 +255,92 @@
           <FbIcon name="plus" size="17px" />
         </button>
 
-        <div
-          v-if="isNewMenuOpen"
-          @click="isNewMenuOpen = false"
-          class="absolute right-0 mt-2 w-48 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
-        >
-          <button
-            @click="openNew('file')"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+        <Transition name="ios-popover">
+          <div
+            v-if="isNewMenuOpen"
+            @click="isNewMenuOpen = false"
+            class="absolute right-0 mt-2 w-48 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5"
           >
-            <FbIcon name="new-file" size="16px" class="text-blue-600" />
-            <span class="font-medium">New File</span>
-          </button>
-          <button
-            @click="openNew('directory')"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="new-folder" size="16px" class="text-amber-500" />
-            <span class="font-medium">New Folder</span>
-          </button>
-          <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
-          <button
-            @click="openUpload"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="upload" size="16px" class="text-emerald-500" />
-            <span class="font-medium">Upload File</span>
-          </button>
-        </div>
+            <button
+              @click="openNew('file')"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="new-file" size="16px" class="text-blue-600" />
+              <span class="font-medium">New File</span>
+            </button>
+            <button
+              @click="openNew('directory')"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="new-folder" size="16px" class="text-amber-500" />
+              <span class="font-medium">New Folder</span>
+            </button>
+            <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+            <button
+              @click="openUpload"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="upload" size="16px" class="text-emerald-500" />
+              <span class="font-medium">Upload File</span>
+            </button>
+          </div>
+        </Transition>
       </div>
 
       <!-- Mobile More Menu Button (⋮) -->
       <div ref="mobileMoreRef" class="relative">
         <button
           @click="isMobileMoreOpen = !isMobileMoreOpen"
-          class="p-2 rounded-xl text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer font-bold text-base flex items-center justify-center"
+          class="p-2 rounded-xl text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer font-bold text-base flex items-center justify-center active:scale-95"
           title="More actions"
         >
           <span>⋮</span>
         </button>
 
-        <div
-          v-if="isMobileMoreOpen"
-          @click="isMobileMoreOpen = false"
-          class="absolute right-0 mt-2 w-56 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
-        >
-          <button
-            @click="isSortMenuOpen = true"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+        <Transition name="ios-popover">
+          <div
+            v-if="isMobileMoreOpen"
+            @click="isMobileMoreOpen = false"
+            class="absolute right-0 mt-2 w-56 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5"
           >
-            <FbIcon name="sort" size="16px" class="text-blue-500" />
-            <span>Sort & Filter...</span>
-          </button>
-          <button
-            @click="toggleHidden"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="eye" size="16px" class="text-gray-500" />
-            <span>{{ activePanel.showHidden ? 'Hide Dotfiles' : 'Show Dotfiles' }}</span>
-          </button>
-          <button
-            @click="toggleSelectAll"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="select-all" size="16px" class="text-indigo-500" />
-            <span>{{ activePanel.selectedEntries.length > 0 ? 'Deselect All' : 'Select All' }}</span>
-          </button>
-          <button
-            @click="copyCurrentPath"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="copy" size="16px" class="text-amber-500" />
-            <span>Copy Current Path</span>
-          </button>
-          <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
-          <button
-            @click="workspaceStore.setDualPane(!workspaceStore.isDualPane)"
-            class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="panel-right" size="16px" class="text-emerald-500" />
-            <span>{{ workspaceStore.isDualPane ? 'Disable Dual Pane' : 'Enable Dual Pane' }}</span>
-          </button>
-        </div>
+            <button
+              @click="isSortMenuOpen = true"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="sort" size="16px" class="text-blue-500" />
+              <span>Sort & Filter...</span>
+            </button>
+            <button
+              @click="toggleHidden"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="eye" size="16px" class="text-gray-500" />
+              <span>{{ activePanel.showHidden ? 'Hide Dotfiles' : 'Show Dotfiles' }}</span>
+            </button>
+            <button
+              @click="toggleSelectAll"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="select-all" size="16px" class="text-indigo-500" />
+              <span>{{ activePanel.selectedEntries.length > 0 ? 'Deselect All' : 'Select All' }}</span>
+            </button>
+            <button
+              @click="copyCurrentPath"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="copy" size="16px" class="text-amber-500" />
+              <span>Copy Current Path</span>
+            </button>
+            <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+            <button
+              @click="workspaceStore.setDualPane(!workspaceStore.isDualPane)"
+              class="w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="panel-right" size="16px" class="text-emerald-500" />
+              <span>{{ workspaceStore.isDualPane ? 'Disable Dual Pane' : 'Enable Dual Pane' }}</span>
+            </button>
+          </div>
+        </Transition>
       </div>
     </div>
 
@@ -404,109 +410,111 @@
         </button>
 
         <!-- Sort & Filter Popover Menu -->
-        <div
-          v-if="isSortMenuOpen"
-          @click.stop
-          class="absolute right-0 mt-2 w-64 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-2xl p-2.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-2.5 animate-in fade-in zoom-in-95 duration-100"
-        >
-          <!-- SECTION 1: SORT BY -->
-          <div>
-            <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
-              SORT BY
+        <Transition name="ios-popover">
+          <div
+            v-if="isSortMenuOpen"
+            @click.stop
+            class="absolute right-0 mt-2 w-64 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-2xl p-2.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-2.5"
+          >
+            <!-- SECTION 1: SORT BY -->
+            <div>
+              <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+                SORT BY
+              </div>
+              <div class="space-y-0.5">
+                <button
+                  v-for="field in sortFields"
+                  :key="field.id"
+                  @click="setSortField(field.id)"
+                  :class="[
+                    'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition text-left cursor-pointer',
+                    activePanel.sortField === field.id
+                      ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold'
+                      : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
+                  ]"
+                >
+                  <span>{{ field.label }}</span>
+                  <span v-if="activePanel.sortField === field.id" class="text-blue-600 dark:text-blue-400 font-bold">✓</span>
+                </button>
+              </div>
             </div>
-            <div class="space-y-0.5">
-              <button
-                v-for="field in sortFields"
-                :key="field.id"
-                @click="setSortField(field.id)"
-                :class="[
-                  'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition text-left cursor-pointer',
-                  activePanel.sortField === field.id
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold'
-                    : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
-                ]"
-              >
-                <span>{{ field.label }}</span>
-                <span v-if="activePanel.sortField === field.id" class="text-blue-600 dark:text-blue-400 font-bold">✓</span>
-              </button>
+
+            <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
+
+            <!-- SECTION 2: ORDER (ASC / DESC) -->
+            <div>
+              <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+                ORDER
+              </div>
+              <div class="grid grid-cols-2 gap-1 p-0.5 bg-gray-100 dark:bg-slate-800/80 rounded-xl">
+                <button
+                  @click="setSortOrder('asc')"
+                  :class="[
+                    'py-1 text-center rounded-lg font-medium transition cursor-pointer text-xs',
+                    activePanel.sortOrder === 'asc'
+                      ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
+                      : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
+                  ]"
+                >
+                  Ascending
+                </button>
+                <button
+                  @click="setSortOrder('desc')"
+                  :class="[
+                    'py-1 text-center rounded-lg font-medium transition cursor-pointer text-xs',
+                    activePanel.sortOrder === 'desc'
+                      ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
+                      : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
+                  ]"
+                >
+                  Descending
+                </button>
+              </div>
+            </div>
+
+            <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
+
+            <!-- SECTION 3: FILTER BY TYPE -->
+            <div>
+              <div class="px-2 py-1 flex items-center justify-between text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+                <span>FILTER BY TYPE</span>
+                <button
+                  v-if="activePanel.filterType && activePanel.filterType !== 'all'"
+                  @click="setFilterType('all')"
+                  class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-medium normal-case text-[10px]"
+                >
+                  Reset
+                </button>
+              </div>
+              <div class="space-y-0.5 max-h-40 overflow-y-auto">
+                <button
+                  v-for="flt in filterOptions"
+                  :key="flt.id"
+                  @click="setFilterType(flt.id)"
+                  :class="[
+                    'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition text-left cursor-pointer',
+                    (activePanel.filterType || 'all') === flt.id
+                      ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold'
+                      : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
+                  ]"
+                >
+                  <div class="flex items-center space-x-2">
+                    <span class="text-sm">{{ flt.icon }}</span>
+                    <span>{{ flt.label }}</span>
+                  </div>
+                  <span v-if="(activePanel.filterType || 'all') === flt.id" class="text-blue-600 dark:text-blue-400 font-bold">✓</span>
+                </button>
+              </div>
             </div>
           </div>
-
-          <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
-
-          <!-- SECTION 2: ORDER (ASC / DESC) -->
-          <div>
-            <div class="px-2 py-1 text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
-              ORDER
-            </div>
-            <div class="grid grid-cols-2 gap-1 p-0.5 bg-gray-100 dark:bg-slate-800/80 rounded-xl">
-              <button
-                @click="setSortOrder('asc')"
-                :class="[
-                  'py-1 text-center rounded-lg font-medium transition cursor-pointer text-xs',
-                  activePanel.sortOrder === 'asc'
-                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
-                    : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
-                ]"
-              >
-                Ascending
-              </button>
-              <button
-                @click="setSortOrder('desc')"
-                :class="[
-                  'py-1 text-center rounded-lg font-medium transition cursor-pointer text-xs',
-                  activePanel.sortOrder === 'desc'
-                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
-                    : 'text-gray-500 hover:text-gray-900 dark:text-slate-400'
-                ]"
-              >
-                Descending
-              </button>
-            </div>
-          </div>
-
-          <div class="border-t border-gray-100 dark:border-slate-800/80"></div>
-
-          <!-- SECTION 3: FILTER BY TYPE -->
-          <div>
-            <div class="px-2 py-1 flex items-center justify-between text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
-              <span>FILTER BY TYPE</span>
-              <button
-                v-if="activePanel.filterType && activePanel.filterType !== 'all'"
-                @click="setFilterType('all')"
-                class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-medium normal-case text-[10px]"
-              >
-                Reset
-              </button>
-            </div>
-            <div class="space-y-0.5 max-h-40 overflow-y-auto">
-              <button
-                v-for="flt in filterOptions"
-                :key="flt.id"
-                @click="setFilterType(flt.id)"
-                :class="[
-                  'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition text-left cursor-pointer',
-                  (activePanel.filterType || 'all') === flt.id
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold'
-                    : 'hover:bg-gray-100 dark:hover:bg-slate-800/80 text-gray-700 dark:text-slate-300'
-                ]"
-              >
-                <div class="flex items-center space-x-2">
-                  <span class="text-sm">{{ flt.icon }}</span>
-                  <span>{{ flt.label }}</span>
-                </div>
-                <span v-if="(activePanel.filterType || 'all') === flt.id" class="text-blue-600 dark:text-blue-400 font-bold">✓</span>
-              </button>
-            </div>
-          </div>
-        </div>
+        </Transition>
       </div>
 
       <!-- Select Mode / Toggle All Button -->
       <button
         @click="toggleSelectAll"
         :class="[
-          'p-1.5 rounded-xl border transition cursor-pointer',
+          'p-1.5 rounded-xl border transition cursor-pointer active:scale-95 duration-fast ease-spring',
           activePanel.selectedEntries.length > 0
             ? 'text-blue-600 dark:text-blue-400 border-blue-500/40 bg-blue-50/50 dark:bg-blue-950/40 ring-1 ring-blue-500/20'
             : 'border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-gray-600 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800'
@@ -520,7 +528,7 @@
       <button
         @click="toggleHidden"
         :class="[
-          'p-1.5 rounded-xl border transition cursor-pointer',
+          'p-1.5 rounded-xl border transition cursor-pointer active:scale-95 duration-fast ease-spring',
           activePanel.showHidden
             ? 'text-blue-600 dark:text-blue-400 border-blue-500/40 bg-blue-50/50 dark:bg-blue-950/40 ring-1 ring-blue-500/20'
             : 'border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-gray-600 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800'
@@ -534,7 +542,7 @@
       <button
         @click="workspaceStore.setDualPane(!workspaceStore.isDualPane)"
         :class="[
-          'p-1.5 rounded-xl border transition cursor-pointer',
+          'p-1.5 rounded-xl border transition cursor-pointer active:scale-95 duration-fast ease-spring',
           workspaceStore.isDualPane
             ? 'text-blue-600 dark:text-blue-400 border-blue-500/40 bg-blue-50/50 dark:bg-blue-950/40 ring-1 ring-blue-500/20'
             : 'border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-gray-600 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800'
@@ -548,41 +556,43 @@
       <div ref="newMenuRef" class="relative">
         <button
           @click="isNewMenuOpen = !isNewMenuOpen"
-          class="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold px-3.5 py-1.5 rounded-xl flex items-center space-x-1.5 text-xs shadow-xs transition cursor-pointer"
+          class="bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold px-3.5 py-1.5 rounded-xl flex items-center space-x-1.5 text-xs shadow-xs transition cursor-pointer active:scale-95 duration-fast ease-spring"
         >
           <FbIcon name="plus" size="14px" />
           <span>New</span>
         </button>
 
         <!-- Dropdown Menu -->
-        <div
-          v-if="isNewMenuOpen"
-          @click="isNewMenuOpen = false"
-          class="absolute right-0 mt-2 w-48 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5 animate-in fade-in zoom-in-95 duration-100"
-        >
-          <button
-            @click="openNew('file')"
-            class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+        <Transition name="ios-popover">
+          <div
+            v-if="isNewMenuOpen"
+            @click="isNewMenuOpen = false"
+            class="absolute right-0 mt-2 w-48 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5"
           >
-            <FbIcon name="new-file" size="15px" class="text-blue-600" />
-            <span class="font-medium">New File</span>
-          </button>
-          <button
-            @click="openNew('directory')"
-            class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="new-folder" size="15px" class="text-amber-500" />
-            <span class="font-medium">New Folder</span>
-          </button>
-          <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
-          <button
-            @click="openUpload"
-            class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
-          >
-            <FbIcon name="upload" size="15px" class="text-emerald-500" />
-            <span class="font-medium">Upload Files</span>
-          </button>
-        </div>
+            <button
+              @click="openNew('file')"
+              class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="new-file" size="15px" class="text-blue-600" />
+              <span class="font-medium">New File</span>
+            </button>
+            <button
+              @click="openNew('directory')"
+              class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="new-folder" size="15px" class="text-amber-500" />
+              <span class="font-medium">New Folder</span>
+            </button>
+            <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+            <button
+              @click="openUpload"
+              class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+            >
+              <FbIcon name="upload" size="15px" class="text-emerald-500" />
+              <span class="font-medium">Upload Files</span>
+            </button>
+          </div>
+        </Transition>
       </div>
     </div>
   </header>

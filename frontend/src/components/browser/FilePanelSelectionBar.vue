@@ -1,12 +1,5 @@
 <template>
-  <Transition
-    enter-active-class="transition duration-200 ease-out"
-    enter-from-class="opacity-0 translate-y-3 scale-95"
-    enter-to-class="opacity-100 translate-y-0 scale-100"
-    leave-active-class="transition duration-150 ease-in"
-    leave-from-class="opacity-100 translate-y-0 scale-100"
-    leave-to-class="opacity-0 translate-y-3 scale-95"
-  >
+  <Transition name="ios-selection-bar">
     <div
       v-if="selectedCount > 0"
       class="absolute bottom-11 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-40 bg-white/95 dark:bg-[#0d1424]/95 backdrop-blur-md border border-blue-500/30 dark:border-blue-500/40 rounded-2xl shadow-2xl px-3.5 py-2 flex items-center justify-between sm:justify-center gap-3 text-xs font-semibold text-gray-800 dark:text-slate-100 select-none pointer-events-auto"

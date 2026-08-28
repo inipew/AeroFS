@@ -230,11 +230,14 @@
         </div>
       </div>
 
-      <!-- Empty State -->
-      <div
-        v-if="displayedFolders.length === 0 && displayedFiles.length === 0 && !panel.loading"
-        class="py-24 flex flex-col items-center justify-center text-center"
-      >
+      <!-- Directional Spatial Navigation Transition Wrapper -->
+      <Transition :name="navTransitionName" mode="out-in">
+        <div :key="panel.location.path + '-' + panel.viewMode" class="w-full">
+          <!-- Empty State -->
+          <div
+            v-if="displayedFolders.length === 0 && displayedFiles.length === 0 && !panel.loading"
+            class="py-24 flex flex-col items-center justify-center text-center"
+          >
         <div class="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-slate-800 flex items-center justify-center text-gray-400 mb-3">
           <FbIcon name="empty-folder" size="32px" />
         </div>
@@ -601,6 +604,8 @@
         </table>
       </div>
     </div>
+  </Transition>
+</div>
 
     <!-- Floating Contextual Selection Action Bar -->
     <FilePanelSelectionBar
@@ -643,6 +648,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { getDownloadUrl, uploadFileApi } from '../../api/files';
 import type { FileEntry } from '../../types/vfs';
 import { PreviewResolver } from '../../services/previewResolver';
+import { getNavTransitionName } from '../../motion/tokens';
 
 const props = defineProps<{
   panelId: 'left' | 'right';
@@ -659,6 +665,7 @@ const transferStore = useTransferStore();
 const uiStore = useUiStore();
 
 const panel = computed(() => workspaceStore.getPanel(props.panelId));
+const navTransitionName = computed(() => getNavTransitionName(panel.value.navigationDirection || 'replace'));
 const isActive = computed(() => workspaceStore.activePanelId === props.panelId);
 const isDragOver = ref(false);
 

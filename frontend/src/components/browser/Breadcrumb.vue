@@ -3,7 +3,7 @@
     <button
       @click="workspaceStore.navigateTo(workspaceStore.activePanelId, '/')"
       :class="[
-        'px-1.5 py-0.5 rounded hover:bg-slate-800 transition flex items-center',
+        'px-1.5 py-0.5 rounded hover:bg-slate-800 transition-[background-color,color,transform] duration-fast ease-spring flex items-center shrink-0 active:scale-95 cursor-pointer',
         currentPath === '/' ? 'text-indigo-400 font-semibold' : 'text-slate-400'
       ]"
       title="Root"
@@ -11,18 +11,20 @@
       <span>/</span>
     </button>
 
-    <template v-for="(segment, idx) in pathSegments" :key="idx">
-      <span class="text-slate-600">/</span>
-      <button
-        @click="workspaceStore.navigateTo(workspaceStore.activePanelId, segment.path)"
-        :class="[
-          'px-1.5 py-0.5 rounded hover:bg-slate-800 transition max-w-[150px] truncate',
-          idx === pathSegments.length - 1 ? 'text-indigo-300 font-medium bg-indigo-500/10' : 'text-slate-400'
-        ]"
-      >
-        {{ segment.name }}
-      </button>
-    </template>
+    <TransitionGroup name="crumb-item" tag="div" class="flex items-center space-x-1 shrink-0">
+      <div v-for="(segment, idx) in pathSegments" :key="segment.path" class="flex items-center space-x-1">
+        <span class="text-slate-600">/</span>
+        <button
+          @click="workspaceStore.navigateTo(workspaceStore.activePanelId, segment.path)"
+          :class="[
+            'px-1.5 py-0.5 rounded hover:bg-slate-800 transition-[background-color,color,transform] duration-fast ease-spring max-w-[150px] truncate active:scale-95 cursor-pointer',
+            idx === pathSegments.length - 1 ? 'text-indigo-300 font-medium bg-indigo-500/10' : 'text-slate-400'
+          ]"
+        >
+          {{ segment.name }}
+        </button>
+      </div>
+    </TransitionGroup>
   </nav>
 </template>
 

@@ -1,13 +1,14 @@
 <template>
-  <div
-    v-if="isOpen"
-    class="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 select-none font-sans text-xs animate-in fade-in duration-150"
-    @click="close"
-  >
+  <Transition name="ios-modal">
     <div
-      class="bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800/90 rounded-2xl sm:rounded-3xl max-w-4xl w-full flex flex-col shadow-2xl overflow-hidden min-h-[380px] max-h-[85vh] animate-in zoom-in-95 duration-150"
-      @click.stop
+      v-if="isOpen"
+      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 select-none font-sans text-xs"
+      @click="close"
     >
+      <div
+        class="modal-card bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800/90 rounded-2xl sm:rounded-3xl max-w-4xl w-full flex flex-col shadow-2xl overflow-hidden min-h-[380px] max-h-[85vh]"
+        @click.stop
+      >
       <!-- Header with Gradient Accent -->
       <div class="bg-gray-50/90 dark:bg-[#090d18]/90 border-b border-gray-200 dark:border-slate-800/80 px-4 sm:px-5 py-3 flex items-center justify-between gap-3 text-xs shrink-0">
         <!-- Archive Identity -->
@@ -314,6 +315,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

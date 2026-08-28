@@ -1,13 +1,14 @@
 <template>
-  <div
-    v-if="uiStore.isDeleteOpen"
-    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs animate-in fade-in duration-150"
-    @click="uiStore.isDeleteOpen = false"
-  >
+  <Transition name="ios-modal">
     <div
-      class="bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4"
-      @click.stop
+      v-if="uiStore.isDeleteOpen"
+      class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs"
+      @click="uiStore.isDeleteOpen = false"
     >
+      <div
+        class="modal-card bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4"
+        @click.stop
+      >
       <!-- Header -->
       <div class="flex items-center space-x-3">
         <div
@@ -123,6 +124,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

@@ -1,12 +1,13 @@
 <template>
-  <div
-    v-if="uiStore.isMediaViewerOpen"
-    class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col p-2 sm:p-6 select-none font-sans text-xs animate-in fade-in duration-150"
-    tabindex="0"
-    @keydown="handleKeyDown"
-  >
-    <!-- Modal Header Toolbar -->
-    <div class="h-14 bg-slate-900/95 border border-slate-700/90 px-4 rounded-t-2xl flex items-center justify-between text-slate-200 shadow-xl shrink-0">
+  <Transition name="ios-modal">
+    <div
+      v-if="uiStore.isMediaViewerOpen"
+      class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col p-2 sm:p-6 select-none font-sans text-xs"
+      tabindex="0"
+      @keydown="handleKeyDown"
+    >
+      <!-- Modal Header Toolbar -->
+      <div class="modal-card h-14 bg-slate-900/95 border border-slate-700/90 px-4 rounded-t-2xl flex items-center justify-between text-slate-200 shadow-xl shrink-0">
       <!-- Left: Media Title, Type Icon & Playlist Index -->
       <div class="flex items-center space-x-3 truncate">
         <span class="text-lg shrink-0">{{ getMediaTypeIcon() }}</span>
@@ -259,6 +260,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

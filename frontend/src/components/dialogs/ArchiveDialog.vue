@@ -1,9 +1,11 @@
 <template>
-  <div
-    v-if="isOpen"
-    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs animate-in fade-in duration-150"
-  >
-    <div class="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl">
+  <Transition name="ios-modal">
+    <div
+      v-if="isOpen"
+      class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs"
+      @click="isOpen = false"
+    >
+      <div class="modal-card bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl" @click.stop>
       <div class="flex items-center space-x-3 mb-3">
         <div class="w-10 h-10 rounded-2xl bg-blue-600/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center">
           <FbIcon name="archive" size="20px" />
@@ -59,6 +61,7 @@
       </form>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

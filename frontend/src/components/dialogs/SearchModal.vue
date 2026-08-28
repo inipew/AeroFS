@@ -1,10 +1,11 @@
 <template>
-  <div
-    v-if="isOpen"
-    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center pt-20 p-4 select-none font-sans text-xs"
-    @click.self="isOpen = false"
-  >
-    <div class="bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[80vh] animate-in zoom-in-95 duration-100">
+  <Transition name="spotlight-modal">
+    <div
+      v-if="isOpen"
+      class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center pt-20 p-4 select-none font-sans text-xs"
+      @click.self="isOpen = false"
+    >
+      <div class="spotlight-card bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
       <!-- Search Input Bar -->
       <div class="p-3.5 bg-gray-50/80 dark:bg-slate-950/80 border-b border-gray-200 dark:border-slate-800/80 flex items-center space-x-3">
         <FbIcon name="search" size="18px" class="text-gray-400 dark:text-slate-500 shrink-0" />
@@ -120,6 +121,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

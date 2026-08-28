@@ -93,48 +93,52 @@
                 <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping"></span>
                 <span>In Progress ({{ activeJobs.length }})</span>
               </div>
-              <div
-                v-for="job in activeJobs"
-                :key="job.id"
-                class="p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100/90 dark:border-blue-900/40 space-y-2"
-              >
-                <div class="flex items-center justify-between text-[11px]">
-                  <div class="flex items-center space-x-2 truncate max-w-[210px]">
-                    <FbIcon :name="getTransferTypeIcon(job.transfer_type)" size="12px" />
-                    <span class="font-semibold text-gray-800 dark:text-slate-200 truncate">{{ job.name }}</span>
+              <TransitionGroup name="drawer-item" tag="div" class="space-y-2">
+                <div
+                  v-for="job in activeJobs"
+                  :key="job.id"
+                  class="p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100/90 dark:border-blue-900/40 space-y-2"
+                >
+                  <div class="flex items-center justify-between text-[11px]">
+                    <div class="flex items-center space-x-2 truncate max-w-[210px]">
+                      <FbIcon :name="getTransferTypeIcon(job.transfer_type)" size="12px" />
+                      <span class="font-semibold text-gray-800 dark:text-slate-200 truncate">{{ job.name }}</span>
+                    </div>
+                    <button @click="transferStore.cancelTransfer(job.id)" class="text-gray-400 hover:text-red-500 p-0.5 cursor-pointer">
+                      <FbIcon name="x" size="12px" />
+                    </button>
                   </div>
-                  <button @click="transferStore.cancelTransfer(job.id)" class="text-gray-400 hover:text-red-500 p-0.5">
-                    <FbIcon name="x" size="12px" />
-                  </button>
+                  <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                    <div class="h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-[width] duration-standard ease-spring" :style="{ width: `${calculatePercent(job)}%` }"></div>
+                  </div>
+                  <div class="flex items-center justify-between text-[10px] text-gray-500 font-mono">
+                    <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
+                    <span>{{ getLiveSpeed(job) }}</span>
+                  </div>
                 </div>
-                <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                  <div class="h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" :style="{ width: `${calculatePercent(job)}%` }"></div>
-                </div>
-                <div class="flex items-center justify-between text-[10px] text-gray-500 font-mono">
-                  <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
-                  <span>{{ getLiveSpeed(job) }}</span>
-                </div>
-              </div>
+              </TransitionGroup>
             </div>
 
             <!-- Finished Jobs (Mobile) -->
             <div v-if="finishedJobs.length > 0" class="space-y-2">
               <div class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex items-center justify-between pt-2 border-t border-gray-100 dark:border-slate-800/80 px-0.5">
                 <span>History ({{ finishedJobs.length }})</span>
-                <button @click="handleClear" class="text-blue-600 dark:text-blue-400 hover:underline">Clear History</button>
+                <button @click="handleClear" class="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">Clear History</button>
               </div>
-              <div
-                v-for="job in finishedJobs"
-                :key="job.id"
-                class="p-2.5 rounded-xl bg-gray-50/60 dark:bg-slate-900/40 border border-gray-100 dark:border-slate-800/80 space-y-1.5"
-              >
-                <div class="flex items-center justify-between text-[11px]">
-                  <span class="font-medium text-gray-700 dark:text-slate-300 truncate">{{ job.name }}</span>
-                  <button @click="transferStore.removeJob(job.id)" class="text-gray-400 p-0.5">
-                    <FbIcon name="x" size="11px" />
-                  </button>
+              <TransitionGroup name="drawer-item" tag="div" class="space-y-1.5">
+                <div
+                  v-for="job in finishedJobs"
+                  :key="job.id"
+                  class="p-2.5 rounded-xl bg-gray-50/60 dark:bg-slate-900/40 border border-gray-100 dark:border-slate-800/80 space-y-1.5"
+                >
+                  <div class="flex items-center justify-between text-[11px]">
+                    <span class="font-medium text-gray-700 dark:text-slate-300 truncate">{{ job.name }}</span>
+                    <button @click="transferStore.removeJob(job.id)" class="text-gray-400 p-0.5 cursor-pointer">
+                      <FbIcon name="x" size="11px" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              </TransitionGroup>
             </div>
           </div>
         </div>
@@ -276,72 +280,74 @@
                   </span>
                 </div>
 
-                <div
-                  v-for="job in activeJobs"
-                  :key="job.id"
-                  class="p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100/90 dark:border-blue-900/40 space-y-2 group/item shadow-xs hover:border-blue-300 dark:hover:border-blue-700/60 transition-all"
-                >
-                  <div class="flex items-center justify-between text-[11px]">
-                    <div class="flex items-center space-x-2 truncate max-w-[210px]">
-                      <div class="w-5 h-5 rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                        <FbIcon
-                          :name="getTransferTypeIcon(job.transfer_type)"
-                          size="12px"
-                          :class="[
-                            job.status === 'running' ? 'animate-bounce' : 'text-gray-400 dark:text-slate-500'
-                          ]"
-                        />
+                <TransitionGroup name="drawer-item" tag="div" class="space-y-2">
+                  <div
+                    v-for="job in activeJobs"
+                    :key="job.id"
+                    class="p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100/90 dark:border-blue-900/40 space-y-2 group/item shadow-xs hover:border-blue-300 dark:hover:border-blue-700/60 transition-[border-color,box-shadow]"
+                  >
+                    <div class="flex items-center justify-between text-[11px]">
+                      <div class="flex items-center space-x-2 truncate max-w-[210px]">
+                        <div class="w-5 h-5 rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                          <FbIcon
+                            :name="getTransferTypeIcon(job.transfer_type)"
+                            size="12px"
+                            :class="[
+                              job.status === 'running' ? 'animate-bounce' : 'text-gray-400 dark:text-slate-500'
+                            ]"
+                          />
+                        </div>
+                        <span class="font-semibold text-gray-800 dark:text-slate-200 truncate" :title="job.name">
+                          {{ job.name }}
+                        </span>
                       </div>
-                      <span class="font-semibold text-gray-800 dark:text-slate-200 truncate" :title="job.name">
-                        {{ job.name }}
-                      </span>
+
+                      <div class="flex items-center space-x-1.5 shrink-0">
+                        <span
+                          :class="[
+                            'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md',
+                            job.status === 'running' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400 animate-pulse' : 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
+                          ]"
+                        >
+                          {{ job.status === 'cancellation_requested' ? 'Cancelling...' : job.status }}
+                        </span>
+
+                        <button
+                          v-if="job.status !== 'cancellation_requested'"
+                          @click="transferStore.cancelTransfer(job.id)"
+                          class="text-gray-400 hover:text-red-500 dark:hover:text-red-400 p-0.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer"
+                          title="Cancel Transfer"
+                        >
+                          <FbIcon name="x" size="12px" />
+                        </button>
+                      </div>
                     </div>
 
-                    <div class="flex items-center space-x-1.5 shrink-0">
-                      <span
-                        :class="[
-                          'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md',
-                          job.status === 'running' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-400 animate-pulse' : 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
-                        ]"
-                      >
-                        {{ job.status === 'cancellation_requested' ? 'Cancelling...' : job.status }}
-                      </span>
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        class="h-1.5 rounded-full bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-400 transition-[width] duration-standard ease-spring"
+                        :style="{ width: `${calculatePercent(job)}%` }"
+                      ></div>
+                    </div>
 
-                      <button
-                        v-if="job.status !== 'cancellation_requested'"
-                        @click="transferStore.cancelTransfer(job.id)"
-                        class="text-gray-400 hover:text-red-500 dark:hover:text-red-400 p-0.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer"
-                        title="Cancel Transfer"
-                      >
-                        <FbIcon name="x" size="12px" />
-                      </button>
+                    <!-- Transfer Meta & Phase -->
+                    <div class="flex items-center justify-between text-[10px] text-gray-500 dark:text-slate-400 font-mono">
+                      <span>
+                        {{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)
+                        <span
+                          v-if="job.phase && job.phase !== 'transferring' && job.phase !== 'completed'"
+                          class="ml-1.5 font-sans font-semibold text-blue-600 dark:text-blue-400 animate-pulse"
+                        >
+                          • {{ formatPhase(job.phase) }}
+                        </span>
+                      </span>
+                      <span v-if="job.status === 'running'" class="font-semibold text-gray-700 dark:text-slate-300">
+                        {{ getLiveSpeed(job) }}
+                      </span>
                     </div>
                   </div>
-
-                  <!-- Progress Bar -->
-                  <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      class="h-1.5 transition-all duration-200 rounded-full bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-400"
-                      :style="{ width: `${calculatePercent(job)}%` }"
-                    ></div>
-                  </div>
-
-                  <!-- Transfer Meta & Phase -->
-                  <div class="flex items-center justify-between text-[10px] text-gray-500 dark:text-slate-400 font-mono">
-                    <span>
-                      {{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)
-                      <span
-                        v-if="job.phase && job.phase !== 'transferring' && job.phase !== 'completed'"
-                        class="ml-1.5 font-sans font-semibold text-blue-600 dark:text-blue-400 animate-pulse"
-                      >
-                        • {{ formatPhase(job.phase) }}
-                      </span>
-                    </span>
-                    <span v-if="job.status === 'running'" class="font-semibold text-gray-700 dark:text-slate-300">
-                      {{ getLiveSpeed(job) }}
-                    </span>
-                  </div>
-                </div>
+                </TransitionGroup>
               </div>
 
               <!-- Finished / History Section -->
@@ -356,88 +362,90 @@
                   </button>
                 </div>
 
-                <div
-                  v-for="job in finishedJobs"
-                  :key="job.id"
-                  class="p-2.5 rounded-xl bg-gray-50/60 dark:bg-slate-900/40 border border-gray-100 dark:border-slate-800/80 space-y-1.5 group/item hover:border-gray-200 dark:hover:border-slate-700/60 transition-all"
-                >
-                  <div class="flex items-center justify-between text-[11px]">
-                    <div class="flex items-center space-x-2 truncate max-w-[210px]">
-                      <FbIcon
-                        :name="getTransferTypeIcon(job.transfer_type)"
-                        size="13px"
-                        class="text-gray-400 dark:text-slate-500 shrink-0"
-                      />
-                      <span class="font-medium text-gray-700 dark:text-slate-300 truncate" :title="job.name">
-                        {{ job.name }}
-                      </span>
-                    </div>
-
-                    <div class="flex items-center space-x-1.5 shrink-0">
-                      <span
-                        :class="[
-                          'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md',
-                          job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
-                          job.status === 'interrupted' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : '',
-                          job.status === 'failed' ? 'bg-red-500/20 text-red-600 dark:text-red-400' : '',
-                          job.status === 'cancelled' ? 'bg-gray-200/60 dark:bg-slate-800 text-gray-500 dark:text-slate-400' : '',
-                        ]"
-                      >
-                        {{ job.status }}
-                      </span>
-
-                      <!-- Retry for failed / cancelled / interrupted -->
-                      <button
-                        v-if="job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted'"
-                        @click="transferStore.retryTransfer(job.id)"
-                        class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
-                        title="Retry Transfer"
-                      >
-                        Retry
-                      </button>
-
-                      <!-- Dismiss single item -->
-                      <button
-                        @click="transferStore.removeJob(job.id)"
-                        class="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 p-0.5 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 cursor-pointer transition"
-                        title="Dismiss from history"
-                      >
-                        <FbIcon name="x" size="11px" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <!-- Progress Bar -->
-                  <div class="w-full bg-gray-200/60 dark:bg-slate-800 rounded-full h-1 overflow-hidden">
-                    <div
-                      :class="[
-                        'h-1 rounded-full',
-                        job.status === 'completed'
-                          ? 'bg-emerald-500'
-                          : (job.status === 'interrupted'
-                              ? 'bg-amber-500'
-                              : (job.status === 'failed' ? 'bg-red-500' : 'bg-gray-400 dark:bg-slate-600'))
-                      ]"
-                      :style="{ width: `${calculatePercent(job)}%` }"
-                    ></div>
-                  </div>
-
-                  <!-- Transfer Meta -->
-                  <div class="flex items-center justify-between text-[10px] text-gray-400 dark:text-slate-500 font-mono">
-                    <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }}</span>
-                    <span>{{ calculatePercent(job) }}%</span>
-                  </div>
-
-                  <!-- Error message if failed or interrupted -->
+                <TransitionGroup name="drawer-item" tag="div" class="space-y-1.5">
                   <div
-                    v-if="(job.status === 'failed' || job.status === 'interrupted') && job.error_message"
-                    :class="job.status === 'interrupted' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500 dark:text-red-400'"
-                    class="text-[10px] truncate font-sans"
-                    :title="job.error_message"
+                    v-for="job in finishedJobs"
+                    :key="job.id"
+                    class="p-2.5 rounded-xl bg-gray-50/60 dark:bg-slate-900/40 border border-gray-100 dark:border-slate-800/80 space-y-1.5 group/item hover:border-gray-200 dark:hover:border-slate-700/60 transition-[border-color]"
                   >
-                    {{ job.error_message }}
+                    <div class="flex items-center justify-between text-[11px]">
+                      <div class="flex items-center space-x-2 truncate max-w-[210px]">
+                        <FbIcon
+                          :name="getTransferTypeIcon(job.transfer_type)"
+                          size="13px"
+                          class="text-gray-400 dark:text-slate-500 shrink-0"
+                        />
+                        <span class="font-medium text-gray-700 dark:text-slate-300 truncate" :title="job.name">
+                          {{ job.name }}
+                        </span>
+                      </div>
+
+                      <div class="flex items-center space-x-1.5 shrink-0">
+                        <span
+                          :class="[
+                            'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md',
+                            job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
+                            job.status === 'interrupted' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : '',
+                            job.status === 'failed' ? 'bg-red-500/20 text-red-600 dark:text-red-400' : '',
+                            job.status === 'cancelled' ? 'bg-gray-200/60 dark:bg-slate-800 text-gray-500 dark:text-slate-400' : '',
+                          ]"
+                        >
+                          {{ job.status }}
+                        </span>
+
+                        <!-- Retry for failed / cancelled / interrupted -->
+                        <button
+                          v-if="job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted'"
+                          @click="transferStore.retryTransfer(job.id)"
+                          class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
+                          title="Retry Transfer"
+                        >
+                          Retry
+                        </button>
+
+                        <!-- Dismiss single item -->
+                        <button
+                          @click="transferStore.removeJob(job.id)"
+                          class="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-0.5 rounded-md hover:bg-gray-100 dark:hover:bg-slate-800 cursor-pointer transition-[opacity,background-color]"
+                          title="Dismiss from history"
+                        >
+                          <FbIcon name="x" size="11px" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-gray-200/60 dark:bg-slate-800 rounded-full h-1 overflow-hidden">
+                      <div
+                        :class="[
+                          'h-1 rounded-full',
+                          job.status === 'completed'
+                            ? 'bg-emerald-500'
+                            : (job.status === 'interrupted'
+                                ? 'bg-amber-500'
+                                : (job.status === 'failed' ? 'bg-red-500' : 'bg-gray-400 dark:bg-slate-600'))
+                        ]"
+                        :style="{ width: `${calculatePercent(job)}%` }"
+                      ></div>
+                    </div>
+
+                    <!-- Transfer Meta -->
+                    <div class="flex items-center justify-between text-[10px] text-gray-400 dark:text-slate-500 font-mono">
+                      <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }}</span>
+                      <span>{{ calculatePercent(job) }}%</span>
+                    </div>
+
+                    <!-- Error message if failed or interrupted -->
+                    <div
+                      v-if="(job.status === 'failed' || job.status === 'interrupted') && job.error_message"
+                      :class="job.status === 'interrupted' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500 dark:text-red-400'"
+                      class="text-[10px] truncate font-sans"
+                      :title="job.error_message"
+                    >
+                      {{ job.error_message }}
+                    </div>
                   </div>
-                </div>
+                </TransitionGroup>
               </div>
             </div>
           </div>

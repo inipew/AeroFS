@@ -322,6 +322,7 @@ import { useUiStore } from './stores/uiStore';
 import { usePreferencesStore } from './stores/preferencesStore';
 import { initializeCommandRegistry, commandRegistry } from './services/commandRegistry';
 import { PreviewResolver } from './services/previewResolver';
+import { getDynamicSettleDuration } from './motion/tokens';
 import type { FileEntry } from './types/vfs';
 
 import AppHeader from './components/layout/AppHeader.vue';
@@ -393,6 +394,7 @@ let lastTouchTime = 0;
 let touchVelocityX = 0; // px / ms
 let isHorizontalGesture: boolean | null = null;
 let activeRafId: number | null = null;
+const mobileSettleDuration = ref(320);
 
 const mobileTrackStyle = computed(() => {
   const baseOffset = workspaceStore.activePanelId === 'left' ? 0 : -50;
@@ -405,10 +407,10 @@ const mobileTrackStyle = computed(() => {
     };
   }
 
-  // When settling or toggled via button, apply Apple spring curve
+  // When settling or toggled via button, apply Apple spring curve with velocity-dynamic duration
   return {
     transform: `translate3d(${baseOffset}%, 0, 0)`,
-    transition: 'transform 0.32s cubic-bezier(0.32, 0.72, 0, 1)'
+    transition: `transform ${mobileSettleDuration.value}ms cubic-bezier(0.32, 0.72, 0, 1)`
   };
 });
 
@@ -423,6 +425,7 @@ function handleTouchStart(e: TouchEvent) {
   touchVelocityX = 0;
   isHorizontalGesture = null;
   dragDeltaX.value = 0;
+  mobileSettleDuration.value = 320;
 }
 
 function handleTouchMove(e: TouchEvent) {
@@ -473,6 +476,9 @@ function handleTouchEnd() {
     isDraggingMobileTrack.value = false;
     const finalDeltaX = dragDeltaX.value;
     dragDeltaX.value = 0;
+
+    // Calculate momentum-driven spring settle duration based on touch release velocity
+    mobileSettleDuration.value = getDynamicSettleDuration(touchVelocityX, 320, 180);
 
     const containerWidth = mobileTrackWrapperRef.value?.clientWidth || window.innerWidth;
     const distanceThreshold = containerWidth * 0.26;

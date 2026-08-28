@@ -1,13 +1,14 @@
 <template>
-  <div
-    v-if="uiStore.isEditorOpen && uiStore.editorFile"
-    class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col p-0 md:p-3 select-none font-sans text-xs animate-in fade-in duration-150"
-    @click="closeAllPopovers"
-  >
+  <Transition name="ios-modal">
     <div
-      class="bg-white dark:bg-[#0b0f19] border-0 md:border md:border-gray-200/80 dark:md:border-slate-800 rounded-none md:rounded-3xl flex-1 flex flex-col shadow-2xl overflow-hidden relative ring-1 ring-black/5 dark:ring-white/5"
-      @click.stop
+      v-if="uiStore.isEditorOpen && uiStore.editorFile"
+      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col p-0 md:p-3 select-none font-sans text-xs"
+      @click="closeAllPopovers"
     >
+      <div
+        class="modal-card bg-white dark:bg-[#0b0f19] border-0 md:border md:border-gray-200/80 dark:md:border-slate-800 rounded-none md:rounded-3xl flex-1 flex flex-col shadow-2xl overflow-hidden relative ring-1 ring-black/5 dark:ring-white/5"
+        @click.stop
+      >
       <!-- ================= HEADER TOOLBAR ================= -->
       <div
         class="h-13 sm:h-14 bg-gray-50/90 dark:bg-[#090d16]/95 border-b border-gray-200/80 dark:border-slate-800/80 px-3 sm:px-4 flex items-center justify-between text-xs shrink-0 gap-2 select-none backdrop-blur-md"
@@ -754,6 +755,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

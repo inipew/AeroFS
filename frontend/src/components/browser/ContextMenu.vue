@@ -1,24 +1,25 @@
 <template>
-  <div v-if="uiStore.contextMenu.visible">
-    <!-- Mobile Backdrop Overlay -->
-    <div
-      v-if="uiStore.isMobile"
-      @click="uiStore.closeContextMenu"
-      class="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 animate-in fade-in duration-150"
-    ></div>
+  <Transition name="ios-context-menu">
+    <div v-if="uiStore.contextMenu.visible">
+      <!-- Mobile Backdrop Overlay -->
+      <div
+        v-if="uiStore.isMobile"
+        @click="uiStore.closeContextMenu"
+        class="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 animate-in fade-in duration-150"
+      ></div>
 
-    <!-- Menu Container (Desktop Floating Menu vs Mobile Bottom Sheet) -->
-    <div
-      ref="menuRef"
-      :style="uiStore.isMobile ? {} : computedStyle"
-      :class="[
-        'z-50 bg-white dark:bg-[#0f1422] text-gray-700 dark:text-slate-200 select-none font-sans',
-        uiStore.isMobile
-          ? 'fixed inset-x-0 bottom-0 rounded-t-3xl border-t border-gray-200 dark:border-slate-800 shadow-2xl p-4 max-h-[85vh] overflow-y-auto pb-safe animate-in slide-in-from-bottom duration-200'
-          : 'fixed border border-gray-200 dark:border-slate-700 shadow-2xl rounded-2xl py-1.5 w-60 text-xs animate-in fade-in zoom-in-95 duration-100'
-      ]"
-      @click.stop
-    >
+      <!-- Menu Container (Desktop Floating Menu vs Mobile Bottom Sheet) -->
+      <div
+        ref="menuRef"
+        :style="uiStore.isMobile ? {} : computedStyle"
+        :class="[
+          'z-50 bg-white dark:bg-[#0f1422] text-gray-700 dark:text-slate-200 select-none font-sans',
+          uiStore.isMobile
+            ? 'fixed inset-x-0 bottom-0 rounded-t-3xl border-t border-gray-200 dark:border-slate-800 shadow-2xl p-4 max-h-[85vh] overflow-y-auto pb-safe'
+            : 'fixed border border-gray-200 dark:border-slate-700 shadow-2xl rounded-2xl py-1.5 w-60 text-xs'
+        ]"
+        @click.stop
+      >
       <!-- Mobile Drag Indicator -->
       <div v-if="uiStore.isMobile" class="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mb-3"></div>
 
@@ -327,6 +328,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

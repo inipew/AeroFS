@@ -23,6 +23,7 @@
   --motion-fast: 160ms;
   --motion-standard: 240ms;
   --motion-emphasized: 360ms;
+  --motion-sheet: 420ms;
 
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
@@ -128,37 +129,205 @@ html.dark {
   transition-duration: var(--motion-emphasized);
 }
 
-/* iOS/macOS Modal Standard Animations */
-.ios-modal-backdrop-enter-active,
-.ios-modal-backdrop-leave-active {
+/* ==========================================================================
+   1. Universal iOS/macOS Modal Dialog Transitions (Choreographed Dual-Surface)
+   ========================================================================== */
+.ios-modal-enter-active,
+.ios-modal-leave-active {
   transition: opacity var(--motion-standard) var(--ease-spring);
 }
-.ios-modal-backdrop-enter-from,
-.ios-modal-backdrop-leave-to {
-  opacity: 0;
-}
-
-.ios-modal-card-enter-active {
+.ios-modal-enter-active .modal-card {
   transition:
     transform var(--motion-emphasized) var(--ease-spring),
     opacity var(--motion-standard) var(--ease-spring);
+  will-change: transform, opacity;
 }
-.ios-modal-card-leave-active {
+.ios-modal-leave-active .modal-card {
   transition:
     transform var(--motion-standard) var(--ease-apple-in),
     opacity var(--motion-fast) var(--ease-apple-in);
 }
-.ios-modal-card-enter-from {
+.ios-modal-enter-from {
   opacity: 0;
-  transform: scale(0.96) translateY(8px);
 }
-.ios-modal-card-leave-to {
+.ios-modal-enter-from .modal-card {
   opacity: 0;
-  transform: scale(0.96) translateY(8px);
+  transform: scale(0.95) translateY(12px);
+}
+.ios-modal-leave-to {
+  opacity: 0;
+}
+.ios-modal-leave-to .modal-card {
+  opacity: 0;
+  transform: scale(0.95) translateY(12px);
 }
 
 /* ==========================================================================
-   Accessibility: Reduced Motion
+   2. Apple Spotlight / Raycast Popover (Top-Centered Modal)
+   ========================================================================== */
+.spotlight-modal-enter-active,
+.spotlight-modal-leave-active {
+  transition: opacity var(--motion-standard) var(--ease-spring);
+}
+.spotlight-modal-enter-active .spotlight-card {
+  transition:
+    transform var(--motion-standard) var(--ease-spring),
+    opacity var(--motion-standard) var(--ease-spring);
+  will-change: transform, opacity;
+}
+.spotlight-modal-leave-active .spotlight-card {
+  transition:
+    transform var(--motion-fast) var(--ease-apple-in),
+    opacity var(--motion-fast) var(--ease-apple-in);
+}
+.spotlight-modal-enter-from {
+  opacity: 0;
+}
+.spotlight-modal-enter-from .spotlight-card {
+  opacity: 0;
+  transform: scale(0.97) translateY(-10px);
+}
+.spotlight-modal-leave-to {
+  opacity: 0;
+}
+.spotlight-modal-leave-to .spotlight-card {
+  opacity: 0;
+  transform: scale(0.97) translateY(-10px);
+}
+
+/* ==========================================================================
+   3. Popover & Context Menu Spring Transitions
+   ========================================================================== */
+.ios-popover-enter-active {
+  transition:
+    transform var(--motion-standard) var(--ease-spring),
+    opacity var(--motion-fast) var(--ease-spring);
+  will-change: transform, opacity;
+}
+.ios-popover-leave-active {
+  transition:
+    transform var(--motion-fast) var(--ease-apple-in),
+    opacity var(--motion-fast) var(--ease-apple-in);
+}
+.ios-popover-enter-from,
+.ios-popover-leave-to {
+  opacity: 0;
+  transform: scale(0.95) translateY(-4px);
+}
+
+.ios-context-menu-enter-active {
+  transition:
+    transform 180ms var(--ease-spring),
+    opacity 160ms var(--ease-spring);
+  will-change: transform, opacity;
+}
+.ios-context-menu-leave-active {
+  transition:
+    transform 140ms var(--ease-apple-in),
+    opacity 120ms var(--ease-apple-in);
+}
+.ios-context-menu-enter-from,
+.ios-context-menu-leave-to {
+  opacity: 0;
+  transform: scale(0.94) translateY(4px);
+}
+
+/* ==========================================================================
+   4. Floating Selection Bar Spring Transition
+   ========================================================================== */
+.ios-selection-bar-enter-active {
+  transition:
+    transform 220ms var(--ease-spring),
+    opacity 180ms var(--ease-spring);
+  will-change: transform, opacity;
+}
+.ios-selection-bar-leave-active {
+  transition:
+    transform 150ms var(--ease-apple-in),
+    opacity 130ms var(--ease-apple-in);
+}
+.ios-selection-bar-enter-from,
+.ios-selection-bar-leave-to {
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+}
+
+/* ==========================================================================
+   5. Directional Spatial Folder Navigation Transitions (FilePanel)
+   ========================================================================== */
+.nav-forward-enter-active,
+.nav-forward-leave-active,
+.nav-back-enter-active,
+.nav-back-leave-active,
+.nav-replace-enter-active,
+.nav-replace-leave-active {
+  transition:
+    transform 220ms var(--ease-apple),
+    opacity 180ms var(--ease-apple);
+  will-change: transform, opacity;
+}
+
+/* Moving Forward (Descending into child folder) */
+.nav-forward-enter-from {
+  opacity: 0;
+  transform: translateX(20px);
+}
+.nav-forward-leave-to {
+  opacity: 0;
+  transform: translateX(-20px);
+}
+
+/* Moving Back (Ascending to parent folder) */
+.nav-back-enter-from {
+  opacity: 0;
+  transform: translateX(-20px);
+}
+.nav-back-leave-to {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+/* Replacing / Refreshing */
+.nav-replace-enter-from,
+.nav-replace-leave-to {
+  opacity: 0;
+}
+
+/* Breadcrumb Item Transition */
+.crumb-item-enter-active,
+.crumb-item-leave-active {
+  transition: opacity var(--motion-fast) var(--ease-spring),
+              transform var(--motion-fast) var(--ease-spring);
+}
+.crumb-item-enter-from {
+  opacity: 0;
+  transform: translateX(-8px) scale(0.95);
+}
+.crumb-item-leave-to {
+  opacity: 0;
+  transform: translateX(8px) scale(0.95);
+}
+
+/* Transfer Drawer Item Transition */
+.drawer-item-enter-active {
+  transition: opacity var(--motion-fast) var(--ease-spring),
+              transform var(--motion-standard) var(--ease-spring);
+}
+.drawer-item-leave-active {
+  transition: opacity var(--motion-fast) var(--ease-apple-in),
+              transform var(--motion-fast) var(--ease-apple-in);
+}
+.drawer-item-enter-from {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+}
+.drawer-item-leave-to {
+  opacity: 0;
+  transform: translateX(16px) scale(0.97);
+}
+
+/* ==========================================================================
+   6. Accessibility: Reduced Motion
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
   *,

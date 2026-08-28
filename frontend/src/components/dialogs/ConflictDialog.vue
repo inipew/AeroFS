@@ -1,12 +1,13 @@
 <template>
-  <div
-    v-if="conflictState?.isOpen"
-    class="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 select-none font-sans text-xs animate-in fade-in duration-150"
-  >
+  <Transition name="ios-modal">
     <div
-      class="bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150"
-      @click.stop
+      v-if="conflictState?.isOpen"
+      class="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 select-none font-sans text-xs"
     >
+      <div
+        class="modal-card bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4"
+        @click.stop
+      >
       <!-- Header -->
       <div class="flex items-center space-x-3">
         <div class="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0">
@@ -126,6 +127,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

@@ -1,17 +1,20 @@
 <template>
-  <div
-    v-if="uiStore.isUploadOpen"
-    :class="[
-      'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs animate-in fade-in duration-150',
-      uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-4'
-    ]"
-  >
+  <Transition name="ios-modal">
     <div
+      v-if="uiStore.isUploadOpen"
       :class="[
-        'bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 shadow-2xl p-6',
-        uiStore.isMobile ? 'w-full rounded-t-3xl rounded-b-none border-b-0 max-h-[85vh] pb-safe animate-in slide-in-from-bottom duration-200' : 'rounded-3xl max-w-md w-full'
+        'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs',
+        uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-4'
       ]"
+      @click="uiStore.isUploadOpen = false"
     >
+      <div
+        :class="[
+          'modal-card bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 shadow-2xl p-6',
+          uiStore.isMobile ? 'w-full rounded-t-3xl rounded-b-none border-b-0 max-h-[85vh] pb-safe' : 'rounded-3xl max-w-md w-full'
+        ]"
+        @click.stop
+      >
       <!-- Mobile Drag Indicator -->
       <div v-if="uiStore.isMobile" class="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto -mt-2 mb-4"></div>
 
@@ -159,6 +162,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

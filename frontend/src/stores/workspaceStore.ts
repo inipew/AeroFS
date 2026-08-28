@@ -405,6 +405,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     addToHistory: boolean = true
   ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
+    const currentPath = p.location.path;
+    let direction: 'forward' | 'back' | 'replace' = 'replace';
+    if (targetPath.startsWith(currentPath) && targetPath.length > currentPath.length) {
+      direction = 'forward';
+    } else if (currentPath.startsWith(targetPath) && currentPath.length > targetPath.length) {
+      direction = 'back';
+    }
+    p.navigation.direction = direction;
+    p.navigationDirection = direction;
+
     const res = await fetchPanelEntries(panelId, targetPath);
 
     if (!res.ok) {
@@ -432,6 +442,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function switchPanelConnection(panelId: PanelId, connectionId: string, basePath: string = '/') {
     abortPanel(panelId);
     const p = getPanel(panelId);
+    p.navigation.direction = 'replace';
+    p.navigationDirection = 'replace';
     p.location.connectionId = connectionId;
     p.navigation.history = [basePath];
     p.navigation.historyIndex = 0;
@@ -449,6 +461,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function goBack(panelId: PanelId) {
     const p = getPanel(panelId);
     if (p.navigation.historyIndex > 0) {
+      p.navigation.direction = 'back';
+      p.navigationDirection = 'back';
       const targetIdx = p.navigation.historyIndex - 1;
       const targetPath = p.navigation.history[targetIdx];
       const res = await fetchPanelEntries(panelId, targetPath);
@@ -465,6 +479,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function goForward(panelId: PanelId) {
     const p = getPanel(panelId);
     if (p.navigation.historyIndex < p.navigation.history.length - 1) {
+      p.navigation.direction = 'forward';
+      p.navigationDirection = 'forward';
       const targetIdx = p.navigation.historyIndex + 1;
       const targetPath = p.navigation.history[targetIdx];
       const res = await fetchPanelEntries(panelId, targetPath);
@@ -481,6 +497,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function navigateUp(panelId: PanelId) {
     const p = getPanel(panelId);
     if (p.location.path === '/' || p.location.path === '') return;
+    p.navigation.direction = 'back';
+    p.navigationDirection = 'back';
     const parent = parentPath(p.location.path);
     await navigateTo(panelId, parent);
   }

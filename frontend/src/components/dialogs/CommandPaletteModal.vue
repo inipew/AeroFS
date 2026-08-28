@@ -1,13 +1,14 @@
 <template>
-  <div
-    v-if="uiStore.isCommandPaletteOpen"
-    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center pt-12 sm:pt-20 px-3 select-none font-sans text-xs animate-in fade-in duration-150"
-    @click="uiStore.isCommandPaletteOpen = false"
-  >
+  <Transition name="spotlight-modal">
     <div
-      class="bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[75vh] animate-in zoom-in-95 duration-100"
-      @click.stop
+      v-if="uiStore.isCommandPaletteOpen"
+      class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center pt-12 sm:pt-20 px-3 select-none font-sans text-xs"
+      @click="uiStore.isCommandPaletteOpen = false"
     >
+      <div
+        class="spotlight-card bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[75vh]"
+        @click.stop
+      >
       <!-- Search Input Bar -->
       <div class="h-14 border-b border-gray-200 dark:border-slate-800 px-4 flex items-center space-x-3 bg-gray-50/50 dark:bg-[#090d18] shrink-0">
         <FbIcon name="search" size="18px" class="text-gray-400 dark:text-slate-500 shrink-0" />
@@ -75,6 +76,7 @@
       </div>
     </div>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">

@@ -15,6 +15,7 @@ export interface PanelLocation {
 export interface NavigationState {
   history: string[];
   historyIndex: number;
+  direction?: 'forward' | 'back' | 'replace';
 }
 
 export interface PanelViewState {
@@ -64,6 +65,7 @@ export interface Panel {
   stale?: boolean;
   history: string[];
   historyIndex: number;
+  navigationDirection?: 'forward' | 'back' | 'replace';
   initialized: boolean;
 }
 
