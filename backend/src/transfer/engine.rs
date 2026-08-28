@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -150,6 +150,7 @@ pub struct TransferManager {
     queue_tx: mpsc::Sender<String>,
     event_tx: broadcast::Sender<EventEnvelope>,
     sequence_counter: Arc<AtomicU64>,
+    event_history: Arc<RwLock<VecDeque<EventEnvelope>>>,
     db: DbPool,
     max_concurrent_workers: Arc<AtomicUsize>,
     max_retry_attempts: Arc<AtomicUsize>,
@@ -167,6 +168,7 @@ impl TransferManager {
 
         let jobs: Arc<RwLock<HashMap<String, TransferJob>>> = Arc::new(RwLock::new(HashMap::new()));
         let sequence_counter = Arc::new(AtomicU64::new(1));
+        let event_history = Arc::new(RwLock::new(VecDeque::with_capacity(500)));
         let max_concurrent_workers_arc =
             Arc::new(AtomicUsize::new(max_concurrent_workers.clamp(1, 64)));
         let max_retry_attempts_arc = Arc::new(AtomicUsize::new(3));
@@ -177,6 +179,7 @@ impl TransferManager {
         let db_clone = db.clone();
         let queue_tx_clone = queue_tx.clone();
         let sequence_counter_clone = Arc::clone(&sequence_counter);
+        let event_history_clone = Arc::clone(&event_history);
 
         // 1. Initial startup recovery: Load jobs from SQLite into memory (bound to non-dismissed / recent active)
         let db_init = db.clone();
@@ -225,6 +228,7 @@ impl TransferManager {
                 let providers_worker = Arc::clone(&providers);
                 let event_tx_worker = event_tx_clone.clone();
                 let seq_worker = Arc::clone(&sequence_counter_clone);
+                let hist_worker = Arc::clone(&event_history_clone);
                 let db_worker = db_clone.clone();
                 let active_workers_task = Arc::clone(&active_workers);
                 let notify_task = Arc::clone(&worker_notify_clone);
@@ -251,6 +255,7 @@ impl TransferManager {
                             Self::send_enveloped_event(
                                 &event_tx_worker,
                                 &seq_worker,
+                                &hist_worker,
                                 WsEvent::TransferProgress(job.clone()),
                             );
 
@@ -261,6 +266,7 @@ impl TransferManager {
                                 &jobs_worker,
                                 &event_tx_worker,
                                 &seq_worker,
+                                &hist_worker,
                                 &db_worker,
                                 &retries_task,
                             )
@@ -287,6 +293,7 @@ impl TransferManager {
                                 Self::send_enveloped_event(
                                     &event_tx_worker,
                                     &seq_worker,
+                                    &hist_worker,
                                     WsEvent::TransferFailed(job),
                                 );
                             } else {
@@ -304,6 +311,7 @@ impl TransferManager {
                                         Self::send_enveloped_event(
                                             &event_tx_worker,
                                             &seq_worker,
+                                            &hist_worker,
                                             WsEvent::TransferCompleted(job),
                                         );
                                     }
@@ -321,6 +329,7 @@ impl TransferManager {
                                         Self::send_enveloped_event(
                                             &event_tx_worker,
                                             &seq_worker,
+                                            &hist_worker,
                                             WsEvent::TransferFailed(job),
                                         );
                                     }
@@ -340,6 +349,7 @@ impl TransferManager {
             queue_tx,
             event_tx,
             sequence_counter,
+            event_history,
             db,
             max_concurrent_workers: max_concurrent_workers_arc,
             max_retry_attempts: max_retry_attempts_arc,
@@ -359,6 +369,7 @@ impl TransferManager {
     fn send_enveloped_event(
         event_tx: &broadcast::Sender<EventEnvelope>,
         seq_counter: &Arc<AtomicU64>,
+        event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
         event: WsEvent,
     ) {
         let envelope = EventEnvelope {
@@ -367,6 +378,24 @@ impl TransferManager {
             timestamp: Utc::now(),
             event,
         };
+
+        if let Ok(mut hist) = event_history.try_write() {
+            if hist.len() >= 500 {
+                hist.pop_front();
+            }
+            hist.push_back(envelope.clone());
+        } else {
+            let hist_clone = Arc::clone(event_history);
+            let env_clone = envelope.clone();
+            tokio::spawn(async move {
+                let mut hist = hist_clone.write().await;
+                if hist.len() >= 500 {
+                    hist.pop_front();
+                }
+                hist.push_back(env_clone);
+            });
+        }
+
         let _ = event_tx.send(envelope);
     }
 
@@ -374,8 +403,18 @@ impl TransferManager {
         self.event_tx.subscribe()
     }
 
+    pub async fn get_events_since(&self, since_seq: u64) -> Vec<EventEnvelope> {
+        let hist = self.event_history.read().await;
+        hist.iter().filter(|e| e.sequence > since_seq).cloned().collect()
+    }
+
     pub fn broadcast_event(&self, event: WsEvent) {
-        Self::send_enveloped_event(&self.event_tx, &self.sequence_counter, event);
+        Self::send_enveloped_event(
+            &self.event_tx,
+            &self.sequence_counter,
+            &self.event_history,
+            event,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -427,6 +466,7 @@ impl TransferManager {
         Self::send_enveloped_event(
             &self.event_tx,
             &self.sequence_counter,
+            &self.event_history,
             WsEvent::TransferProgress(job),
         );
         self.queue_tx
@@ -437,6 +477,7 @@ impl TransferManager {
         Ok(id)
     }
 
+    /// Retrieve list of transfer jobs filtered by authorization (P0 #4)
     pub async fn list_jobs(
         &self,
         user_id: Option<&str>,
@@ -444,8 +485,8 @@ impl TransferManager {
         include_dismissed: bool,
     ) -> Vec<TransferJob> {
         if include_dismissed {
-            if let Ok(all_db_jobs) = Self::load_jobs_from_db(&self.db).await {
-                let mut list: Vec<TransferJob> = all_db_jobs
+            if let Ok(saved) = Self::load_jobs_from_db(&self.db).await {
+                let mut list: Vec<TransferJob> = saved
                     .into_iter()
                     .filter(|j| {
                         if is_admin {
@@ -523,6 +564,7 @@ impl TransferManager {
             Self::send_enveloped_event(
                 &self.event_tx,
                 &self.sequence_counter,
+                &self.event_history,
                 WsEvent::TransferFailed(job),
             );
             Ok(true)
@@ -672,12 +714,14 @@ impl TransferManager {
     }
 
     /// Execute transfer with exponential backoff retry for transient network hiccups (Dynamic retries P1 #17)
+    #[allow(clippy::too_many_arguments)]
     async fn execute_job_with_retry(
         job: &mut TransferJob,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         jobs_map: &Arc<RwLock<HashMap<String, TransferJob>>>,
         event_tx: &broadcast::Sender<EventEnvelope>,
         seq_counter: &Arc<AtomicU64>,
+        event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
         db: &DbPool,
         max_retries: &Arc<AtomicUsize>,
     ) -> anyhow::Result<()> {
@@ -686,7 +730,17 @@ impl TransferManager {
         loop {
             attempt += 1;
             let max_attempts = max_retries.load(Ordering::Relaxed).max(1);
-            match Self::execute_job(job, providers, jobs_map, event_tx, seq_counter, db).await {
+            match Self::execute_job(
+                job,
+                providers,
+                jobs_map,
+                event_tx,
+                seq_counter,
+                event_history,
+                db,
+            )
+            .await
+            {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // Check if job was cancelled
@@ -730,12 +784,14 @@ impl TransferManager {
     }
 
     /// True Bounded-Buffer Asynchronous Streaming Transfer with SHA-256 Checksum Calculation
+    #[allow(clippy::too_many_arguments)]
     async fn execute_job(
         job: &mut TransferJob,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         jobs_map: &Arc<RwLock<HashMap<String, TransferJob>>>,
         event_tx: &broadcast::Sender<EventEnvelope>,
         seq_counter: &Arc<AtomicU64>,
+        event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
         db: &DbPool,
     ) -> anyhow::Result<()> {
         let src_fs = {
@@ -919,6 +975,7 @@ impl TransferManager {
                 let jobs_map_clone = Arc::clone(jobs_map);
                 let event_tx_clone = event_tx.clone();
                 let seq_counter_clone = Arc::clone(seq_counter);
+                let event_hist_clone = Arc::clone(event_history);
                 let file_size = item.size;
                 let current_base_transferred = transferred_so_far;
 
@@ -963,6 +1020,7 @@ impl TransferManager {
                                 Self::send_enveloped_event(
                                     &event_tx_clone,
                                     &seq_counter_clone,
+                                    &event_hist_clone,
                                     WsEvent::TransferProgress(j.clone()),
                                 );
                             }
@@ -996,22 +1054,38 @@ impl TransferManager {
                 }
 
                 transferred_so_far += file_bytes;
+
+                // Move transfer: delete source file
+                if job.transfer_type == TransferType::Move {
+                    let _ = src_fs.delete(&src_file_vfs).await;
+                }
             }
 
-            job.transferred_bytes = transferred_so_far;
-
+            // Move transfer: remove source directory after empty
             if job.transfer_type == TransferType::Move {
-                src_fs
-                    .delete(&src_vfs)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Move cleanup failed: {}", e))?;
+                let _ = src_fs.delete(&src_vfs).await;
             }
 
+            job.transferred_bytes = total_bytes;
+            job.total_bytes = total_bytes;
+            job.speed_bytes_per_sec = 0;
+            job.eta_seconds = Some(0);
+            job.updated_at = Utc::now();
             return Ok(());
         }
 
-        job.total_bytes = meta.size;
-        job.transferred_bytes = 0;
+        // Single File Transfer with In-Flight Checksum Calculation
+        // 1. Resolve destination permissions according to inheritance policy
+        if let Some(perms) = crate::domain::resolve_destination_permissions(
+            &dst_fs,
+            &dst_vfs,
+            false,
+            crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+        )
+        .await
+        {
+            let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
+        }
 
         // 2. Open source async read stream
         let mut reader = src_fs
@@ -1027,6 +1101,7 @@ impl TransferManager {
         let jobs_map_clone = Arc::clone(jobs_map);
         let event_tx_clone = event_tx.clone();
         let seq_counter_clone = Arc::clone(seq_counter);
+        let event_hist_clone = Arc::clone(event_history);
         let db_clone = db.clone();
 
         // 4. Spawn writer task to pump data, calculate SHA-256 checksum on-the-fly, and write to pipe
@@ -1091,6 +1166,7 @@ impl TransferManager {
                         Self::send_enveloped_event(
                             &event_tx_clone,
                             &seq_counter_clone,
+                            &event_hist_clone,
                             WsEvent::TransferProgress(j.clone()),
                         );
 

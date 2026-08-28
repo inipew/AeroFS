@@ -8,6 +8,7 @@ pub mod errors;
 pub mod filesystem;
 pub mod middleware;
 pub mod router;
+pub mod services;
 pub mod state;
 pub mod static_files;
 pub mod transfer;

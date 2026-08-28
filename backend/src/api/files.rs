@@ -1,5 +1,5 @@
 use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
-use crate::domain::{DirectoryListing, FileKind, VfsPath};
+use crate::domain::{FileKind, VfsPath};
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
 use axum::{
@@ -84,6 +84,8 @@ pub struct SuccessResponse {
     pub message: String,
 }
 
+use crate::services::FileService;
+
 /// List files and directories in a given path for a connection
 pub async fn list_files(
     State(state): State<AppState>,
@@ -91,71 +93,18 @@ pub async fn list_files(
     Path(connection_id): Path<String>,
     Query(query): Query<ListFilesQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
+    let listing = FileService::list_directory(
+        &state,
+        &user,
+        &connection_id,
+        query.path,
+        query.show_hidden,
+        query.sort.as_deref(),
+        query.order.as_deref(),
+    )
+    .await?;
 
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let raw_path = query.path.unwrap_or_else(|| "/".to_string());
-    let vfs_path = VfsPath::new(&connection_id, raw_path)?;
-
-    let mut entries = provider.list(&vfs_path).await?;
-
-    // Filter hidden if not requested
-    let show_hidden = match query.show_hidden {
-        Some(val) => val,
-        None => {
-            if let Some(sys_val) = state.get_system_setting("show_hidden_default").await {
-                sys_val == "true"
-            } else {
-                state.config.filesystem.show_hidden_default
-            }
-        }
-    };
-    if !show_hidden {
-        entries.retain(|e| !e.is_hidden);
-    }
-
-    // Sort entries
-    let sort_field = query.sort.as_deref().unwrap_or("name");
-    let is_desc = query.order.as_deref() == Some("desc");
-
-    entries.sort_by(|a, b| {
-        let cmp = match (a.kind, b.kind) {
-            (FileKind::Directory, FileKind::File) => std::cmp::Ordering::Less,
-            (FileKind::File, FileKind::Directory) => std::cmp::Ordering::Greater,
-            _ => match sort_field {
-                "size" => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
-                "date" => a.modified_at.cmp(&b.modified_at),
-                "type" => {
-                    let ext_a = a.name.split('.').next_back().unwrap_or("");
-                    let ext_b = b.name.split('.').next_back().unwrap_or("");
-                    ext_a.to_lowercase().cmp(&ext_b.to_lowercase())
-                }
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            },
-        };
-        if is_desc {
-            cmp.reverse()
-        } else {
-            cmp
-        }
-    });
-
-    let max_entries = state.config.limits.max_directory_entries;
-    let total = entries.len();
-    if entries.len() > max_entries {
-        entries.truncate(max_entries);
-    }
-
-    Ok(Json(DirectoryListing {
-        path: vfs_path.path,
-        connection_id,
-        entries,
-        total_count: total,
-        next_cursor: None,
-    }))
+    Ok(Json(listing))
 }
 
 /// Get detailed metadata for a file or directory
@@ -165,15 +114,7 @@ pub async fn stat_file(
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let vfs_path = VfsPath::new(&connection_id, query.path)?;
-    let meta = provider.stat(&vfs_path).await?;
-
+    let meta = FileService::stat_file(&state, &user, &connection_id, &query.path).await?;
     Ok(Json(meta))
 }
 
@@ -516,31 +457,13 @@ pub async fn create_directory(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let vfs_path = VfsPath::new(&connection_id, payload.path)?;
-    provider.create_dir(&vfs_path).await?;
-
-    if let Some(perms) = crate::domain::resolve_destination_permissions(
-        &provider,
-        &vfs_path,
-        true,
-        crate::domain::PermissionInheritanceMode::InheritParent,
-    )
-    .await
-    {
-        let _ = provider.set_permissions(&vfs_path, &perms).await;
-    }
+    let meta = FileService::create_directory(&state, &user, &connection_id, &payload.path).await?;
 
     Ok((
         StatusCode::CREATED,
         Json(SuccessResponse {
             success: true,
-            message: format!("Directory created: {}", vfs_path.path),
+            message: format!("Directory created: {}", meta.path),
         }),
     ))
 }
@@ -635,32 +558,11 @@ pub async fn rename_entry(
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let from_vfs = VfsPath::new(&connection_id, &payload.from)?;
-    let to_vfs = VfsPath::new(&connection_id, &payload.to)?;
-
-    provider.rename(&from_vfs, &to_vfs).await?;
-
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "FILE_RENAME",
-        Some(&connection_id),
-        Some(&from_vfs.path),
-        "SUCCESS",
-        None,
-        Some(&format!("Renamed {} -> {}", from_vfs.path, to_vfs.path)),
-    )
-    .await;
+    FileService::rename_entry(&state, &user, &connection_id, &payload.from, &payload.to).await?;
 
     Ok(Json(SuccessResponse {
         success: true,
-        message: format!("Renamed to: {}", to_vfs.path),
+        message: format!("Renamed to: {}", payload.to),
     }))
 }
 

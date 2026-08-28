@@ -1,14 +1,11 @@
-use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
-use crate::domain::VfsPath;
-use crate::errors::{AppError, VfsError};
-use crate::filesystem::archive::{
-    compress_targz, compress_zip, extract_targz, extract_zip, ArchiveFormat, ArchiveOverwriteMode,
-};
+use crate::errors::AppError;
+use crate::filesystem::archive::ArchiveOverwriteMode;
+use crate::services::ArchiveService;
 use crate::state::AppState;
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -46,62 +43,24 @@ pub async fn compress_files(
     user: AuthenticatedUser,
     Json(payload): Json<CompressRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let dest_vfs = VfsPath::new(&connection_id, &payload.destination_file)?;
-    let format = payload
-        .format
-        .as_deref()
-        .and_then(ArchiveFormat::from_path)
-        .or_else(|| ArchiveFormat::from_path(&payload.destination_file))
-        .unwrap_or(ArchiveFormat::Zip);
-
-    match format {
-        ArchiveFormat::Zip => {
-            compress_zip(
-                &provider,
-                &connection_id,
-                &payload.base_path,
-                &payload.relative_paths,
-                &dest_vfs,
-            )
-            .await?;
-        }
-        ArchiveFormat::TarGz => {
-            compress_targz(
-                &provider,
-                &connection_id,
-                &payload.base_path,
-                &payload.relative_paths,
-                &dest_vfs,
-            )
-            .await?;
-        }
-    }
-
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "ARCHIVE_COMPRESS",
-        Some(&connection_id),
-        Some(&dest_vfs.path),
-        "SUCCESS",
-        None,
-        Some(&format!("Created archive: {}", dest_vfs.path)),
+    let res = ArchiveService::compress(
+        &state,
+        &user,
+        &connection_id,
+        &payload.base_path,
+        &payload.relative_paths,
+        &payload.destination_file,
+        payload.format.as_deref(),
     )
-    .await;
+    .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(ArchiveResponse {
-            success: true,
-            message: format!("Archive created: {}", dest_vfs.path),
-            entries_count: Some(payload.relative_paths.len()),
-            skipped_count: None,
+            success: res.success,
+            message: res.message,
+            entries_count: res.entries_count,
+            skipped_count: res.skipped_count,
         }),
     ))
 }
@@ -113,66 +72,25 @@ pub async fn extract_archive_endpoint(
     user: AuthenticatedUser,
     Json(payload): Json<ExtractRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // P1 #15: Double permission check (Create dirs + Write/Overwrite files)
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let archive_vfs = VfsPath::new(&connection_id, &payload.archive_path)?;
-    let format = payload
-        .format
-        .as_deref()
-        .and_then(ArchiveFormat::from_path)
-        .or_else(|| ArchiveFormat::from_path(&payload.archive_path))
-        .unwrap_or(ArchiveFormat::Zip);
-
     let overwrite_mode = payload.overwrite_mode.unwrap_or_default();
-    let (count, skipped) = match format {
-        ArchiveFormat::Zip => {
-            extract_zip(
-                &provider,
-                &archive_vfs,
-                &payload.destination_dir,
-                overwrite_mode,
-            )
-            .await?
-        }
-        ArchiveFormat::TarGz => {
-            extract_targz(
-                &provider,
-                &archive_vfs,
-                &payload.destination_dir,
-                overwrite_mode,
-            )
-            .await?
-        }
-    };
-
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "ARCHIVE_EXTRACT",
-        Some(&connection_id),
-        Some(&archive_vfs.path),
-        "SUCCESS",
-        None,
-        Some(&format!(
-            "Extracted {} items (skipped {}) to {}",
-            count, skipped, payload.destination_dir
-        )),
+    let res = ArchiveService::extract(
+        &state,
+        &user,
+        &connection_id,
+        &payload.archive_path,
+        &payload.destination_dir,
+        payload.format.as_deref(),
+        overwrite_mode,
     )
-    .await;
+    .await?;
 
     Ok((
         StatusCode::OK,
         Json(ArchiveResponse {
-            success: true,
-            message: format!("Extracted {} item(s) to {}", count, payload.destination_dir),
-            entries_count: Some(count),
-            skipped_count: Some(skipped),
+            success: res.success,
+            message: res.message,
+            entries_count: res.entries_count,
+            skipped_count: res.skipped_count,
         }),
     ))
 }
@@ -188,20 +106,18 @@ pub async fn list_virtual_archive_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
     user: AuthenticatedUser,
-    axum::extract::Query(query): axum::extract::Query<ListArchiveQuery>,
+    Query(query): Query<ListArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let archive_vfs = VfsPath::new(&connection_id, &query.archive_path)?;
     let subpath = query.subpath.unwrap_or_default();
+    let entries = ArchiveService::list_virtual(
+        &state,
+        &user,
+        &connection_id,
+        &query.archive_path,
+        &subpath,
+    )
+    .await?;
 
-    let entries =
-        crate::filesystem::archive::list_virtual_archive_entries(&provider, &archive_vfs, &subpath)
-            .await?;
     Ok((StatusCode::OK, Json(entries)))
 }
 
@@ -216,18 +132,13 @@ pub async fn read_virtual_archive_entry_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
     user: AuthenticatedUser,
-    axum::extract::Query(query): axum::extract::Query<ReadArchiveQuery>,
+    Query(query): Query<ReadArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let archive_vfs = VfsPath::new(&connection_id, &query.archive_path)?;
-    let (file_name, bytes) = crate::filesystem::archive::read_virtual_archive_entry(
-        &provider,
-        &archive_vfs,
+    let (file_name, bytes) = ArchiveService::read_virtual_entry(
+        &state,
+        &user,
+        &connection_id,
+        &query.archive_path,
         &query.entry_path,
     )
     .await?;
@@ -236,18 +147,18 @@ pub async fn read_virtual_archive_entry_endpoint(
         .first_or_octet_stream()
         .to_string();
 
-    let mut headers = axum::http::HeaderMap::new();
+    let mut headers = HeaderMap::new();
     headers.insert(
         axum::http::header::CONTENT_TYPE,
         mime_type
             .parse()
-            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     headers.insert(
         axum::http::header::CONTENT_DISPOSITION,
         format!("inline; filename=\"{}\"", file_name)
             .parse()
-            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("inline")),
+            .unwrap_or_else(|_| HeaderValue::from_static("inline")),
     );
 
     Ok((StatusCode::OK, headers, bytes))
@@ -268,50 +179,26 @@ pub async fn extract_selected_archive_endpoint(
     user: AuthenticatedUser,
     Json(payload): Json<ExtractSelectedRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // P1 #15: Double permission check (Create dirs + Write/Overwrite files)
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let archive_vfs = VfsPath::new(&connection_id, &payload.archive_path)?;
     let overwrite_mode = payload.overwrite_mode.unwrap_or_default();
-    let (count, skipped) = crate::filesystem::archive::extract_selected_archive_entries(
-        &provider,
-        &archive_vfs,
+    let res = ArchiveService::extract_selected(
+        &state,
+        &user,
+        &connection_id,
+        &payload.archive_path,
         &payload.destination_dir,
         &payload.entries,
+        None,
         overwrite_mode,
     )
     .await?;
 
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "ARCHIVE_EXTRACT_SELECTED",
-        Some(&connection_id),
-        Some(&archive_vfs.path),
-        "SUCCESS",
-        None,
-        Some(&format!(
-            "Extracted {} selected item(s) (skipped {}) to {}",
-            count, skipped, payload.destination_dir
-        )),
-    )
-    .await;
-
     Ok((
         StatusCode::OK,
         Json(ArchiveResponse {
-            success: true,
-            message: format!(
-                "Extracted {} selected item(s) to {}",
-                count, payload.destination_dir
-            ),
-            entries_count: Some(count),
-            skipped_count: Some(skipped),
+            success: res.success,
+            message: res.message,
+            entries_count: res.entries_count,
+            skipped_count: res.skipped_count,
         }),
     ))
 }

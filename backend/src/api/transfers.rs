@@ -1,6 +1,6 @@
-use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
 use crate::errors::AppError;
+use crate::services::TransferService;
 use crate::state::AppState;
 use crate::transfer::TransferType;
 use axum::{
@@ -28,55 +28,17 @@ pub async fn create_transfer(
     user: AuthenticatedUser,
     Json(payload): Json<CreateTransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // 1. Authorize source connection: Read / Download
-    check_permission(
-        &state.db,
+    let job_id = TransferService::create_transfer(
+        &state,
         &user,
-        &payload.source_connection_id,
-        PermissionAction::Read,
+        payload.name,
+        payload.transfer_type,
+        payload.source_connection_id,
+        payload.source_path,
+        payload.destination_connection_id,
+        payload.destination_path,
     )
     .await?;
-
-    // If Move transfer, user must also have Delete permission on source connection
-    if payload.transfer_type == TransferType::Move {
-        check_permission(
-            &state.db,
-            &user,
-            &payload.source_connection_id,
-            PermissionAction::Delete,
-        )
-        .await?;
-    }
-
-    // 2. Authorize destination connection: Write / Create
-    check_permission(
-        &state.db,
-        &user,
-        &payload.destination_connection_id,
-        PermissionAction::Write,
-    )
-    .await?;
-    check_permission(
-        &state.db,
-        &user,
-        &payload.destination_connection_id,
-        PermissionAction::Create,
-    )
-    .await?;
-
-    let job_id = state
-        .transfer_manager
-        .submit_job(
-            Some(user.id.clone()),
-            payload.name,
-            payload.transfer_type,
-            payload.source_connection_id,
-            payload.source_path,
-            payload.destination_connection_id,
-            payload.destination_path,
-        )
-        .await
-        .map_err(AppError::BadRequest)?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -93,31 +55,7 @@ pub async fn list_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let mut jobs = state
-        .transfer_manager
-        .list_jobs(Some(&user.id), user.is_admin, false)
-        .await;
-
-    if !user.is_admin {
-        // Query authorized connections for this user
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1",
-        )
-        .bind(&user.id)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default();
-
-        let mut allowed: std::collections::HashSet<String> =
-            rows.into_iter().map(|r| r.0).collect();
-        allowed.insert("local".to_string());
-
-        jobs.retain(|j| {
-            allowed.contains(&j.source_connection_id)
-                && allowed.contains(&j.destination_connection_id)
-        });
-    }
-
+    let jobs = TransferService::list_transfers(&state, &user).await?;
     Ok(Json(jobs))
 }
 
@@ -127,21 +65,11 @@ pub async fn cancel_transfer(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    match state
-        .transfer_manager
-        .cancel_job(&id, Some(&user.id), user.is_admin)
-        .await
-    {
-        Ok(true) => Ok(Json(serde_json::json!({
-            "success": true,
-            "message": format!("Transfer job '{}' cancelled", id),
-        }))),
-        Ok(false) => Err(AppError::NotFound(format!(
-            "Transfer job '{}' not running or not found",
-            id
-        ))),
-        Err(e) => Err(AppError::Forbidden(e)),
-    }
+    TransferService::cancel_transfer(&state, &user, &id).await?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Transfer job '{}' cancelled", id),
+    })))
 }
 
 /// Dismiss a single transfer job from history (persistent)
@@ -150,21 +78,11 @@ pub async fn dismiss_transfer(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    match state
-        .transfer_manager
-        .dismiss_job(&id, Some(&user.id), user.is_admin)
-        .await
-    {
-        Ok(true) => Ok(Json(serde_json::json!({
-            "success": true,
-            "message": format!("Transfer job '{}' dismissed", id),
-        }))),
-        Ok(false) => Err(AppError::NotFound(format!(
-            "Transfer job '{}' not found",
-            id
-        ))),
-        Err(e) => Err(AppError::Forbidden(e)),
-    }
+    TransferService::dismiss_transfer(&state, &user, &id).await?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Transfer job '{}' dismissed", id),
+    })))
 }
 
 /// Dismiss all finished transfer jobs for the authenticated user (persistent Clear)
@@ -172,16 +90,10 @@ pub async fn clear_finished_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    match state
-        .transfer_manager
-        .clear_finished_jobs(Some(&user.id), user.is_admin)
-        .await
-    {
-        Ok(cleared) => Ok(Json(serde_json::json!({
-            "success": true,
-            "cleared": cleared,
-            "message": format!("Cleared {} finished transfer(s)", cleared),
-        }))),
-        Err(e) => Err(AppError::Internal(anyhow::anyhow!(e))),
-    }
+    let cleared = TransferService::clear_finished_transfers(&state, &user).await?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "cleared": cleared,
+        "message": format!("Cleared {} finished transfer(s)", cleared),
+    })))
 }
