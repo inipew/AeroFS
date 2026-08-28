@@ -198,7 +198,11 @@ impl FileService {
                 if caps.permissions {
                     if let Some(ref perms) = target_perms {
                         if let Err(e) = provider.set_permissions(&tmp_vfs, perms).await {
-                            tracing::warn!("Failed to set permissions on temporary file '{}': {}", tmp_vfs.path, e);
+                            tracing::warn!(
+                                "Failed to set permissions on temporary file '{}': {}",
+                                tmp_vfs.path,
+                                e
+                            );
                         }
                     }
                 }
@@ -217,14 +221,22 @@ impl FileService {
                     if caps.permissions {
                         if let Some(ref perms) = target_perms {
                             if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
-                                tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                                tracing::warn!(
+                                    "Failed to set permissions on '{}': {}",
+                                    vfs_path.path,
+                                    e
+                                );
                             }
                         }
                     }
                 } else if caps.permissions {
                     if let Some(ref perms) = target_perms {
                         if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
-                            tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                            tracing::warn!(
+                                "Failed to set permissions on '{}': {}",
+                                vfs_path.path,
+                                e
+                            );
                         }
                     }
                 }
@@ -234,7 +246,11 @@ impl FileService {
                 if caps.permissions {
                     if let Some(ref perms) = target_perms {
                         if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
-                            tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                            tracing::warn!(
+                                "Failed to set permissions on '{}': {}",
+                                vfs_path.path,
+                                e
+                            );
                         }
                     }
                 }

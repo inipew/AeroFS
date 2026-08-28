@@ -9,6 +9,14 @@ export type TransferStatus =
   | 'completed'
   | 'failed';
 
+export type TransferPhase =
+  | 'preparing'
+  | 'transferring'
+  | 'finalizing'
+  | 'verifying'
+  | 'cleaning_up'
+  | 'completed';
+
 export interface TransferJob {
   id: string;
   user_id?: string;
@@ -19,6 +27,7 @@ export interface TransferJob {
   destination_connection_id: string;
   destination_path: string;
   status: TransferStatus;
+  phase?: TransferPhase;
   transferred_bytes: number;
   total_bytes: number;
   speed_bytes_per_sec: number;

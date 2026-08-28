@@ -4,13 +4,18 @@ use backend::db::init_db;
 use backend::domain::{parse_single_byte_range, Capabilities, RangeError};
 use backend::errors::AppError;
 use backend::services::{FileService, TransferService};
-use backend::transfer::{TransferJob, TransferStatus, TransferType};
+use backend::transfer::{TransferJob, TransferPhase, TransferStatus, TransferType};
 use backend::AppState;
 use chrono::Utc;
 use std::collections::HashSet;
 use tempfile::tempdir;
 
-async fn setup_test_context() -> (AppState, AuthenticatedUser, AuthenticatedUser, tempfile::TempDir) {
+async fn setup_test_context() -> (
+    AppState,
+    AuthenticatedUser,
+    AuthenticatedUser,
+    tempfile::TempDir,
+) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("plan37_test.db");
     let storage_dir = temp.path().join("storage");
@@ -188,12 +193,15 @@ async fn test_batch_delete_deduplication_and_nesting() {
         "/batch_test".to_string(), // Duplicate
     ];
 
-    let (succeeded, failed) =
-        FileService::delete_files(&state, &admin, "local", paths_to_delete)
-            .await
-            .expect("Batch delete should execute");
+    let (succeeded, failed) = FileService::delete_files(&state, &admin, "local", paths_to_delete)
+        .await
+        .expect("Batch delete should execute");
 
-    assert!(failed.is_empty(), "Expected zero failures, got: {:?}", failed);
+    assert!(
+        failed.is_empty(),
+        "Expected zero failures, got: {:?}",
+        failed
+    );
     assert!(!succeeded.is_empty());
 }
 
@@ -222,6 +230,7 @@ async fn test_transfer_visibility_and_interrupted_status() {
         name: "test-transfer".into(),
         transfer_type: TransferType::Copy,
         status: TransferStatus::Interrupted,
+        phase: TransferPhase::Finalizing,
         source_connection_id: "local".into(),
         source_path: "/source".into(),
         destination_connection_id: "remote_s3".into(),
@@ -246,18 +255,34 @@ async fn test_transfer_visibility_and_interrupted_status() {
 
     // 2. Visibility: Admin sees job
     let mut allowed_empty = HashSet::new();
-    assert!(TransferService::authorize_transfer_visibility(&admin, &job, &allowed_empty));
+    assert!(TransferService::authorize_transfer_visibility(
+        &admin,
+        &job,
+        &allowed_empty
+    ));
 
     // 3. Visibility: Owner sees their own job even with no third-party permissions in set
-    assert!(TransferService::authorize_transfer_visibility(&owner, &job, &allowed_empty));
+    assert!(TransferService::authorize_transfer_visibility(
+        &owner,
+        &job,
+        &allowed_empty
+    ));
 
     // 4. Visibility: Stranger without permissions cannot see job
-    assert!(!TransferService::authorize_transfer_visibility(&stranger, &job, &allowed_empty));
+    assert!(!TransferService::authorize_transfer_visibility(
+        &stranger,
+        &job,
+        &allowed_empty
+    ));
 
     // 5. Visibility: Stranger with permissions to both connections CAN see job
     allowed_empty.insert("local".into());
     allowed_empty.insert("remote_s3".into());
-    assert!(TransferService::authorize_transfer_visibility(&stranger, &job, &allowed_empty));
+    assert!(TransferService::authorize_transfer_visibility(
+        &stranger,
+        &job,
+        &allowed_empty
+    ));
 }
 
 #[tokio::test]

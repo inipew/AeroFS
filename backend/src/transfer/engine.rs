@@ -8,7 +8,7 @@ use sqlx::Row;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use utoipa::ToSchema;
@@ -99,6 +99,50 @@ impl std::str::FromStr for TransferStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferPhase {
+    Preparing,
+    Transferring,
+    Finalizing,
+    Verifying,
+    CleaningUp,
+    Completed,
+}
+
+impl TransferPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TransferPhase::Preparing => "preparing",
+            TransferPhase::Transferring => "transferring",
+            TransferPhase::Finalizing => "finalizing",
+            TransferPhase::Verifying => "verifying",
+            TransferPhase::CleaningUp => "cleaning_up",
+            TransferPhase::Completed => "completed",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "transferring" => TransferPhase::Transferring,
+            "finalizing" => TransferPhase::Finalizing,
+            "verifying" => TransferPhase::Verifying,
+            "cleaning_up" => TransferPhase::CleaningUp,
+            "completed" => TransferPhase::Completed,
+            _ => TransferPhase::Preparing,
+        }
+    }
+}
+
+impl std::str::FromStr for TransferPhase {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(TransferPhase::from_str(s))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferJob {
     pub id: String,
@@ -110,6 +154,7 @@ pub struct TransferJob {
     pub destination_connection_id: String,
     pub destination_path: String,
     pub status: TransferStatus,
+    pub phase: TransferPhase,
     pub transferred_bytes: u64,
     pub total_bytes: u64,
     pub speed_bytes_per_sec: u64,
@@ -303,6 +348,7 @@ impl TransferManager {
                                 match result {
                                     Ok(()) => {
                                         job.status = TransferStatus::Completed;
+                                        job.phase = TransferPhase::Completed;
                                         job.speed_bytes_per_sec = 0;
                                         job.eta_seconds = Some(0);
                                         job.updated_at = Utc::now();
@@ -454,6 +500,7 @@ impl TransferManager {
             destination_connection_id,
             destination_path,
             status: TransferStatus::Queued,
+            phase: TransferPhase::Preparing,
             transferred_bytes: 0,
             total_bytes: 0,
             speed_bytes_per_sec: 0,
@@ -794,6 +841,29 @@ impl TransferManager {
                         e,
                         backoff
                     );
+
+                    job.phase = TransferPhase::Preparing;
+                    job.transferred_bytes = 0;
+                    job.speed_bytes_per_sec = 0;
+                    job.eta_seconds = None;
+                    job.updated_at = Utc::now();
+                    {
+                        let mut map = jobs_map.write().await;
+                        if let Some(j) = map.get_mut(&job.id) {
+                            j.phase = TransferPhase::Preparing;
+                            j.transferred_bytes = 0;
+                            j.speed_bytes_per_sec = 0;
+                            j.eta_seconds = None;
+                            j.updated_at = Utc::now();
+                        }
+                    }
+                    Self::send_enveloped_event(
+                        event_tx,
+                        seq_counter,
+                        event_history,
+                        WsEvent::TransferProgress(job.clone()),
+                    );
+
                     tokio::time::sleep(backoff).await;
                 }
             }
@@ -833,6 +903,8 @@ impl TransferManager {
         let src_vfs = VfsPath::new(&job.source_connection_id, &job.source_path)?;
         let dst_vfs = VfsPath::new(&job.destination_connection_id, &job.destination_path)?;
 
+        job.phase = TransferPhase::Preparing;
+
         // 1. Get source metadata
         let meta = src_fs
             .stat(&src_vfs)
@@ -845,6 +917,7 @@ impl TransferManager {
                 let mut map = jobs_map.write().await;
                 if let Some(j) = map.get_mut(&job.id) {
                     j.total_bytes = meta.size;
+                    j.phase = TransferPhase::Preparing;
                 }
             }
             Self::send_enveloped_event(
@@ -863,6 +936,7 @@ impl TransferManager {
                 Ok(_) => {
                     job.transferred_bytes = meta.size;
                     job.total_bytes = meta.size;
+                    job.phase = TransferPhase::Completed;
                     job.speed_bytes_per_sec = 0;
                     job.eta_seconds = Some(0);
                     job.updated_at = Utc::now();
@@ -936,10 +1010,12 @@ impl TransferManager {
             let total_bytes: u64 = items.iter().map(|i| i.size).sum();
             job.total_bytes = total_bytes;
             job.transferred_bytes = 0;
+            job.phase = TransferPhase::Preparing;
             {
                 let mut map = jobs_map.write().await;
                 if let Some(j) = map.get_mut(&job.id) {
                     j.total_bytes = total_bytes;
+                    j.phase = TransferPhase::Preparing;
                 }
             }
             Self::send_enveloped_event(
@@ -987,6 +1063,14 @@ impl TransferManager {
             // 3. Stream each file
             let mut transferred_so_far = 0u64;
             let start_time = Instant::now();
+
+            job.phase = TransferPhase::Transferring;
+            {
+                let mut map = jobs_map.write().await;
+                if let Some(j) = map.get_mut(&job.id) {
+                    j.phase = TransferPhase::Transferring;
+                }
+            }
 
             for item in items.iter().filter(|i| !i.is_dir) {
                 // Check cancellation
@@ -1054,6 +1138,7 @@ impl TransferManager {
                                     j.total_bytes = total_bytes;
                                     j.speed_bytes_per_sec = speed;
                                     j.eta_seconds = eta;
+                                    j.phase = TransferPhase::Transferring;
                                     j.updated_at = Utc::now();
                                     Some(j.clone())
                                 } else {
@@ -1078,9 +1163,18 @@ impl TransferManager {
                     Ok::<u64, anyhow::Error>(file_transferred)
                 });
 
-                let write_res = dst_fs
-                    .write_stream(&dst_file_vfs, Box::new(pipe_reader))
-                    .await;
+                let write_res = tokio::time::timeout(
+                    Duration::from_secs(120),
+                    dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader)),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Destination write stream timed out for file '{}'",
+                        item.rel_path
+                    )
+                })?;
+
                 let pump_res = pump_handle
                     .await
                     .map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?;
@@ -1102,17 +1196,37 @@ impl TransferManager {
 
                 // Move transfer: delete source file
                 if job.transfer_type == TransferType::Move {
-                    let _ = src_fs.delete(&src_file_vfs).await;
+                    src_fs.delete(&src_file_vfs).await.map_err(|e| {
+                        anyhow::anyhow!("Failed to delete source file {}: {}", src_file_vfs.path, e)
+                    })?;
                 }
             }
 
             // Move transfer: remove source directory after empty
             if job.transfer_type == TransferType::Move {
-                let _ = src_fs.delete(&src_vfs).await;
+                job.phase = TransferPhase::CleaningUp;
+                {
+                    let mut map = jobs_map.write().await;
+                    if let Some(j) = map.get_mut(&job.id) {
+                        j.phase = TransferPhase::CleaningUp;
+                        j.updated_at = Utc::now();
+                    }
+                }
+                Self::send_enveloped_event(
+                    event_tx,
+                    seq_counter,
+                    event_history,
+                    WsEvent::TransferProgress(job.clone()),
+                );
+
+                src_fs.delete(&src_vfs).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to delete source directory {}: {}", src_vfs.path, e)
+                })?;
             }
 
             job.transferred_bytes = total_bytes;
             job.total_bytes = total_bytes;
+            job.phase = TransferPhase::Completed;
             job.speed_bytes_per_sec = 0;
             job.eta_seconds = Some(0);
             job.updated_at = Utc::now();
@@ -1148,6 +1262,14 @@ impl TransferManager {
         let seq_counter_clone = Arc::clone(seq_counter);
         let event_hist_clone = Arc::clone(event_history);
         let db_clone = db.clone();
+
+        job.phase = TransferPhase::Transferring;
+        {
+            let mut map = jobs_map.write().await;
+            if let Some(j) = map.get_mut(&job.id) {
+                j.phase = TransferPhase::Transferring;
+            }
+        }
 
         // 4. Spawn writer task to pump data, calculate SHA-256 checksum on-the-fly, and write to pipe
         let pump_handle = tokio::spawn(async move {
@@ -1200,6 +1322,11 @@ impl TransferManager {
                             j.total_bytes = total_bytes;
                             j.speed_bytes_per_sec = speed;
                             j.eta_seconds = eta;
+                            j.phase = if transferred >= total_bytes && total_bytes > 0 {
+                                TransferPhase::Finalizing
+                            } else {
+                                TransferPhase::Transferring
+                            };
                             j.updated_at = Utc::now();
                             Some(j.clone())
                         } else {
@@ -1229,6 +1356,27 @@ impl TransferManager {
             pipe_writer.flush().await?;
             drop(pipe_writer); // Signal EOF to destination consumer
 
+            // Emit Finalizing phase explicitly to UI
+            {
+                let mut map = jobs_map_clone.write().await;
+                if let Some(j) = map.get_mut(&job_id) {
+                    j.transferred_bytes = transferred;
+                    j.phase = TransferPhase::Finalizing;
+                    j.speed_bytes_per_sec = 0;
+                    j.eta_seconds = Some(0);
+                    j.updated_at = Utc::now();
+                }
+            }
+            Self::send_enveloped_event(
+                &event_tx_clone,
+                &seq_counter_clone,
+                &event_hist_clone,
+                WsEvent::TransferProgress({
+                    let map = jobs_map_clone.read().await;
+                    map.get(&job_id).cloned().unwrap()
+                }),
+            );
+
             let checksum_hex = hex::encode(hasher.finalize());
             Ok::<(u64, String), anyhow::Error>((transferred, checksum_hex))
         });
@@ -1238,7 +1386,13 @@ impl TransferManager {
             &job.destination_connection_id,
             format!("{}.aerofs-part-{}", dst_vfs.path, job.id),
         )?;
-        let write_res = dst_fs.write_stream(&part_vfs, Box::new(pipe_reader)).await;
+
+        let write_res = tokio::time::timeout(
+            Duration::from_secs(120),
+            dst_fs.write_stream(&part_vfs, Box::new(pipe_reader)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Destination write stream timed out after 120s"))?;
 
         let pump_res = pump_handle
             .await
@@ -1250,9 +1404,14 @@ impl TransferManager {
             return Err(anyhow::anyhow!("Destination write failed: {}", e));
         }
 
-        // Atomically promote part file to destination path
+        // Atomically promote part file to destination path (strict error handling)
         if let Err(e) = dst_fs.rename(&part_vfs, &dst_vfs).await {
-            tracing::warn!("Rename promotion fallback for {}: {}", dst_vfs.path, e);
+            let _ = dst_fs.delete(&part_vfs).await;
+            return Err(anyhow::anyhow!(
+                "Failed to promote staging file to final destination '{}': {}",
+                dst_vfs.path,
+                e
+            ));
         }
 
         if let Some(perms) = crate::domain::resolve_destination_permissions(
@@ -1267,24 +1426,54 @@ impl TransferManager {
         }
 
         job.transferred_bytes = transferred_bytes;
-        job.checksum = Some(checksum);
+        job.checksum = Some(checksum.clone());
 
-        // 6. Transactional Move: verify integrity before deleting source
+        // 6. Verification Phase
+        job.phase = TransferPhase::Verifying;
+        {
+            let mut map = jobs_map.write().await;
+            if let Some(j) = map.get_mut(&job.id) {
+                j.phase = TransferPhase::Verifying;
+                j.transferred_bytes = transferred_bytes;
+                j.checksum = Some(checksum);
+                j.updated_at = Utc::now();
+            }
+        }
+        Self::send_enveloped_event(
+            event_tx,
+            seq_counter,
+            event_history,
+            WsEvent::TransferProgress(job.clone()),
+        );
+
+        let dst_stat = dst_fs
+            .stat(&dst_vfs)
+            .await
+            .map_err(|e| anyhow::anyhow!("Destination verification failed: {}", e))?;
+        if dst_stat.size != job.total_bytes && job.total_bytes > 0 {
+            return Err(anyhow::anyhow!(
+                "Integrity check failed: destination size ({}) does not match source size ({})",
+                dst_stat.size,
+                job.total_bytes
+            ));
+        }
+
+        // 7. Transactional Move: delete source after full verification
         if job.transfer_type == TransferType::Move {
-            if transferred_bytes < job.total_bytes {
-                return Err(anyhow::anyhow!(
-                    "Move aborted: transferred bytes ({}) does not match source size ({})",
-                    transferred_bytes,
-                    job.total_bytes
-                ));
+            job.phase = TransferPhase::CleaningUp;
+            {
+                let mut map = jobs_map.write().await;
+                if let Some(j) = map.get_mut(&job.id) {
+                    j.phase = TransferPhase::CleaningUp;
+                    j.updated_at = Utc::now();
+                }
             }
-
-            // Verify destination file exists
-            if dst_fs.stat(&dst_vfs).await.is_err() {
-                return Err(anyhow::anyhow!(
-                    "Move aborted: failed to verify destination file before deleting source"
-                ));
-            }
+            Self::send_enveloped_event(
+                event_tx,
+                seq_counter,
+                event_history,
+                WsEvent::TransferProgress(job.clone()),
+            );
 
             // Safely delete source file
             src_fs
@@ -1293,6 +1482,11 @@ impl TransferManager {
                 .map_err(|e| anyhow::anyhow!("Move completed with cleanup failure: {}", e))?;
         }
 
+        job.phase = TransferPhase::Completed;
+        job.speed_bytes_per_sec = 0;
+        job.eta_seconds = Some(0);
+        job.updated_at = Utc::now();
+
         Ok(())
     }
 
@@ -1300,7 +1494,7 @@ impl TransferManager {
     async fn load_jobs_from_db(db: &DbPool) -> anyhow::Result<Vec<TransferJob>> {
         let rows = sqlx::query(
             "SELECT id, user_id, name, transfer_type, source_connection_id, source_path,
-                    destination_connection_id, destination_path, status,
+                    destination_connection_id, destination_path, status, phase,
                     transferred_bytes, total_bytes, speed_bytes_per_sec,
                     eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
              FROM transfer_jobs
@@ -1321,6 +1515,7 @@ impl TransferManager {
             let destination_connection_id: String = r.get("destination_connection_id");
             let destination_path: String = r.get("destination_path");
             let status_str: String = r.get("status");
+            let phase_str: Option<String> = r.try_get("phase").ok();
             let transferred_bytes: i64 = r.get("transferred_bytes");
             let total_bytes: i64 = r.get("total_bytes");
             let speed_bytes_per_sec: i64 = r.get("speed_bytes_per_sec");
@@ -1343,6 +1538,11 @@ impl TransferManager {
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
+            let phase = phase_str
+                .as_deref()
+                .map(TransferPhase::from_str)
+                .unwrap_or(TransferPhase::Preparing);
+
             jobs.push(TransferJob {
                 id,
                 user_id,
@@ -1353,6 +1553,7 @@ impl TransferManager {
                 destination_connection_id,
                 destination_path,
                 status: TransferStatus::from_str(&status_str),
+                phase,
                 transferred_bytes: transferred_bytes as u64,
                 total_bytes: total_bytes as u64,
                 speed_bytes_per_sec: speed_bytes_per_sec as u64,
@@ -1377,12 +1578,13 @@ impl TransferManager {
         sqlx::query(
             "INSERT INTO transfer_jobs (
                 id, user_id, name, transfer_type, source_connection_id, source_path,
-                destination_connection_id, destination_path, status,
+                destination_connection_id, destination_path, status, phase,
                 transferred_bytes, total_bytes, speed_bytes_per_sec,
                 eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
+                phase = excluded.phase,
                 transferred_bytes = excluded.transferred_bytes,
                 total_bytes = excluded.total_bytes,
                 speed_bytes_per_sec = excluded.speed_bytes_per_sec,
@@ -1401,6 +1603,7 @@ impl TransferManager {
         .bind(&job.destination_connection_id)
         .bind(&job.destination_path)
         .bind(job.status.as_str())
+        .bind(job.phase.as_str())
         .bind(job.transferred_bytes as i64)
         .bind(job.total_bytes as i64)
         .bind(job.speed_bytes_per_sec as i64)

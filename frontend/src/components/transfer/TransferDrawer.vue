@@ -161,9 +161,17 @@
                 ></div>
               </div>
 
-              <!-- Transfer Meta -->
+              <!-- Transfer Meta & Phase -->
               <div class="flex items-center justify-between text-[10px] text-gray-500 dark:text-slate-400 font-mono">
-                <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
+                <span>
+                  {{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)
+                  <span
+                    v-if="job.phase && job.phase !== 'transferring' && job.phase !== 'completed'"
+                    class="ml-1.5 font-sans font-semibold text-blue-600 dark:text-blue-400 animate-pulse"
+                  >
+                    • {{ formatPhase(job.phase) }}
+                  </span>
+                </span>
                 <span v-if="job.status === 'running'">
                   {{ getLiveSpeed(job) }}
                 </span>
@@ -276,7 +284,7 @@ import { computed } from 'vue';
 import { useTransferStore } from '../../stores/transferStore';
 import { useUiStore } from '../../stores/uiStore';
 import FbIcon from '../common/FbIcon.vue';
-import type { TransferJob, TransferType } from '../../types/transfer';
+import type { TransferJob, TransferPhase, TransferType } from '../../types/transfer';
 import type { IconName } from '../../utils/icons';
 
 const transferStore = useTransferStore();
@@ -336,6 +344,23 @@ function getLiveSpeed(job: TransferJob): string {
     str += ` • ETA ${eta}s`;
   }
   return str;
+}
+
+function formatPhase(phase?: TransferPhase): string {
+  switch (phase) {
+    case 'preparing':
+      return 'Preparing...';
+    case 'finalizing':
+      return 'Finalizing...';
+    case 'verifying':
+      return 'Verifying...';
+    case 'cleaning_up':
+      return 'Cleaning up...';
+    case 'completed':
+      return 'Completed';
+    default:
+      return '';
+  }
 }
 
 function getTransferTypeIcon(type: TransferType): IconName {

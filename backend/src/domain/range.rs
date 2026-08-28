@@ -47,11 +47,16 @@ pub enum RangeError {
 /// - Bounded: `bytes=0-499`
 /// - Open-ended: `bytes=500-`
 /// - Suffix: `bytes=-500` (last 500 bytes)
-pub fn parse_single_byte_range(range_header: &str, total_size: u64) -> Result<ByteRange, RangeError> {
+pub fn parse_single_byte_range(
+    range_header: &str,
+    total_size: u64,
+) -> Result<ByteRange, RangeError> {
     let trimmed = range_header.trim();
 
     if !trimmed.starts_with("bytes=") {
-        return Err(RangeError::InvalidFormat("Missing 'bytes=' unit prefix".into()));
+        return Err(RangeError::InvalidFormat(
+            "Missing 'bytes=' unit prefix".into(),
+        ));
     }
 
     let spec = &trimmed["bytes=".len()..];
@@ -68,7 +73,9 @@ pub fn parse_single_byte_range(range_header: &str, total_size: u64) -> Result<By
 
     let parts: Vec<&str> = spec.split('-').collect();
     if parts.len() != 2 {
-        return Err(RangeError::InvalidFormat("Expected single '-' delimiter".into()));
+        return Err(RangeError::InvalidFormat(
+            "Expected single '-' delimiter".into(),
+        ));
     }
 
     let (p0, p1) = (parts[0].trim(), parts[1].trim());

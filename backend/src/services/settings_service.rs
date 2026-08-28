@@ -386,7 +386,8 @@ impl SettingsService {
             .unwrap_or(false);
 
         if let Some(root_path) = target_root {
-            let _ = Self::update_local_root(state, PathBuf::from(root_path), target_allow_sym).await;
+            let _ =
+                Self::update_local_root(state, PathBuf::from(root_path), target_allow_sym).await;
         }
 
         if let Some(app_settings) = &payload.settings {
