@@ -13,6 +13,18 @@ pub enum ProviderKind {
     S3,
 }
 
+impl ProviderKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProviderKind::Local => "local",
+            ProviderKind::Ftp => "ftp",
+            ProviderKind::Ftps => "ftps",
+            ProviderKind::Sftp => "sftp",
+            ProviderKind::S3 => "s3",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionStatus {

@@ -394,7 +394,440 @@ impl AppConfig {
         toml::to_string_pretty(&sanitized)
             .unwrap_or_else(|_| "# Error serializing config".to_string())
     }
+
+    /// Inspect a single configuration key value by dotted path
+    pub fn get_by_key_path(&self, key: &str) -> Option<String> {
+        let key_lower = key.to_lowercase();
+        match key_lower.as_str() {
+            "server.host" | "host" => Some(self.server.host.clone()),
+            "server.port" | "port" => Some(self.server.port.to_string()),
+            "security.session_secret" | "session_secret" => Some("********".to_string()),
+            "security.session_ttl_secs" | "session_ttl" => Some(self.security.session_ttl_secs.to_string()),
+            "security.allow_symlinks_outside_root" | "allow_symlinks" => Some(self.security.allow_symlinks_outside_root.to_string()),
+            "security.allow_private_network_connections" | "allow_private_networks" => Some(self.security.allow_private_network_connections.to_string()),
+            "security.allowed_origins" | "allowed_origins" => Some(format!("{:?}", self.security.allowed_origins)),
+            "security.cookie_secure" | "cookie_secure" => Some(self.security.cookie_secure.to_string()),
+            "filesystem.default_local_root" | "default_local_root" | "local_root" => Some(self.filesystem.default_local_root.display().to_string()),
+            "filesystem.temp_dir" | "temp_dir" => Some(self.filesystem.temp_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "None".to_string())),
+            "filesystem.show_hidden_default" | "show_hidden" => Some(self.filesystem.show_hidden_default.to_string()),
+            "filesystem.read_only_default" | "read_only" => Some(self.filesystem.read_only_default.to_string()),
+            "limits.max_upload_size" | "max_upload_size" => Some(format!("{} bytes ({} MB)", self.limits.max_upload_size, self.limits.max_upload_size / (1024 * 1024))),
+            "limits.max_editable_size" | "max_editable_size" => Some(format!("{} bytes ({} MB)", self.limits.max_editable_size, self.limits.max_editable_size / (1024 * 1024))),
+            "limits.max_preview_size" | "max_preview_size" => Some(format!("{} bytes ({} MB)", self.limits.max_preview_size, self.limits.max_preview_size / (1024 * 1024))),
+            "limits.max_directory_entries" | "max_directory_entries" => Some(self.limits.max_directory_entries.to_string()),
+            "limits.max_concurrent_transfers" | "max_concurrent_transfers" => Some(self.limits.max_concurrent_transfers.to_string()),
+            "database.url" | "database_url" => Some(crate::db::sanitize_db_url(&self.database.url)),
+            _ => None,
+        }
+    }
+
+    /// Retrieve provenance metadata for effective configuration layers
+    pub fn get_effective_provenance(&self, config_path: Option<&Path>) -> Vec<ConfigProvenanceEntry> {
+        let loaded_file = config_path.map(PathBuf::from).or_else(|| {
+            env::var("AEROFS_CONFIG").or_else(|_| env::var("WFM_CONFIG")).ok().map(PathBuf::from)
+        }).or_else(|| {
+            let candidates = [
+                PathBuf::from("/etc/aerofs/config.toml"),
+                dirs_config_path(),
+                PathBuf::from("./aerofs.toml"),
+                PathBuf::from("./config.toml"),
+            ];
+            candidates.into_iter().find(|p| p.exists())
+        });
+
+        let mut entries = Vec::new();
+
+        // server.host
+        let host_src = if env::var("AEROFS_HOST").is_ok() || env::var("WFM_HOST").is_ok() {
+            ConfigSource::Environment("AEROFS_HOST".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "server.host".to_string(),
+            value: self.server.host.clone(),
+            source: host_src,
+            description: Some("Network host interface for HTTP/WebSocket listener".to_string()),
+        });
+
+        // server.port
+        let port_src = if env::var("AEROFS_PORT").is_ok() || env::var("WFM_PORT").is_ok() {
+            ConfigSource::Environment("AEROFS_PORT".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "server.port".to_string(),
+            value: self.server.port.to_string(),
+            source: port_src,
+            description: Some("TCP port for HTTP/WebSocket listener".to_string()),
+        });
+
+        // database.url
+        let db_src = if env::var("AEROFS_DATABASE_URL").is_ok() || env::var("WFM_DATABASE_URL").is_ok() {
+            ConfigSource::Environment("AEROFS_DATABASE_URL".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "database.url".to_string(),
+            value: crate::db::sanitize_db_url(&self.database.url),
+            source: db_src,
+            description: Some("SQLite database connection URL".to_string()),
+        });
+
+        // filesystem.default_local_root
+        let root_src = if env::var("AEROFS_ROOT_PATH").is_ok() || env::var("WFM_ROOT_PATH").is_ok() || env::var("WFM_LOCAL_ROOT").is_ok() {
+            ConfigSource::Environment("AEROFS_ROOT_PATH".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "filesystem.default_local_root".to_string(),
+            value: self.filesystem.default_local_root.display().to_string(),
+            source: root_src,
+            description: Some("Default local filesystem storage root path".to_string()),
+        });
+
+        // filesystem.temp_dir
+        let temp_src = if env::var("AEROFS_TEMP_DIR").is_ok() || env::var("WFM_TEMP_DIR").is_ok() {
+            ConfigSource::Environment("AEROFS_TEMP_DIR".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "filesystem.temp_dir".to_string(),
+            value: self.filesystem.temp_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "None".to_string()),
+            source: temp_src,
+            description: Some("Temporary directory for staging file uploads & archives".to_string()),
+        });
+
+        // limits.max_concurrent_transfers
+        let trans_src = if env::var("AEROFS_MAX_TRANSFERS").is_ok() {
+            ConfigSource::Environment("AEROFS_MAX_TRANSFERS".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "limits.max_concurrent_transfers".to_string(),
+            value: self.limits.max_concurrent_transfers.to_string(),
+            source: trans_src,
+            description: Some("Maximum simultaneous background transfer workers".to_string()),
+        });
+
+        // limits.max_upload_size
+        let upload_src = if env::var("AEROFS_MAX_UPLOAD_MB").is_ok() || env::var("WFM_MAX_UPLOAD_MB").is_ok() {
+            ConfigSource::Environment("AEROFS_MAX_UPLOAD_MB".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "limits.max_upload_size".to_string(),
+            value: format!("{} bytes ({} MB)", self.limits.max_upload_size, self.limits.max_upload_size / (1024 * 1024)),
+            source: upload_src,
+            description: Some("Maximum allowed size per uploaded file".to_string()),
+        });
+
+        // security.session_ttl_secs
+        let ttl_src = if env::var("AEROFS_SESSION_TTL").is_ok() {
+            ConfigSource::Environment("AEROFS_SESSION_TTL".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "security.session_ttl_secs".to_string(),
+            value: format!("{}s ({} hours)", self.security.session_ttl_secs, self.security.session_ttl_secs / 3600),
+            source: ttl_src,
+            description: Some("Session expiration time in seconds".to_string()),
+        });
+
+        // security.allow_symlinks_outside_root
+        let sym_src = if env::var("AEROFS_ALLOW_SYMLINKS").is_ok() {
+            ConfigSource::Environment("AEROFS_ALLOW_SYMLINKS".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "security.allow_symlinks_outside_root".to_string(),
+            value: self.security.allow_symlinks_outside_root.to_string(),
+            source: sym_src,
+            description: Some("Whether symlinks pointing outside storage root are resolved".to_string()),
+        });
+
+        // security.allow_private_network_connections
+        let priv_src = if env::var("AEROFS_ALLOW_PRIVATE_NETWORKS").is_ok() {
+            ConfigSource::Environment("AEROFS_ALLOW_PRIVATE_NETWORKS".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "security.allow_private_network_connections".to_string(),
+            value: self.security.allow_private_network_connections.to_string(),
+            source: priv_src,
+            description: Some("Allow remote connections in private RFC1918 / loopback networks".to_string()),
+        });
+
+        // limits.max_editable_size
+        let edit_src = if env::var("AEROFS_MAX_EDITABLE_MB").is_ok() {
+            ConfigSource::Environment("AEROFS_MAX_EDITABLE_MB".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "limits.max_editable_size".to_string(),
+            value: format!("{} bytes ({} MB)", self.limits.max_editable_size, self.limits.max_editable_size / (1024 * 1024)),
+            source: edit_src,
+            description: Some("Maximum file size allowed for in-browser editor".to_string()),
+        });
+
+        // limits.max_directory_entries
+        let dir_src = if env::var("AEROFS_MAX_DIR_ENTRIES").is_ok() {
+            ConfigSource::Environment("AEROFS_MAX_DIR_ENTRIES".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "limits.max_directory_entries".to_string(),
+            value: self.limits.max_directory_entries.to_string(),
+            source: dir_src,
+            description: Some("Maximum items returned per directory listing".to_string()),
+        });
+
+        // security.session_secret
+        let secret_src = if env::var("AEROFS_SESSION_SECRET").is_ok() || env::var("WFM_SESSION_SECRET").is_ok() {
+            ConfigSource::Environment("AEROFS_SESSION_SECRET".to_string())
+        } else if let Some(ref f) = loaded_file {
+            ConfigSource::ConfigFile(f.clone())
+        } else {
+            ConfigSource::Default
+        };
+        entries.push(ConfigProvenanceEntry {
+            key: "security.session_secret".to_string(),
+            value: "********".to_string(),
+            source: secret_src,
+            description: Some("HMAC cryptographic key used for cookie signing & credential encryption".to_string()),
+        });
+
+        entries
+    }
+
+    /// Describe metadata for a specific configuration key
+    pub fn describe_key(key: &str) -> Option<ConfigDescriptor> {
+        let key_lower = key.to_lowercase();
+        CONFIG_DESCRIPTORS.iter().find(|d| d.key.eq_ignore_ascii_case(&key_lower)).copied()
+    }
+
+    /// Return all registered configuration descriptors
+    pub fn describe_all() -> &'static [ConfigDescriptor] {
+        CONFIG_DESCRIPTORS
+    }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConfigSource {
+    Default,
+    ConfigFile(PathBuf),
+    Environment(String),
+    CliOverride,
+}
+
+impl std::fmt::Display for ConfigSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigSource::Default => write!(f, "default"),
+            ConfigSource::ConfigFile(p) => write!(f, "config file ({})", p.display()),
+            ConfigSource::Environment(env_var) => write!(f, "environment variable ({})", env_var),
+            ConfigSource::CliOverride => write!(f, "CLI flag"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigProvenanceEntry {
+    pub key: String,
+    pub value: String,
+    pub source: ConfigSource,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ConfigDescriptor {
+    pub key: &'static str,
+    pub description: &'static str,
+    pub value_type: &'static str,
+    pub default_value: &'static str,
+    pub env_variable: Option<&'static str>,
+    pub runtime_mutable: bool,
+    pub restart_required: bool,
+    pub subsystems: &'static [&'static str],
+}
+
+pub static CONFIG_DESCRIPTORS: &[ConfigDescriptor] = &[
+    ConfigDescriptor {
+        key: "server.host",
+        description: "Network host/IP address to bind the HTTP and WebSocket listeners to",
+        value_type: "string",
+        default_value: "127.0.0.1",
+        env_variable: Some("AEROFS_HOST"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["HTTP Server", "WebSocket"],
+    },
+    ConfigDescriptor {
+        key: "server.port",
+        description: "TCP port number to bind the HTTP and WebSocket listeners to",
+        value_type: "u16",
+        default_value: "8080",
+        env_variable: Some("AEROFS_PORT"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["HTTP Server", "WebSocket"],
+    },
+    ConfigDescriptor {
+        key: "database.url",
+        description: "Database connection URL (SQLite with WAL mode and foreign key constraints)",
+        value_type: "string",
+        default_value: "sqlite://./filemanager.db?mode=rwc",
+        env_variable: Some("AEROFS_DATABASE_URL"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["Database", "Sessions", "Transfers", "Permissions"],
+    },
+    ConfigDescriptor {
+        key: "security.session_secret",
+        description: "Cryptographic HMAC secret used to sign session cookies and encrypt remote connection credentials",
+        value_type: "string (min 32 chars)",
+        default_value: "dev_secret_change_in_production_32_chars_min",
+        env_variable: Some("AEROFS_SESSION_SECRET"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["Auth", "Session Middleware", "Credential Store"],
+    },
+    ConfigDescriptor {
+        key: "security.session_ttl_secs",
+        description: "Session expiration time in seconds (default: 7 days)",
+        value_type: "u64",
+        default_value: "604800",
+        env_variable: Some("AEROFS_SESSION_TTL"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["Auth", "Session Middleware"],
+    },
+    ConfigDescriptor {
+        key: "security.allow_symlinks_outside_root",
+        description: "Whether symlinks pointing outside the storage root directory are allowed to be resolved",
+        value_type: "bool",
+        default_value: "false",
+        env_variable: Some("AEROFS_ALLOW_SYMLINKS"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["VFS", "SafePath"],
+    },
+    ConfigDescriptor {
+        key: "security.allow_private_network_connections",
+        description: "Allow connecting to remote storage providers residing in private RFC1918 / loopback networks",
+        value_type: "bool",
+        default_value: "true",
+        env_variable: Some("AEROFS_ALLOW_PRIVATE_NETWORKS"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["OpenDAL Providers", "SSRF Protection"],
+    },
+    ConfigDescriptor {
+        key: "security.cookie_secure",
+        description: "Explicitly force the Secure flag on authentication session cookies",
+        value_type: "bool",
+        default_value: "false",
+        env_variable: Some("AEROFS_COOKIE_SECURE"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["Auth", "Cookies"],
+    },
+    ConfigDescriptor {
+        key: "filesystem.default_local_root",
+        description: "Local directory on the filesystem served as the primary storage root",
+        value_type: "PathBuf",
+        default_value: "./storage",
+        env_variable: Some("AEROFS_ROOT_PATH"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["VFS", "Local Provider"],
+    },
+    ConfigDescriptor {
+        key: "filesystem.temp_dir",
+        description: "Directory used for temporary files, chunked upload staging, and archive extraction",
+        value_type: "Option<PathBuf>",
+        default_value: "./storage/temp",
+        env_variable: Some("AEROFS_TEMP_DIR"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["Multipart Upload", "Archive Engine"],
+    },
+    ConfigDescriptor {
+        key: "limits.max_upload_size",
+        description: "Maximum size in bytes allowed for a single file upload",
+        value_type: "u64 (bytes)",
+        default_value: "1073741824 (1 GB)",
+        env_variable: Some("AEROFS_MAX_UPLOAD_MB"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["Upload Engine", "Transfer Manager"],
+    },
+    ConfigDescriptor {
+        key: "limits.max_concurrent_transfers",
+        description: "Maximum simultaneous background file transfer worker tasks",
+        value_type: "usize",
+        default_value: "4",
+        env_variable: Some("AEROFS_MAX_TRANSFERS"),
+        runtime_mutable: false,
+        restart_required: true,
+        subsystems: &["TransferManager", "TransferScheduler"],
+    },
+    ConfigDescriptor {
+        key: "limits.max_editable_size",
+        description: "Maximum file size in bytes allowed for in-browser text/code editor",
+        value_type: "u64 (bytes)",
+        default_value: "10485760 (10 MB)",
+        env_variable: Some("AEROFS_MAX_EDITABLE_MB"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["Editor Service"],
+    },
+    ConfigDescriptor {
+        key: "limits.max_directory_entries",
+        description: "Maximum number of directory entries returned per directory listing call",
+        value_type: "usize",
+        default_value: "50000",
+        env_variable: Some("AEROFS_MAX_DIR_ENTRIES"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["VFS", "Directory Listing"],
+    },
+];
 
 fn dirs_config_path() -> PathBuf {
     if let Ok(home) = env::var("HOME") {

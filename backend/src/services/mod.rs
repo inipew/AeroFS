@@ -14,6 +14,7 @@ pub mod settings_service;
 pub mod share_service;
 pub mod transfer_service;
 pub mod trash_service;
+pub mod user_service;
 
 pub use archive_service::ArchiveService;
 pub use audit_service::AuditService;
@@ -31,3 +32,4 @@ pub use settings_service::SettingsService;
 pub use share_service::ShareService;
 pub use transfer_service::TransferService;
 pub use trash_service::TrashService;
+pub use user_service::UserService;

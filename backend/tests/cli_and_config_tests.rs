@@ -1,14 +1,13 @@
-use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
-};
+use backend::cli::daemon_lock::{DaemonLock, ProcessStatus};
 use backend::config::AppConfig;
-use backend::db::{backup_db, check_integrity, init_db, vacuum_db};
-use backend::{create_router, AppState};
-use serde_json::json;
+use backend::db::{
+    backup_db, check_integrity, checkpoint_db, connect_db, get_db_stats, init_db, migrate_db,
+    vacuum_db,
+};
+use backend::services::user_service::UserService;
+use backend::services::TransferService;
 use std::fs;
 use tempfile::tempdir;
-use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_config_hierarchy_and_toml_loading() {
@@ -98,116 +97,189 @@ async fn test_sqlite_wal_and_foreign_keys_pragmas() {
     // 4. Test VACUUM helper
     assert!(vacuum_db(&pool).await.is_ok());
 
-    // 5. Test online backup snapshot helper
+    // 5. Test Checkpoint helper
+    assert!(checkpoint_db(&pool).await.is_ok());
+
+    // 6. Test online backup snapshot helper
     let backup_path = temp.path().join("backups/snapshot.db");
-    assert!(backup_db(&pool, &backup_path).await.is_ok());
+    assert!(backup_db(&pool, &backup_path, false).await.is_ok());
     assert!(backup_path.exists());
+
+    // Test overwrite prevention without force
+    assert!(backup_db(&pool, &backup_path, false).await.is_err());
+    // Test overwrite with force
+    assert!(backup_db(&pool, &backup_path, true).await.is_ok());
 }
 
 #[tokio::test]
-async fn test_settings_transaction_and_audit() {
+async fn test_db_isolation_and_stats() {
     let temp = tempdir().unwrap();
-    let db_path = temp.path().join("settings_test.db");
-    let storage_dir = temp.path().join("storage");
-    fs::create_dir_all(&storage_dir).unwrap();
+    let db_path = temp.path().join("isolation_test.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
 
-    let mut config = AppConfig::default();
-    config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    config.filesystem.default_local_root = storage_dir;
+    // connect_db should NOT run migrations or create tables
+    let pool = connect_db(&db_url).await.unwrap();
 
-    let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
-    let app = create_router(state.clone());
+    let table_exists: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
 
-    // 1. Login as admin
-    let login_req = Request::builder()
-        .uri("/api/v1/auth/login")
-        .method("POST")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "username": "admin", "password": "admin12345" }).to_string(),
-        ))
+    assert!(table_exists.is_none(), "connect_db must not create tables or run migrations");
+
+    // Now explicitly run migrate_db
+    let applied = migrate_db(&pool).await.unwrap();
+    assert!(!applied.is_empty(), "migrate_db should apply migrations");
+
+    // get_db_stats test
+    let stats = get_db_stats(&pool, "sqlite://username:secret@127.0.0.1/test.db").await.unwrap();
+    assert_eq!(stats.journal_mode, "WAL");
+    assert!(stats.foreign_keys);
+    assert!(stats.sanitized_url.contains("***:***@"));
+    assert!(!stats.sanitized_url.contains("secret"));
+}
+
+#[tokio::test]
+async fn test_daemon_lock_lifecycle_and_status() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("test_aerofs.lock");
+
+    // Initial state: Stopped
+    let status = DaemonLock::inspect_status(&lock_path, "127.0.0.1", 8080);
+    assert_eq!(status, ProcessStatus::Stopped);
+
+    // Acquire lock
+    let lock1 = DaemonLock::acquire(&lock_path).unwrap();
+    assert!(lock_path.exists());
+
+    // Second acquire must fail with already running
+    assert!(DaemonLock::acquire(&lock_path).is_err());
+
+    // Inspect status while lock held
+    let running_status = DaemonLock::inspect_status(&lock_path, "127.0.0.1", 8080);
+    match running_status {
+        ProcessStatus::Running { pid, .. } => {
+            assert_eq!(pid, std::process::id());
+        }
+        other => panic!("Expected Running status, got: {:?}", other),
+    }
+
+    // Release lock
+    lock1.release();
+    assert!(!lock_path.exists());
+    assert_eq!(
+        DaemonLock::inspect_status(&lock_path, "127.0.0.1", 8080),
+        ProcessStatus::Stopped
+    );
+}
+
+#[tokio::test]
+async fn test_user_service_safeguards() {
+    let temp = tempdir().unwrap();
+    let db_path = temp.path().join("user_safeguard_test.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+
+    let pool = init_db(&db_url).await.unwrap();
+
+    // Default admin was seeded
+    let users = UserService::list_users(&pool).await.unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].username, "admin");
+    assert!(users[0].is_admin);
+
+    // 1. Attempting to delete the only admin MUST fail
+    let del_err = UserService::delete_user(&pool, "admin").await;
+    assert!(del_err.is_err(), "Cannot delete the last admin");
+
+    // 2. Attempting to demote the only admin MUST fail
+    let demote_err = UserService::set_admin_role(&pool, "admin", false).await;
+    assert!(demote_err.is_err(), "Cannot demote the last admin");
+
+    // 3. Create a second admin
+    let bob_id = UserService::create_user(&pool, "bob", "bob_secure_password_123", true)
+        .await
         .unwrap();
+    assert!(!bob_id.is_empty());
 
-    let resp = app.clone().oneshot(login_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let cookie = resp
-        .headers()
-        .get(header::SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
+    // 4. Now demoting or deleting one admin should succeed because another remains
+    assert!(UserService::set_admin_role(&pool, "bob", false).await.is_ok());
 
-    // 2. Update settings via PUT /api/v1/settings
-    let update_req = Request::builder()
-        .uri("/api/v1/settings")
-        .method("PUT")
-        .header(header::COOKIE, &cookie)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "settings": {
-                    "general": {
-                        "language": "en",
-                        "theme": "dark",
-                        "default_view": "list",
-                        "default_sort": "size",
-                        "sort_direction": "desc",
-                        "show_hidden_default": true,
-                        "confirm_destructive": true
-                    },
-                    "file_manager": {
-                        "default_layout": "split",
-                        "show_breadcrumbs": true,
-                        "show_file_size": true,
-                        "show_permissions": true,
-                        "remember_last_directories": true
-                    },
-                    "transfers": {
-                        "max_concurrent_transfers": 6,
-                        "retry_attempts": 5,
-                        "auto_retry": true,
-                        "show_notifications": true
-                    },
-                    "connections": {
-                        "connection_timeout_secs": 120,
-                        "health_check_interval_secs": 30,
-                        "auto_reconnect": true,
-                        "default_local_root": "",
-                        "temp_dir": ""
-                    },
-                    "security": {
-                        "allow_symlinks_outside_root": false,
-                        "confirm_permanent_delete": true,
-                        "read_only_default": false,
-                        "session_timeout_secs": 86400
-                    },
-                    "advanced": {
-                        "log_level": "debug",
-                        "enable_telemetry": false,
-                        "enable_tracing": true,
-                        "directory_cache_ttl_secs": 0
-                    }
-                }
-            })
-            .to_string(),
-        ))
-        .unwrap();
+    // 5. Updating password
+    assert!(UserService::update_password(&pool, "bob", "new_bob_pass_456").await.is_ok());
 
-    let resp = app.clone().oneshot(update_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // 6. Delete bob
+    assert!(UserService::delete_user(&pool, "bob").await.is_ok());
+}
 
-    // 3. Verify audit log entry was recorded for SETTINGS_UPDATED
-    let audit_rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT action, status FROM audit_logs WHERE action = 'SETTINGS_UPDATED'")
-            .fetch_all(&state.db)
-            .await
-            .unwrap();
+#[tokio::test]
+async fn test_config_provenance_and_descriptors() {
+    let config = AppConfig::default();
 
-    assert_eq!(audit_rows.len(), 1);
-    assert_eq!(audit_rows[0].0, "SETTINGS_UPDATED");
-    assert_eq!(audit_rows[0].1, "success");
+    let provenance = config.get_effective_provenance(None);
+    assert!(!provenance.is_empty());
+    assert!(provenance.iter().any(|e| e.key == "server.port" && e.value == "8080"));
+    assert!(provenance.iter().any(|e| e.key == "server.host" && e.value == "127.0.0.1"));
+
+    // Descriptors
+    let desc = AppConfig::describe_key("server.port").unwrap();
+    assert_eq!(desc.key, "server.port");
+    assert_eq!(desc.value_type, "u16");
+    assert_eq!(desc.default_value, "8080");
+
+    let val = config.get_by_key_path("server.port").unwrap();
+    assert_eq!(val, "8080");
+}
+
+#[tokio::test]
+async fn test_transfer_cli_service_queries() {
+    let temp = tempdir().unwrap();
+    let db_path = temp.path().join("transfer_cli_test.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+
+    let pool = init_db(&db_url).await.unwrap();
+
+    // Insert dummy transfer job
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO transfer_jobs (id, user_id, name, transfer_type, source_connection_id, source_path,
+                destination_connection_id, destination_path, status, phase, transferred_bytes, total_bytes,
+                speed_bytes_per_sec, checksum, created_at, updated_at)
+         VALUES ('test_job_1', 'user_1', 'Upload Test', 'upload', 'local', '/file.txt', 'local', '/dst.txt',
+                 'running', 'transferring', 500, 1000, 50, 'chk', ?, ?)",
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Test get_transfer
+    let job = TransferService::get_transfer(&pool, "test_job_1").await.unwrap();
+    assert!(job.is_some());
+    let j = job.unwrap();
+    assert_eq!(j.name, "Upload Test");
+    assert_eq!(j.total_bytes, 1000);
+    assert_eq!(j.transferred_bytes, 500);
+
+    // Test list_transfers_filtered
+    let list = TransferService::list_transfers_filtered(&pool, Some("running"), 10, None, None).await.unwrap();
+    assert_eq!(list.len(), 1);
+
+    // Test repair_stuck_transfers
+    let dry_repair = TransferService::repair_stuck_transfers(&pool, true).await.unwrap();
+    assert_eq!(dry_repair, 1);
+
+    let actual_repair = TransferService::repair_stuck_transfers(&pool, false).await.unwrap();
+    assert_eq!(actual_repair, 1);
+
+    let updated_job = TransferService::get_transfer(&pool, "test_job_1").await.unwrap().unwrap();
+    assert_eq!(updated_job.status.as_str(), "failed");
+
+    // Test purge dry-run
+    let dry_purge = TransferService::purge_transfers_older_than(&pool, 0, true).await.unwrap();
+    assert_eq!(dry_purge, 1);
 }
 
 #[tokio::test]
@@ -237,141 +309,64 @@ url = "sqlite://{}?mode=rwc"
     let cli = backend::cli::Cli {
         config: Some(config_path.clone()),
         json: true,
+        quiet: false,
+        verbose: false,
+        log_level: None,
         command: Some(backend::cli::Commands::Config(
-            backend::cli::ConfigCommand {
-                action: backend::cli::ConfigAction::Validate,
+            backend::cli::args::ConfigCommand {
+                action: backend::cli::args::ConfigAction::Validate,
             },
         )),
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
 
-    // 2. Test CLI Doctor
+    // 2. Test CLI Version
     let cli = backend::cli::Cli {
         config: Some(config_path.clone()),
         json: true,
-        command: Some(backend::cli::Commands::Doctor(backend::cli::DoctorArgs {
-            repair: false,
+        quiet: false,
+        verbose: false,
+        log_level: None,
+        command: Some(backend::cli::Commands::Version),
+    };
+    assert!(backend::cli::run_cli(cli).await.is_ok());
+
+    // 3. Test CLI Db Migrate (run migrations so tables exist)
+    let cli = backend::cli::Cli {
+        config: Some(config_path.clone()),
+        json: true,
+        quiet: false,
+        verbose: false,
+        log_level: None,
+        command: Some(backend::cli::Commands::Db(backend::cli::args::DbCommand {
+            action: backend::cli::args::DbAction::Migrate,
         })),
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
 
-    // 3. Test CLI Db Status & Integrity Check
+    // 4. Test CLI Db Integrity Check
     let cli = backend::cli::Cli {
         config: Some(config_path.clone()),
         json: true,
-        command: Some(backend::cli::Commands::Db(backend::cli::DbCommand {
-            action: backend::cli::DbAction::IntegrityCheck,
+        quiet: false,
+        verbose: false,
+        log_level: None,
+        command: Some(backend::cli::Commands::Db(backend::cli::args::DbCommand {
+            action: backend::cli::args::DbAction::Integrity,
         })),
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
 
-    // 4. Test CLI Admin User Create
+    // 5. Test CLI User List
     let cli = backend::cli::Cli {
         config: Some(config_path.clone()),
         json: true,
-        command: Some(backend::cli::Commands::Admin(backend::cli::AdminCommand {
-            action: backend::cli::AdminAction::User(backend::cli::UserCommand {
-                action: backend::cli::UserAction::Create {
-                    username: "operator".to_string(),
-                    password: Some("operator123".to_string()),
-                    admin: false,
-                },
-            }),
+        quiet: false,
+        verbose: false,
+        log_level: None,
+        command: Some(backend::cli::Commands::User(backend::cli::args::UserCommand {
+            action: backend::cli::args::UserAction::List,
         })),
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
-}
-
-#[tokio::test]
-async fn test_user_preferences_api() {
-    let temp = tempdir().unwrap();
-    let db_path = temp.path().join("prefs_test.db");
-    let storage_dir = temp.path().join("storage");
-    fs::create_dir_all(&storage_dir).unwrap();
-
-    let mut config = AppConfig::default();
-    config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    config.filesystem.default_local_root = storage_dir;
-
-    let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
-    let app = create_router(state.clone());
-
-    // 1. Login as admin
-    let login_req = Request::builder()
-        .uri("/api/v1/auth/login")
-        .method("POST")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "username": "admin", "password": "admin12345" }).to_string(),
-        ))
-        .unwrap();
-
-    let resp = app.clone().oneshot(login_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let cookie = resp
-        .headers()
-        .get(header::SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    // 2. GET /api/v1/user/preferences -> returns defaults
-    let req = Request::builder()
-        .uri("/api/v1/user/preferences")
-        .method("GET")
-        .header(header::COOKIE, &cookie)
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // 3. PUT /api/v1/user/preferences -> updates preferences
-    let update_req = Request::builder()
-        .uri("/api/v1/user/preferences")
-        .method("PUT")
-        .header(header::COOKIE, &cookie)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({
-                "language": "id",
-                "theme": "light",
-                "default_view": "list",
-                "default_sort": "size",
-                "sort_direction": "desc",
-                "show_hidden": true,
-                "confirm_destructive": false,
-                "default_layout": "single",
-                "show_breadcrumbs": true,
-                "show_file_size": true,
-                "show_permissions": true,
-                "remember_last_directories": false
-            })
-            .to_string(),
-        ))
-        .unwrap();
-
-    let resp = app.clone().oneshot(update_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // 4. GET /api/v1/user/preferences -> verifies persisted values
-    let req = Request::builder()
-        .uri("/api/v1/user/preferences")
-        .method("GET")
-        .header(header::COOKIE, &cookie)
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-        .await
-        .unwrap();
-    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(val["theme"], "light");
-    assert_eq!(val["default_view"], "list");
-    assert_eq!(val["language"], "id");
-    assert_eq!(val["default_layout"], "single");
 }

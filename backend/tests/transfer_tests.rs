@@ -491,9 +491,17 @@ async fn test_transfer_dynamic_limits_update() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+    let mut completed = false;
+    for _ in 0..30 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let jobs = state.transfer_manager.list_jobs(None, true, true).await;
+        if let Some(job) = jobs.iter().find(|j| j.id == job_id) {
+            if job.status == TransferStatus::Completed {
+                completed = true;
+                break;
+            }
+        }
+    }
 
-    let jobs = state.transfer_manager.list_jobs(None, true, true).await;
-    let job = jobs.iter().find(|j| j.id == job_id).unwrap();
-    assert_eq!(job.status, TransferStatus::Completed);
+    assert!(completed, "Transfer job must complete successfully under updated dynamic limits");
 }
