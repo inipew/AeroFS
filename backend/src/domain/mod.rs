@@ -1,4 +1,5 @@
 pub mod capabilities;
+pub mod conflict;
 pub mod connection;
 pub mod file;
 pub mod operation;
@@ -9,6 +10,7 @@ pub mod retry;
 pub mod settings;
 
 pub use capabilities::Capabilities;
+pub use conflict::{ConflictPolicy, ConflictResolver};
 pub use connection::{Connection, ConnectionStatus, ProviderConfig, ProviderKind, SftpAuth};
 pub use file::{DirectoryListing, FileEntry, FileKind, FileMetadata, FileVersion};
 pub use operation::{

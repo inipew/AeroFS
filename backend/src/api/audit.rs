@@ -1,5 +1,6 @@
-use crate::auth::{AuditLogEntry, AuthenticatedUser};
+use crate::auth::AuthenticatedUser;
 use crate::errors::AppError;
+use crate::services::audit_service::AuditService;
 use crate::state::AppState;
 use axum::{
     extract::{Query, State},
@@ -21,54 +22,9 @@ pub async fn list_audit_logs(
     user: AuthenticatedUser,
     Query(query): Query<AuditLogQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    if !user.is_admin {
-        return Err(AppError::Forbidden(
-            "Only administrators can view audit logs".into(),
-        ));
-    }
+    let limit = query.limit.unwrap_or(100).clamp(1, 500) as usize;
+    let offset = query.offset.unwrap_or(0).max(0) as usize;
 
-    let limit = query.limit.unwrap_or(100).min(500);
-    let offset = query.offset.unwrap_or(0);
-
-    type AuditLogDbRow = (
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-    );
-
-    let rows: Vec<AuditLogDbRow> = sqlx::query_as(
-        "SELECT id, user_id, action, connection_id, path, status, ip_address, details, created_at 
-         FROM audit_logs 
-         ORDER BY created_at DESC 
-         LIMIT ? OFFSET ?",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-
-    let mut logs = Vec::new();
-    for (id, user_id, action, connection_id, path, status, ip_address, details, created_at) in rows
-    {
-        logs.push(AuditLogEntry {
-            id,
-            user_id,
-            action,
-            connection_id,
-            path,
-            status,
-            ip_address,
-            details,
-            created_at,
-        });
-    }
-
+    let logs = AuditService::list_logs(&state.db, &user, limit, offset).await?;
     Ok(Json(logs))
 }

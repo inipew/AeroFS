@@ -312,14 +312,15 @@ pub async fn update_file_content(
     let vfs_path = VfsPath::new(&connection_id, &payload.path)?;
 
     // Limit check: enforce max_editable_size (dynamic check)
-    let max_editable_bytes =
-        if let Some(custom) = state.get_system_setting("max_editable_size").await {
-            custom
-                .parse()
-                .unwrap_or(state.config.limits.max_editable_size)
-        } else {
-            state.config.limits.max_editable_size
-        };
+    let max_editable_bytes = if let Some(custom) =
+        crate::services::SettingsService::get_system_setting(&state, "max_editable_size").await
+    {
+        custom
+            .parse()
+            .unwrap_or(state.config.limits.max_editable_size)
+    } else {
+        state.config.limits.max_editable_size
+    };
     if payload.content.len() as u64 > max_editable_bytes {
         return Err(AppError::PayloadTooLarge(format!(
             "File content length ({} bytes) exceeds maximum editable size of {} bytes",
@@ -782,7 +783,9 @@ pub async fn chmod_file(
     #[cfg(unix)]
     {
         if payload.recursive.unwrap_or(false) {
-            let root = if let Some(custom) = state.get_system_setting("local_root").await {
+            let root = if let Some(custom) =
+                crate::services::SettingsService::get_system_setting(&state, "local_root").await
+            {
                 std::path::PathBuf::from(custom)
             } else {
                 state.config.filesystem.default_local_root.clone()
@@ -880,7 +883,9 @@ pub async fn get_storage_info(
     Path(connection_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if connection_id == "local" {
-        let root = if let Some(custom) = state.get_system_setting("local_root").await {
+        let root = if let Some(custom) =
+            crate::services::SettingsService::get_system_setting(&state, "local_root").await
+        {
             std::path::PathBuf::from(custom)
         } else {
             state.config.filesystem.default_local_root.clone()

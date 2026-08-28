@@ -35,7 +35,13 @@ impl FileService {
         let show_hidden = match show_hidden_opt {
             Some(val) => val,
             None => {
-                if let Some(sys_val) = state.get_system_setting("show_hidden_default").await {
+                if let Some(sys_val) =
+                    crate::services::settings_service::SettingsService::get_system_setting(
+                        state,
+                        "show_hidden_default",
+                    )
+                    .await
+                {
                     sys_val == "true"
                 } else {
                     state.config.filesystem.show_hidden_default

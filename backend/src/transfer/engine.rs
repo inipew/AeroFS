@@ -366,6 +366,13 @@ impl TransferManager {
         self.worker_notify.notify_waiters();
     }
 
+    pub fn set_max_concurrent_transfers(&self, max_concurrent: usize) {
+        self.update_limits(
+            max_concurrent,
+            self.max_retry_attempts.load(Ordering::Relaxed),
+        );
+    }
+
     fn send_enveloped_event(
         event_tx: &broadcast::Sender<EventEnvelope>,
         seq_counter: &Arc<AtomicU64>,

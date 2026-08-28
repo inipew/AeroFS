@@ -43,7 +43,7 @@ pub async fn health_ready(
     let storage_ok = state.config.filesystem.default_local_root.exists();
 
     // 3. Check active providers
-    let providers_count = state.providers.read().await.len();
+    let providers_count = state.registry.list_ids().await.len();
 
     if db_ok && storage_ok {
         Ok(Json(ReadinessResponse {

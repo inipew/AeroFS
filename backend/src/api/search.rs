@@ -1,7 +1,6 @@
-use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
-use crate::errors::{AppError, VfsError};
-use crate::filesystem::search::search_recursive;
+use crate::errors::AppError;
+use crate::services::search_service::SearchService;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -27,27 +26,15 @@ pub async fn search_files(
     Path(connection_id): Path<String>,
     Query(params): Query<SearchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
-
-    let _permit = state.search_semaphore.acquire().await;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let start_path = params.path.unwrap_or_else(|| "/".to_string());
-    let is_regex = params.regex.unwrap_or(false);
-    let max_depth = params.max_depth.unwrap_or(10);
-    let limit = params.limit.unwrap_or(500).min(2000);
-
-    let output = search_recursive(
-        &provider,
+    let output = SearchService::search_files(
+        &state,
+        &user,
         &connection_id,
-        &start_path,
+        params.path.as_deref(),
         &params.query,
-        is_regex,
-        max_depth,
-        limit,
+        params.regex.unwrap_or(false),
+        params.max_depth,
+        params.limit,
     )
     .await?;
 
