@@ -6,6 +6,7 @@
 *.sqlite
 *.sqlite3
 /backend/.trash/
+filemanager.db
 
 # Node / Frontend Build Artifacts
 /frontend/node_modules/

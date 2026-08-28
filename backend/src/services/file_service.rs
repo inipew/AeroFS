@@ -4,13 +4,18 @@ use crate::auth::AuthenticatedUser;
 use crate::domain::policy::{resolve_destination_permissions, PermissionInheritanceMode};
 use crate::domain::{DirectoryListing, FileKind, FileMetadata, VfsPath};
 use crate::errors::{AppError, VfsError};
+use crate::services::settings_service::SettingsService;
 use crate::state::AppState;
 use crate::transfer::WsEvent;
+use std::io::Cursor;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 pub struct FileService;
 
 impl FileService {
-    /// List files and directories in a given path for a connection with permission check, filtering, and sorting
+    /// List entries in a directory, applying sorting and hidden file filtering
     pub async fn list_directory(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -36,11 +41,7 @@ impl FileService {
             Some(val) => val,
             None => {
                 if let Some(sys_val) =
-                    crate::services::settings_service::SettingsService::get_system_setting(
-                        state,
-                        "show_hidden_default",
-                    )
-                    .await
+                    SettingsService::get_system_setting(state, "show_hidden_default").await
                 {
                     sys_val == "true"
                 } else {
@@ -54,47 +55,49 @@ impl FileService {
 
         // 2. Sort entries (directories first, then by field)
         let sort_field = sort_field_opt.unwrap_or("name");
-        let is_desc = sort_order_opt == Some("desc");
+        let sort_order = sort_order_opt.unwrap_or("asc");
 
         entries.sort_by(|a, b| {
-            let cmp = match (a.kind, b.kind) {
-                (FileKind::Directory, FileKind::File) => std::cmp::Ordering::Less,
-                (FileKind::File, FileKind::Directory) => std::cmp::Ordering::Greater,
-                _ => match sort_field {
-                    "size" => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
-                    "date" => a.modified_at.cmp(&b.modified_at),
-                    "type" => {
-                        let ext_a = a.name.split('.').next_back().unwrap_or("");
-                        let ext_b = b.name.split('.').next_back().unwrap_or("");
-                        ext_a.to_lowercase().cmp(&ext_b.to_lowercase())
-                    }
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                },
+            let a_is_dir = a.kind == FileKind::Directory;
+            let b_is_dir = b.kind == FileKind::Directory;
+
+            if a_is_dir != b_is_dir {
+                return b_is_dir.cmp(&a_is_dir);
+            }
+
+            let cmp = match sort_field {
+                "size" => {
+                    let a_size = a.size.unwrap_or(0);
+                    let b_size = b.size.unwrap_or(0);
+                    a_size.cmp(&b_size)
+                }
+                "modified" => {
+                    let a_mod = a.modified_at.map(|d| d.timestamp()).unwrap_or(0);
+                    let b_mod = b.modified_at.map(|d| d.timestamp()).unwrap_or(0);
+                    a_mod.cmp(&b_mod)
+                }
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             };
-            if is_desc {
+
+            if sort_order == "desc" {
                 cmp.reverse()
             } else {
                 cmp
             }
         });
 
-        // 3. Truncate to maximum configured directory entries
-        let max_entries = state.config.limits.max_directory_entries;
-        let total = entries.len();
-        if entries.len() > max_entries {
-            entries.truncate(max_entries);
-        }
+        let total_count = entries.len();
 
         Ok(DirectoryListing {
             path: vfs_path.path,
             connection_id: connection_id.to_string(),
             entries,
-            total_count: total,
+            total_count,
             next_cursor: None,
         })
     }
 
-    /// Retrieve detailed metadata for a file or directory
+    /// Retrieve file metadata
     pub async fn stat_file(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -130,19 +133,43 @@ impl FileService {
 
         let vfs_path = VfsPath::new(connection_id, raw_path)?;
 
+        // Max editable size check if saving content
+        if !content.is_empty() {
+            let max_editable_bytes = if let Some(custom) =
+                SettingsService::get_system_setting(state, "max_editable_size").await
+            {
+                custom
+                    .parse()
+                    .unwrap_or(state.config.limits.max_editable_size)
+            } else {
+                state.config.limits.max_editable_size
+            };
+
+            if content.len() as u64 > max_editable_bytes {
+                return Err(AppError::PayloadTooLarge(format!(
+                    "File content length ({} bytes) exceeds maximum editable size of {} bytes",
+                    content.len(),
+                    max_editable_bytes
+                )));
+            }
+        }
+
         // Optimistic concurrency check (ETag)
         if let Some(expected) = expected_etag {
             if let Ok(existing_meta) = provider.stat(&vfs_path).await {
-                if !existing_meta.etag.is_empty() && existing_meta.etag != expected {
-                    return Err(AppError::Conflict(
-                        "File has been modified by another process (ETag mismatch)".into(),
-                    ));
+                let clean_expected = expected.trim().trim_matches('"');
+                let clean_actual = existing_meta.etag.trim().trim_matches('"');
+                if clean_expected != clean_actual && expected != "*" {
+                    return Err(AppError::Conflict(format!(
+                        "File was modified externally. Expected ETag: {}, Current ETag: {}",
+                        clean_expected, clean_actual
+                    )));
                 }
             }
         }
 
-        // Permission inheritance
-        let resolved_perms = resolve_destination_permissions(
+        // Destination permission preservation: capture existing permissions or inherit from parent
+        let target_perms = resolve_destination_permissions(
             &provider,
             &vfs_path,
             false,
@@ -150,11 +177,34 @@ impl FileService {
         )
         .await;
 
-        let cursor = std::io::Cursor::new(content);
-        provider.write_stream(&vfs_path, Box::new(cursor)).await?;
+        // Atomic write safety: write to temporary path first then rename
+        let tmp_vfs = VfsPath::new(connection_id, format!("{}.aerofs.tmp", vfs_path.path))?;
+        let cursor = Cursor::new(content.clone());
 
-        if let Some(perms) = resolved_perms {
-            let _ = provider.set_permissions(&vfs_path, &perms).await;
+        if provider
+            .write_stream(&tmp_vfs, Box::new(cursor))
+            .await
+            .is_ok()
+        {
+            if let Some(ref perms) = target_perms {
+                let _ = provider.set_permissions(&tmp_vfs, perms).await;
+            }
+            if provider.rename(&tmp_vfs, &vfs_path).await.is_err() {
+                let fallback = Cursor::new(content);
+                provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+                if let Some(ref perms) = target_perms {
+                    let _ = provider.set_permissions(&vfs_path, perms).await;
+                }
+                let _ = provider.delete(&tmp_vfs).await;
+            } else if let Some(ref perms) = target_perms {
+                let _ = provider.set_permissions(&vfs_path, perms).await;
+            }
+        } else {
+            let fallback = Cursor::new(content);
+            provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+            if let Some(ref perms) = target_perms {
+                let _ = provider.set_permissions(&vfs_path, perms).await;
+            }
         }
 
         let meta = provider.stat(&vfs_path).await?;
@@ -163,10 +213,10 @@ impl FileService {
         record_audit_log(
             &state.db,
             Some(&user.id),
-            "file_write",
+            "FILE_WRITE",
             Some(connection_id),
             Some(&vfs_path.path),
-            "success",
+            "SUCCESS",
             None,
             Some(&format!("Bytes written: {}", meta.size)),
         )
@@ -215,10 +265,10 @@ impl FileService {
         record_audit_log(
             &state.db,
             Some(&user.id),
-            "mkdir",
+            "FILE_MKDIR",
             Some(connection_id),
             Some(&vfs_path.path),
-            "success",
+            "SUCCESS",
             None,
             None,
         )
@@ -233,7 +283,76 @@ impl FileService {
         Ok(meta)
     }
 
-    /// Delete a file or directory with audit logging
+    /// Delete multiple files/directories concurrently with bounded concurrency (8 workers)
+    pub async fn delete_files(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        connection_id: &str,
+        paths: Vec<String>,
+    ) -> Result<(Vec<String>, Vec<(String, String)>), AppError> {
+        check_permission(&state.db, user, connection_id, PermissionAction::Delete).await?;
+
+        let provider = state.get_provider(connection_id).await.ok_or_else(|| {
+            VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+        })?;
+
+        let semaphore = Arc::new(Semaphore::new(8));
+        let mut tasks = JoinSet::new();
+
+        for p in paths {
+            let provider = provider.clone();
+            let conn_id = connection_id.to_string();
+            let sem = semaphore.clone();
+            tasks.spawn(async move {
+                let _permit = sem.acquire().await;
+                let vfs_path = match VfsPath::new(&conn_id, &p) {
+                    Ok(v) => v,
+                    Err(e) => return (p, Err(e)),
+                };
+                let res = provider.delete(&vfs_path).await;
+                (p, res)
+            });
+        }
+
+        let mut succeeded = Vec::new();
+        let mut failed = Vec::new();
+
+        while let Some(join_res) = tasks.join_next().await {
+            if let Ok((path, del_res)) = join_res {
+                match del_res {
+                    Ok(_) => {
+                        record_audit_log(
+                            &state.db,
+                            Some(&user.id),
+                            "FILE_DELETE",
+                            Some(connection_id),
+                            Some(&path),
+                            "SUCCESS",
+                            None,
+                            None,
+                        )
+                        .await;
+
+                        state.transfer_manager.broadcast_event(WsEvent::FileChange {
+                            connection_id: connection_id.to_string(),
+                            path: path.clone(),
+                            action: "delete".to_string(),
+                        });
+
+                        succeeded.push(path);
+                    }
+                    Err(e) => failed.push((path, e.to_string())),
+                }
+            }
+        }
+
+        succeeded.sort();
+        failed.sort_by(|a, b| a.0.cmp(&b.0));
+
+        Ok((succeeded, failed))
+    }
+
+    /// Delete a single file or directory
     pub async fn delete_entry(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -252,10 +371,10 @@ impl FileService {
         record_audit_log(
             &state.db,
             Some(&user.id),
-            "delete",
+            "FILE_DELETE",
             Some(connection_id),
             Some(&vfs_path.path),
-            "success",
+            "SUCCESS",
             None,
             None,
         )
@@ -293,10 +412,10 @@ impl FileService {
         record_audit_log(
             &state.db,
             Some(&user.id),
-            "rename",
+            "FILE_RENAME",
             Some(connection_id),
             Some(&from_vfs.path),
-            "success",
+            "SUCCESS",
             None,
             Some(&format!("Renamed to: {}", to_vfs.path)),
         )
@@ -332,10 +451,10 @@ impl FileService {
         record_audit_log(
             &state.db,
             Some(&user.id),
-            "chmod",
+            "FILE_CHMOD",
             Some(connection_id),
             Some(&vfs_path.path),
-            "success",
+            "SUCCESS",
             None,
             Some(&format!("Mode changed to: {:04o}", mode)),
         )

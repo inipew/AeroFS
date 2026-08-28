@@ -364,20 +364,35 @@ impl SettingsService {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to commit settings transaction: {}", e))?;
 
+        let target_root = payload
+            .local_root
+            .as_deref()
+            .or_else(|| {
+                payload
+                    .settings
+                    .as_ref()
+                    .map(|s| s.connections.default_local_root.as_str())
+            })
+            .filter(|s| !s.trim().is_empty());
+
+        let target_allow_sym = payload
+            .allow_symlinks
+            .or_else(|| {
+                payload
+                    .settings
+                    .as_ref()
+                    .map(|s| s.security.allow_symlinks_outside_root)
+            })
+            .unwrap_or(false);
+
+        if let Some(root_path) = target_root {
+            let _ = Self::update_local_root(state, PathBuf::from(root_path), target_allow_sym).await;
+        }
+
         if let Some(app_settings) = &payload.settings {
-            let new_root = PathBuf::from(&app_settings.connections.default_local_root);
-            let _ = Self::update_local_root(
-                state,
-                new_root,
-                app_settings.security.allow_symlinks_outside_root,
-            )
-            .await;
             state
                 .transfer_manager
                 .set_max_concurrent_transfers(app_settings.transfers.max_concurrent_transfers);
-        } else if let Some(lr) = &payload.local_root {
-            let allow_sym = payload.allow_symlinks.unwrap_or(false);
-            let _ = Self::update_local_root(state, PathBuf::from(lr), allow_sym).await;
         }
 
         record_audit_log(

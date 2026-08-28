@@ -464,6 +464,8 @@ watch(
   }
 );
 
+const fullSettings = ref<any>({});
+
 async function fetchAdminSettings() {
   try {
     const resp = await apiClient.get('/settings');
@@ -474,9 +476,15 @@ async function fetchAdminSettings() {
       uiStore.setMaxEditableSize(data.settings.file_manager.max_editable_size);
     }
     if (data.settings) {
+      fullSettings.value = data.settings;
       adminForm.value = {
         transfers: { ...adminForm.value.transfers, ...data.settings.transfers },
-        connections: { ...adminForm.value.connections, ...data.settings.connections },
+        connections: {
+          ...adminForm.value.connections,
+          ...data.settings.connections,
+          default_local_root: data.local_root || data.settings.connections?.default_local_root || './storage',
+          temp_dir: data.temp_dir || data.settings.connections?.temp_dir || './storage/temp',
+        },
         security: { ...adminForm.value.security, ...data.settings.security },
       };
     }
@@ -500,7 +508,19 @@ async function handleSaveSettings() {
 
     // 2. If Admin, also save System Settings
     if (authStore.isAdmin) {
-      await apiClient.put('/settings', { settings: adminForm.value });
+      const mergedSettings = {
+        ...fullSettings.value,
+        transfers: adminForm.value.transfers,
+        connections: adminForm.value.connections,
+        security: adminForm.value.security,
+      };
+      await apiClient.put('/settings', {
+        settings: mergedSettings,
+        local_root: adminForm.value.connections.default_local_root,
+        temp_dir: adminForm.value.connections.temp_dir,
+        allow_symlinks: adminForm.value.security.allow_symlinks_outside_root,
+        read_only_default: adminForm.value.security.read_only_default,
+      });
     }
 
     uiStore.showToast('Settings & preferences saved successfully!', 'success');

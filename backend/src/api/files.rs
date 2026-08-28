@@ -13,7 +13,6 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::io::Cursor;
 use tokio_util::io::ReaderStream;
 use utoipa::{IntoParams, ToSchema};
 
@@ -92,7 +91,7 @@ pub async fn list_files(
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<ListFilesQuery>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Json<crate::domain::DirectoryListing>, AppError> {
     let listing = FileService::list_directory(
         &state,
         &user,
@@ -303,105 +302,21 @@ pub async fn update_file_content(
     Path(connection_id): Path<String>,
     Json(payload): Json<UpdateContentRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
+    let expected_etag = headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok());
 
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let vfs_path = VfsPath::new(&connection_id, &payload.path)?;
-
-    // Limit check: enforce max_editable_size (dynamic check)
-    let max_editable_bytes = if let Some(custom) =
-        crate::services::SettingsService::get_system_setting(&state, "max_editable_size").await
-    {
-        custom
-            .parse()
-            .unwrap_or(state.config.limits.max_editable_size)
-    } else {
-        state.config.limits.max_editable_size
-    };
-    if payload.content.len() as u64 > max_editable_bytes {
-        return Err(AppError::PayloadTooLarge(format!(
-            "File content length ({} bytes) exceeds maximum editable size of {} bytes",
-            payload.content.len(),
-            max_editable_bytes
-        )));
-    }
-
-    // Optimistic Concurrency check
-    if let Ok(meta) = provider.stat(&vfs_path).await {
-        if let Some(if_match) = headers.get(header::IF_MATCH) {
-            if let Ok(expected_etag) = if_match.to_str() {
-                let clean_expected = expected_etag.trim().trim_matches('"');
-                let clean_actual = meta.etag.trim().trim_matches('"');
-                if clean_expected != clean_actual && expected_etag != "*" {
-                    return Err(AppError::Conflict(format!(
-                        "File was modified externally. Expected ETag: {}, Current ETag: {}",
-                        clean_expected, clean_actual
-                    )));
-                }
-            }
-        }
-    }
-
-    // Destination permission preservation: capture existing permissions or inherit from parent
-    let target_perms = crate::domain::resolve_destination_permissions(
-        &provider,
-        &vfs_path,
-        false,
-        crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+    let meta = FileService::create_or_write_file(
+        &state,
+        &user,
+        &connection_id,
+        &payload.path,
+        payload.content.into_bytes(),
+        expected_etag,
     )
-    .await;
+    .await?;
 
-    // Atomic write safety: write to temporary path first then rename to prevent corrupt target on disconnect
-    let bytes = payload.content.into_bytes();
-    let tmp_vfs = VfsPath::new(&connection_id, format!("{}.aerofs.tmp", vfs_path.path))?;
-    let cursor = Cursor::new(bytes.clone());
-
-    if provider
-        .write_stream(&tmp_vfs, Box::new(cursor))
-        .await
-        .is_ok()
-    {
-        if let Some(ref perms) = target_perms {
-            let _ = provider.set_permissions(&tmp_vfs, perms).await;
-        }
-        if provider.rename(&tmp_vfs, &vfs_path).await.is_err() {
-            let fallback = Cursor::new(bytes);
-            provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-            if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&vfs_path, perms).await;
-            }
-            let _ = provider.delete(&tmp_vfs).await;
-        } else if let Some(ref perms) = target_perms {
-            let _ = provider.set_permissions(&vfs_path, perms).await;
-        }
-    } else {
-        let fallback = Cursor::new(bytes);
-        provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-        if let Some(ref perms) = target_perms {
-            let _ = provider.set_permissions(&vfs_path, perms).await;
-        }
-    }
-
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "FILE_UPDATE",
-        Some(&connection_id),
-        Some(&vfs_path.path),
-        "SUCCESS",
-        None,
-        Some(&format!("Updated file content: {}", vfs_path.path)),
-    )
-    .await;
-
-    // Get fresh ETag after write
-    let new_meta = provider.stat(&vfs_path).await?;
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert("access-control-expose-headers", "ETag".parse().unwrap());
-    if let Ok(val) = new_meta.etag.parse() {
+    if let Ok(val) = meta.etag.parse() {
         resp_headers.insert(header::ETAG, val);
     }
 
@@ -410,7 +325,7 @@ pub async fn update_file_content(
         resp_headers,
         Json(SuccessResponse {
             success: true,
-            message: format!("File updated: {}", vfs_path.path),
+            message: format!("File updated: {}", meta.path),
         }),
     ))
 }
@@ -422,31 +337,21 @@ pub async fn create_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let vfs_path = VfsPath::new(&connection_id, payload.path)?;
-    provider.create_file(&vfs_path).await?;
-
-    if let Some(perms) = crate::domain::resolve_destination_permissions(
-        &provider,
-        &vfs_path,
-        false,
-        crate::domain::PermissionInheritanceMode::InheritParent,
+    let meta = FileService::create_or_write_file(
+        &state,
+        &user,
+        &connection_id,
+        &payload.path,
+        Vec::new(),
+        None,
     )
-    .await
-    {
-        let _ = provider.set_permissions(&vfs_path, &perms).await;
-    }
+    .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(SuccessResponse {
             success: true,
-            message: format!("File created: {}", vfs_path.path),
+            message: format!("File created: {}", meta.path),
         }),
     ))
 }
@@ -490,48 +395,13 @@ pub async fn delete_files(
     Path(connection_id): Path<String>,
     Json(payload): Json<DeleteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Delete).await?;
+    let (succeeded, failed_items) =
+        FileService::delete_files(&state, &user, &connection_id, payload.paths).await?;
 
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
-    let mut tasks = tokio::task::JoinSet::new();
-
-    for p in payload.paths {
-        let provider = provider.clone();
-        let conn_id = connection_id.clone();
-        let sem = semaphore.clone();
-        tasks.spawn(async move {
-            let _permit = sem.acquire().await;
-            let vfs_path = match VfsPath::new(&conn_id, &p) {
-                Ok(v) => v,
-                Err(e) => return (p, Err(e)),
-            };
-            let res = provider.delete(&vfs_path).await;
-            (p, res)
-        });
-    }
-
-    let mut succeeded = Vec::new();
-    let mut failed = Vec::new();
-
-    while let Some(join_res) = tasks.join_next().await {
-        if let Ok((path, del_res)) = join_res {
-            match del_res {
-                Ok(_) => succeeded.push(path),
-                Err(e) => failed.push(DeleteResultItem {
-                    path,
-                    error: e.to_string(),
-                }),
-            }
-        }
-    }
-
-    // Sort outputs for determinism
-    succeeded.sort();
-    failed.sort_by(|a, b| a.path.cmp(&b.path));
+    let failed: Vec<DeleteResultItem> = failed_items
+        .into_iter()
+        .map(|(path, error)| DeleteResultItem { path, error })
+        .collect();
 
     let success = failed.is_empty();
     let message = if success {

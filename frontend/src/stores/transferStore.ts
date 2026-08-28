@@ -43,7 +43,7 @@ export const useTransferStore = defineStore('transfer', () => {
 
   const activeCount = computed(() => activeJobs.value.length);
 
-  // Background fallback poll while jobs are active
+  // Background fallback poll while jobs are active (400ms responsive interval)
   function startPollingIfNeeded() {
     if (pollInterval) return;
     pollInterval = setInterval(async () => {
@@ -53,13 +53,16 @@ export const useTransferStore = defineStore('transfer', () => {
         clearInterval(pollInterval);
         pollInterval = null;
       }
-    }, 1000);
+    }, 400);
   }
 
   async function fetchJobs() {
     try {
       const resp = await apiClient.get<TransferJob[]>('/transfers');
       jobs.value = resp.data;
+      if (activeCount.value > 0) {
+        startPollingIfNeeded();
+      }
     } catch (err) {
       console.error('Failed to fetch transfers', err);
     }
@@ -73,9 +76,14 @@ export const useTransferStore = defineStore('transfer', () => {
 
     const idx = jobs.value.findIndex((j) => j.id === job.id);
     if (idx >= 0) {
-      jobs.value[idx] = job;
+      jobs.value[idx] = { ...jobs.value[idx], ...job };
+      jobs.value = [...jobs.value];
     } else {
-      jobs.value.unshift(job);
+      jobs.value = [job, ...jobs.value];
+    }
+
+    if (job.status === 'running' || job.status === 'queued') {
+      startPollingIfNeeded();
     }
   }
 

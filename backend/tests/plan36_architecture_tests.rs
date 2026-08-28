@@ -2,15 +2,13 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::conflict::{ConflictPolicy, ConflictResolver};
-use backend::domain::operation::{
-    FailureStrategy, OperationIntentType, OperationStatus,
-};
+use backend::domain::operation::{FailureStrategy, OperationIntentType, OperationStatus};
 use backend::domain::policy::PermissionInheritanceMode;
 use backend::domain::settings::UserPreferences;
 use backend::domain::VfsPath;
 use backend::infrastructure::CredentialStore;
 use backend::services::{
-    AuditService, AuthorizationService, ConnectionService, EditorService, FileService,
+    AuditService, AuthService, AuthorizationService, ConnectionService, EditorService, FileService,
     HealthService, OperationService, PreferencesService, PreviewService, SearchService,
     SettingsService, ShareService, TrashService,
 };
@@ -93,7 +91,9 @@ async fn test_plan36_provider_registry_lifecycle() {
     assert!(registry.contains("local_1").await);
     assert_eq!(registry.list_ids().await, vec!["local_1"]);
 
-    registry.set_connection_error("local_1", "Connection timed out").await;
+    registry
+        .set_connection_error("local_1", "Connection timed out")
+        .await;
     assert_eq!(
         registry.get_connection_error("local_1").await,
         Some("Connection timed out".to_string())
@@ -111,7 +111,9 @@ async fn test_plan36_connection_service_lifecycle() {
     let regular = mock_regular_user();
 
     // 1. List connections
-    let conns = ConnectionService::list_connections(&state, &admin).await.unwrap();
+    let conns = ConnectionService::list_connections(&state, &admin)
+        .await
+        .unwrap();
     assert!(!conns.is_empty());
 
     // 2. Create local connection
@@ -140,14 +142,20 @@ async fn test_plan36_connection_service_lifecycle() {
     assert!(res.is_err());
 
     // 4. Admin can get it and test it
-    let detail = ConnectionService::get_connection(&state, &admin, &conn_id).await.unwrap();
+    let detail = ConnectionService::get_connection(&state, &admin, &conn_id)
+        .await
+        .unwrap();
     assert_eq!(detail.connection.name, "Extra Local");
 
-    let test_res = ConnectionService::test_connection(&state, &admin, &conn_id).await.unwrap();
+    let test_res = ConnectionService::test_connection(&state, &admin, &conn_id)
+        .await
+        .unwrap();
     assert!(test_res.success);
 
     // 5. Delete connection
-    ConnectionService::delete_connection(&state, &admin, &conn_id).await.unwrap();
+    ConnectionService::delete_connection(&state, &admin, &conn_id)
+        .await
+        .unwrap();
     assert!(!state.registry.contains(&conn_id).await);
 }
 
@@ -175,6 +183,31 @@ async fn test_plan36_settings_and_preferences_services() {
         .unwrap();
     assert_eq!(fetched.theme, "dracula");
     assert_eq!(fetched.list_density, "compact");
+
+    // 3. Dynamic Local Root change
+    let new_root = _temp.path().join("switched_root");
+    std::fs::create_dir_all(&new_root).unwrap();
+    std::fs::write(new_root.join("new_marker.txt"), "hello switched root").unwrap();
+
+    SettingsService::update_settings(
+        &state,
+        &admin,
+        backend::services::settings_service::UpdateSettingsRequest {
+            settings: None,
+            local_root: Some(new_root.to_string_lossy().to_string()),
+            temp_dir: None,
+            allow_symlinks: None,
+            show_hidden_default: None,
+            read_only_default: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let listing = FileService::list_directory(&state, &admin, "local", None, None, None, None)
+        .await
+        .unwrap();
+    assert!(listing.entries.iter().any(|e| e.name == "new_marker.txt"));
 }
 
 #[tokio::test]
@@ -260,6 +293,28 @@ async fn test_plan36_operation_service_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_plan36_auth_service_lifecycle() {
+    let (state, _temp) = setup_test_app().await;
+
+    // Valid login
+    let (user_info, session_id) = AuthService::login(&state, "admin", "admin12345", "127.0.0.1")
+        .await
+        .unwrap();
+    assert_eq!(user_info.username, "admin");
+    assert!(user_info.is_admin);
+    assert!(!session_id.is_empty());
+
+    // Logout
+    AuthService::logout(&state, &session_id, Some(&user_info.id), "127.0.0.1")
+        .await
+        .unwrap();
+
+    // Invalid login fails
+    let fail_res = AuthService::login(&state, "admin", "wrongpassword", "127.0.0.1").await;
+    assert!(fail_res.is_err());
+}
+
+#[tokio::test]
 async fn test_plan36_specialized_services() {
     let (state, _temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
@@ -342,10 +397,9 @@ async fn test_plan36_specialized_services() {
     .await
     .unwrap();
 
-    let (c_id, p) =
-        ShareService::verify_and_get_public_share(&state, &share.share_token, None)
-            .await
-            .unwrap();
+    let (c_id, p) = ShareService::verify_and_get_public_share(&state, &share.share_token, None)
+        .await
+        .unwrap();
     assert_eq!(c_id, "local");
     assert_eq!(p, edit_path);
 

@@ -833,6 +833,22 @@ impl TransferManager {
             .await
             .map_err(|e| anyhow::anyhow!("Stat source failed: {}", e))?;
 
+        if meta.kind != crate::domain::FileKind::Directory {
+            job.total_bytes = meta.size;
+            {
+                let mut map = jobs_map.write().await;
+                if let Some(j) = map.get_mut(&job.id) {
+                    j.total_bytes = meta.size;
+                }
+            }
+            Self::send_enveloped_event(
+                event_tx,
+                seq_counter,
+                event_history,
+                WsEvent::TransferProgress(job.clone()),
+            );
+        }
+
         // FAST-PATH: Native atomic rename for same-connection Move (preserves inode, permissions, timestamps, instant)
         if job.transfer_type == TransferType::Move
             && job.source_connection_id == job.destination_connection_id
@@ -914,6 +930,18 @@ impl TransferManager {
             let total_bytes: u64 = items.iter().map(|i| i.size).sum();
             job.total_bytes = total_bytes;
             job.transferred_bytes = 0;
+            {
+                let mut map = jobs_map.write().await;
+                if let Some(j) = map.get_mut(&job.id) {
+                    j.total_bytes = total_bytes;
+                }
+            }
+            Self::send_enveloped_event(
+                event_tx,
+                seq_counter,
+                event_history,
+                WsEvent::TransferProgress(job.clone()),
+            );
 
             // 1. Create root destination directory
             dst_fs
@@ -1004,7 +1032,7 @@ impl TransferManager {
                         file_transferred += n as u64;
 
                         let total_transferred = current_base_transferred + file_transferred;
-                        if last_emit.elapsed().as_millis() >= 200 || file_transferred == file_size {
+                        if last_emit.elapsed().as_millis() >= 100 || file_transferred == file_size {
                             let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
                             let speed = (total_transferred as f64 / elapsed_secs) as u64;
                             let eta = if speed > 0 && total_bytes > total_transferred {
@@ -1150,7 +1178,7 @@ impl TransferManager {
                 transferred += n as u64;
 
                 // Update metrics & emit progress events
-                if last_emit.elapsed().as_millis() >= 200 || transferred == total_bytes {
+                if last_emit.elapsed().as_millis() >= 100 || transferred == total_bytes {
                     let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
                     let speed = (transferred as f64 / elapsed_secs) as u64;
                     let eta = if speed > 0 && total_bytes > transferred {

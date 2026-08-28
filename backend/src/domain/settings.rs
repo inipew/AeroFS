@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct GeneralSettings {
     pub language: String,
     pub theme: String,
@@ -31,6 +32,7 @@ fn default_max_editable_size() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct FileManagerSettings {
     pub default_layout: String, // "single" | "split"
     pub show_breadcrumbs: bool,
@@ -55,6 +57,7 @@ impl Default for FileManagerSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct TransferSettings {
     pub max_concurrent_transfers: usize,
     pub retry_attempts: usize,
@@ -74,6 +77,7 @@ impl Default for TransferSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct ConnectionSettings {
     pub connection_timeout_secs: u64,
     pub health_check_interval_secs: u64,
@@ -95,6 +99,7 @@ impl Default for ConnectionSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct SecuritySettings {
     pub allow_symlinks_outside_root: bool,
     pub confirm_permanent_delete: bool,
@@ -114,6 +119,7 @@ impl Default for SecuritySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
 pub struct AdvancedSettings {
     pub log_level: String, // "info" | "debug" | "trace"
     pub enable_telemetry: bool,
@@ -158,6 +164,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(default)]
 pub struct UserPreferences {
     #[serde(default = "default_language")]
     pub language: String,
@@ -208,6 +215,7 @@ impl Default for UserPreferences {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(default)]
 pub struct SystemSettings {
     pub default_local_root: String,
     pub temp_dir: String,
@@ -233,11 +241,18 @@ impl Default for SystemSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+#[serde(default)]
 pub struct AppSettings {
+    #[serde(default)]
     pub general: GeneralSettings,
+    #[serde(default)]
     pub file_manager: FileManagerSettings,
+    #[serde(default)]
     pub transfers: TransferSettings,
+    #[serde(default)]
     pub connections: ConnectionSettings,
+    #[serde(default)]
     pub security: SecuritySettings,
+    #[serde(default)]
     pub advanced: AdvancedSettings,
 }

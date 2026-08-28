@@ -1,5 +1,6 @@
 pub mod archive_service;
 pub mod audit_service;
+pub mod auth_service;
 pub mod authorization_service;
 pub mod connection_service;
 pub mod editor_service;
@@ -16,6 +17,7 @@ pub mod trash_service;
 
 pub use archive_service::ArchiveService;
 pub use audit_service::AuditService;
+pub use auth_service::AuthService;
 pub use authorization_service::AuthorizationService;
 pub use connection_service::ConnectionService;
 pub use editor_service::EditorService;

@@ -54,7 +54,13 @@ impl ConnectionService {
     /// Load all enabled storage connections from SQLite and register into ProviderRegistry
     pub async fn load_all_providers_from_db(state: &AppState) {
         // 1. Always load local filesystem provider
-        let local_root = state.config.filesystem.default_local_root.clone();
+        let local_root = if let Some(custom) =
+            crate::services::SettingsService::get_system_setting(state, "local_root").await
+        {
+            std::path::PathBuf::from(custom)
+        } else {
+            state.config.filesystem.default_local_root.clone()
+        };
         if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
             tracing::error!("Failed to create local root dir {:?}: {}", local_root, e);
         } else {
