@@ -423,6 +423,44 @@ impl AppConfig {
             self.limits.max_concurrent_transfers = n;
         }
 
+        // Storage Layer Overrides
+        if let Ok(c_str) = env::var("AEROFS_STORAGE_CONCURRENCY")
+            .or_else(|_| env::var("AEROFS_STORAGE_DEFAULT_CONCURRENCY"))
+        {
+            if let Ok(c) = c_str.parse::<usize>() {
+                self.storage.default_concurrency = c;
+            }
+        }
+        if let Ok(t_str) = env::var("AEROFS_STORAGE_TIMEOUT")
+            .or_else(|_| env::var("AEROFS_STORAGE_DEFAULT_TIMEOUT"))
+        {
+            if let Ok(t) = t_str.parse::<u64>() {
+                self.storage.default_timeout_secs = t;
+            }
+        }
+        if let Ok(iot_str) = env::var("AEROFS_STORAGE_IO_TIMEOUT")
+            .or_else(|_| env::var("AEROFS_STORAGE_DEFAULT_IO_TIMEOUT"))
+        {
+            if let Ok(iot) = iot_str.parse::<u64>() {
+                self.storage.default_io_timeout_secs = iot;
+            }
+        }
+        if let Ok(s3_c_str) = env::var("AEROFS_STORAGE_S3_CONCURRENCY") {
+            if let Ok(s3_c) = s3_c_str.parse::<usize>() {
+                self.storage.s3.max_concurrency = s3_c;
+            }
+        }
+        if let Ok(sftp_c_str) = env::var("AEROFS_STORAGE_SFTP_CONCURRENCY") {
+            if let Ok(sftp_c) = sftp_c_str.parse::<usize>() {
+                self.storage.sftp.max_concurrency = sftp_c;
+            }
+        }
+        if let Ok(ftp_c_str) = env::var("AEROFS_STORAGE_FTP_CONCURRENCY") {
+            if let Ok(ftp_c) = ftp_c_str.parse::<usize>() {
+                self.storage.ftp.max_concurrency = ftp_c;
+            }
+        }
+
         Ok(())
     }
 
@@ -995,6 +1033,46 @@ pub static CONFIG_DESCRIPTORS: &[ConfigDescriptor] = &[
         runtime_mutable: true,
         restart_required: false,
         subsystems: &["VFS", "Directory Listing"],
+    },
+    ConfigDescriptor {
+        key: "storage.default_concurrency",
+        description: "Default concurrency limit across OpenDAL storage backends",
+        value_type: "usize",
+        default_value: "16",
+        env_variable: Some("AEROFS_STORAGE_CONCURRENCY"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["OpenDAL", "Storage Runtime"],
+    },
+    ConfigDescriptor {
+        key: "storage.default_timeout_secs",
+        description: "Default control operation timeout for storage provider requests in seconds",
+        value_type: "u64",
+        default_value: "60",
+        env_variable: Some("AEROFS_STORAGE_TIMEOUT"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["OpenDAL", "Storage Runtime"],
+    },
+    ConfigDescriptor {
+        key: "storage.s3.max_concurrency",
+        description: "Maximum concurrent in-flight requests for Amazon S3 / S3-compatible endpoints",
+        value_type: "usize",
+        default_value: "64",
+        env_variable: Some("AEROFS_STORAGE_S3_CONCURRENCY"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["OpenDAL", "S3 Provider"],
+    },
+    ConfigDescriptor {
+        key: "storage.sftp.max_concurrency",
+        description: "Maximum concurrent in-flight requests for remote SFTP / SSH connections",
+        value_type: "usize",
+        default_value: "8",
+        env_variable: Some("AEROFS_STORAGE_SFTP_CONCURRENCY"),
+        runtime_mutable: true,
+        restart_required: false,
+        subsystems: &["OpenDAL", "SFTP Provider"],
     },
 ];
 

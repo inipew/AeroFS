@@ -287,7 +287,7 @@ async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {
 }
 
 async fn seed_default_connection(pool: &DbPool) -> anyhow::Result<()> {
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM connections")
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM connections WHERE id = 'local'")
         .fetch_one(pool)
         .await?;
 
@@ -296,7 +296,7 @@ async fn seed_default_connection(pool: &DbPool) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "INSERT INTO connections (id, name, provider, base_path, read_only, enabled, created_at, updated_at)
+            "INSERT OR IGNORE INTO connections (id, name, provider, base_path, read_only, enabled, created_at, updated_at)
              VALUES (?, 'Local Storage', 'local', '/', 0, 1, ?, ?)"
         )
         .bind(conn_id)

@@ -381,21 +381,19 @@ impl FileSystem for OpenDalFileSystem {
                     return Ok(());
                 }
 
-                // 3. If non-empty directory, recursively delete children with bounded concurrency (16 workers)
-                if let Ok(entries) = self.list(path).await {
-                    if !entries.is_empty() {
-                        use futures::StreamExt;
-                        let stream =
-                            futures::stream::iter(entries.into_iter().filter_map(|entry| {
-                                let child_vfs =
-                                    VfsPath::new(&self.connection_id, &entry.path).ok()?;
-                                Some(async move { Box::pin(self.delete(&child_vfs)).await })
-                            }));
-                        let mut buffered = stream.buffer_unordered(16);
-                        while let Some(res) = buffered.next().await {
-                            res?;
+                // 3. If non-empty directory, recursively delete children using streaming list_stream
+                if let Ok(mut stream) = self.list_stream(path).await {
+                    let mut has_entries = false;
+                    while let Some(entry_res) = stream.next().await {
+                        if let Ok(entry) = entry_res {
+                            has_entries = true;
+                            if let Ok(child_vfs) = VfsPath::new(&self.connection_id, &entry.path) {
+                                let _ = Box::pin(self.delete(&child_vfs)).await;
+                            }
                         }
+                    }
 
+                    if has_entries {
                         if self.operator.delete(&dir_op_path).await.is_ok() {
                             return Ok(());
                         }
@@ -439,8 +437,9 @@ impl FileSystem for OpenDalFileSystem {
 
         if meta.kind == FileKind::Directory {
             self.create_dir(to).await?;
-            let entries = self.list(from).await?;
-            for entry in entries {
+            let mut stream = self.list_stream(from).await?;
+            while let Some(res) = stream.next().await {
+                let entry = res?;
                 let child_name = entry.name;
                 let child_from = from.join(&child_name)?;
                 let child_to = to.join(&child_name)?;

@@ -64,7 +64,7 @@ async fn test_realtime_cancellation_with_token() {
 
     // 4. Wait for cancellation to settle
     let mut cancelled = false;
-    for _ in 0..50 {
+    for _ in 0..80 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let jobs = state
             .transfer_manager

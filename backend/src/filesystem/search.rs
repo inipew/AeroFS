@@ -1,6 +1,7 @@
 use crate::domain::{FileEntry, FileKind, VfsPath};
 use crate::errors::VfsError;
 use crate::vfs::FileSystem;
+use futures::StreamExt;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -47,8 +48,8 @@ pub async fn search_recursive(
             continue;
         }
 
-        let entries = match provider.list(&current_dir).await {
-            Ok(e) => e,
+        let mut stream = match provider.list_stream(&current_dir).await {
+            Ok(s) => s,
             Err(e) => {
                 match e {
                     VfsError::ConnectionError(_) | VfsError::PermissionDenied(_) => {
@@ -60,9 +61,22 @@ pub async fn search_recursive(
             }
         };
 
-        total_scanned += entries.len();
+        while let Some(entry_res) = stream.next().await {
+            let entry = match entry_res {
+                Ok(e) => e,
+                Err(e) => {
+                    match e {
+                        VfsError::ConnectionError(_) | VfsError::PermissionDenied(_) => {
+                            errors.push(format!("{}: {}", current_dir.path, e));
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+            };
 
-        for entry in entries {
+            total_scanned += 1;
+
             let is_match = if let Some(re) = &regex_matcher {
                 re.is_match(&entry.name)
             } else {

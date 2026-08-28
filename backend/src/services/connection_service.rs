@@ -63,19 +63,19 @@ impl ConnectionService {
         };
         if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
             tracing::error!("Failed to create local root dir {:?}: {}", local_root, e);
-        } else {
-            match ProviderFactory::build_local("local", local_root.clone()) {
-                Ok(local_fs) => {
-                    state.registry.register("local".to_string(), local_fs).await;
-                    tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to init Local Storage provider: {}", e);
-                    state
-                        .registry
-                        .set_connection_error("local", &e.to_string())
-                        .await;
-                }
+        }
+        let local_cfg = state.config.storage.get_provider_config("local");
+        match ProviderFactory::build_local_with_config("local", local_root.clone(), Some(&local_cfg)) {
+            Ok(local_fs) => {
+                state.registry.register("local".to_string(), local_fs).await;
+                tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
+            }
+            Err(e) => {
+                tracing::error!("Failed to init Local Storage provider: {}", e);
+                state
+                    .registry
+                    .set_connection_error("local", &e.to_string())
+                    .await;
             }
         }
 
@@ -136,8 +136,8 @@ impl ConnectionService {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             };
-
-            match ProviderFactory::build(&conn, decrypted_secret.as_deref()) {
+            let provider_cfg = state.config.storage.get_provider_config(&provider_type);
+            match ProviderFactory::build_with_config(&conn, decrypted_secret.as_deref(), Some(&provider_cfg)) {
                 Ok(fs) => {
                     state.registry.register(id.clone(), fs).await;
                     tracing::info!(
@@ -374,7 +374,8 @@ impl ConnectionService {
         };
 
         // Build live provider FIRST before saving (fail-closed)
-        let fs = ProviderFactory::build(&conn, payload.secret.as_deref())
+        let provider_cfg = state.config.storage.get_provider_config(provider_str);
+        let fs = ProviderFactory::build_with_config(&conn, payload.secret.as_deref(), Some(&provider_cfg))
             .map_err(|e| AppError::BadRequest(format!("Failed to build provider: {}", e)))?;
 
         // Save connection to DB in transaction

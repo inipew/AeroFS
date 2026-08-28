@@ -131,6 +131,57 @@ pub enum ArchiveOverwriteMode {
     KeepBoth,
 }
 
+/// Collect all files to be included in an archive, recursing through directories via list_stream
+async fn collect_archive_files(
+    provider: &Arc<dyn FileSystem>,
+    connection_id: &str,
+    base_dir: &str,
+    relative_paths: &[String],
+) -> Result<Vec<(String, VfsPath)>, VfsError> {
+    use futures::StreamExt;
+    let mut files = Vec::new();
+
+    for rel in relative_paths {
+        let full_vfs = if base_dir == "/" {
+            VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
+        } else {
+            VfsPath::new(
+                connection_id,
+                format!(
+                    "{}/{}",
+                    base_dir.trim_end_matches('/'),
+                    rel.trim_start_matches('/')
+                ),
+            )?
+        };
+
+        let meta = provider.stat(&full_vfs).await?;
+        if meta.kind == FileKind::File {
+            files.push((rel.trim_start_matches('/').to_string(), full_vfs));
+        } else if meta.kind == FileKind::Directory {
+            let mut stack = vec![(rel.trim_start_matches('/').to_string(), full_vfs)];
+            while let Some((parent_rel, parent_vfs)) = stack.pop() {
+                let mut stream = provider.list_stream(&parent_vfs).await?;
+                while let Some(res) = stream.next().await {
+                    let entry = res?;
+                    let child_rel = if parent_rel.is_empty() {
+                        entry.name.clone()
+                    } else {
+                        format!("{}/{}", parent_rel, entry.name)
+                    };
+                    let child_vfs = VfsPath::new(connection_id, &entry.path)?;
+                    if entry.kind == FileKind::Directory {
+                        stack.push((child_rel, child_vfs));
+                    } else {
+                        files.push((child_rel, child_vfs));
+                    }
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
 /// Compress selected files into a ZIP archive via streaming
 pub async fn compress_zip(
     provider: &Arc<dyn FileSystem>,
@@ -143,6 +194,8 @@ pub async fn compress_zip(
         .map_err(|e| VfsError::IoError(format!("Failed to create temp zip file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
 
+    let files_to_pack = collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
+
     {
         let file = std::fs::File::create(&temp_path)
             .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
@@ -150,29 +203,13 @@ pub async fn compress_zip(
         let options =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        for rel in relative_paths {
-            let full_vfs = if base_dir == "/" {
-                VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
-            } else {
-                VfsPath::new(
-                    connection_id,
-                    format!(
-                        "{}/{}",
-                        base_dir.trim_end_matches('/'),
-                        rel.trim_start_matches('/')
-                    ),
-                )?
-            };
+        for (rel_path, full_vfs) in files_to_pack {
+            let reader = provider.read_stream(&full_vfs).await?;
+            zip.start_file(&rel_path, options)
+                .map_err(|e| VfsError::IoError(format!("Zip entry error: {}", e)))?;
 
-            let meta = provider.stat(&full_vfs).await?;
-            if meta.kind == FileKind::File {
-                let reader = provider.read_stream(&full_vfs).await?;
-                zip.start_file(rel.trim_start_matches('/'), options)
-                    .map_err(|e| VfsError::IoError(format!("Zip entry error: {}", e)))?;
-
-                // Stream file in 64 KiB chunks directly into zip compressor
-                stream_async_to_sync_writer(reader, &mut zip).await?;
-            }
+            // Stream file in 64 KiB chunks directly into zip compressor
+            stream_async_to_sync_writer(reader, &mut zip).await?;
         }
         zip.finish()
             .map_err(|e| VfsError::IoError(format!("Zip finalize error: {}", e)))?;
@@ -394,47 +431,33 @@ pub async fn compress_targz(
         .map_err(|e| VfsError::IoError(format!("Failed to create temp targz file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
 
+    let files_to_pack = collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
+
     {
         let file = std::fs::File::create(&temp_path)
             .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
         let enc = GzEncoder::new(file, Compression::default());
         let mut tar_builder = tar::Builder::new(enc);
 
-        for rel in relative_paths {
-            let full_vfs = if base_dir == "/" {
-                VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
-            } else {
-                VfsPath::new(
-                    connection_id,
-                    format!(
-                        "{}/{}",
-                        base_dir.trim_end_matches('/'),
-                        rel.trim_start_matches('/')
-                    ),
-                )?
-            };
+        for (rel_path, full_vfs) in files_to_pack {
+            let mut reader = provider.read_stream(&full_vfs).await?;
+            let mut content = Vec::new();
+            reader.read_to_end(&mut content).await.map_err(|e| {
+                VfsError::IoError(format!("Failed to read file {}: {}", full_vfs.path, e))
+            })?;
 
-            let meta = provider.stat(&full_vfs).await?;
-            if meta.kind == FileKind::File {
-                let mut reader = provider.read_stream(&full_vfs).await?;
-                let mut content = Vec::new();
-                reader.read_to_end(&mut content).await.map_err(|e| {
-                    VfsError::IoError(format!("Failed to read file {}: {}", full_vfs.path, e))
-                })?;
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
 
-                let mut header = tar::Header::new_gnu();
-                header.set_size(content.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-
-                tar_builder
-                    .append_data(
-                        &mut header,
-                        rel.trim_start_matches('/'),
-                        Cursor::new(content),
-                    )
-                    .map_err(|e| VfsError::IoError(format!("Tar append error: {}", e)))?;
-            }
+            tar_builder
+                .append_data(
+                    &mut header,
+                    &rel_path,
+                    Cursor::new(content),
+                )
+                .map_err(|e| VfsError::IoError(format!("Tar append error: {}", e)))?;
         }
 
         tar_builder

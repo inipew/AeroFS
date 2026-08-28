@@ -47,9 +47,25 @@ impl AppState {
         state
     }
 
-    /// Convenience forwarder to ProviderRegistry
+    /// Convenience forwarder to ProviderRegistry with fail-safe local fallback
     pub async fn get_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
-        self.registry.get(connection_id).await
+        if let Some(p) = self.registry.get(connection_id).await {
+            return Some(p);
+        }
+        if connection_id == "local" {
+            let local_root = self.config.filesystem.default_local_root.clone();
+            let _ = tokio::fs::create_dir_all(&local_root).await;
+            let local_cfg = self.config.storage.get_provider_config("local");
+            if let Ok(local_fs) = crate::vfs::factory::ProviderFactory::build_local_with_config(
+                "local",
+                local_root,
+                Some(&local_cfg),
+            ) {
+                self.registry.register("local".to_string(), local_fs.clone()).await;
+                return Some(local_fs);
+            }
+        }
+        None
     }
 
     pub async fn register_provider(&self, connection_id: String, provider: Arc<dyn FileSystem>) {

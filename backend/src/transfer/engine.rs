@@ -1197,12 +1197,14 @@ impl TransferManager {
                         )?
                     };
 
-                    let entries = fs
-                        .list(&current_vfs)
+                    use futures::StreamExt;
+                    let mut stream = fs
+                        .list_stream(&current_vfs)
                         .await
-                        .map_err(|e| anyhow::anyhow!("List failed: {}", e))?;
+                        .map_err(|e| anyhow::anyhow!("List stream failed: {}", e))?;
 
-                    for entry in entries {
+                    while let Some(entry_res) = stream.next().await {
+                        let entry = entry_res.map_err(|e| anyhow::anyhow!("List error: {}", e))?;
                         if cancel_token.is_cancelled() {
                             return Err(anyhow::anyhow!("Transfer cancelled by user"));
                         }
