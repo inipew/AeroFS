@@ -10,7 +10,7 @@ pub mod range;
 pub mod retry;
 pub mod settings;
 
-pub use capabilities::Capabilities;
+pub use capabilities::{Capabilities, ChecksumCapabilities};
 pub use conflict::{ConflictPolicy, ConflictResolver};
 pub use connection::{Connection, ConnectionStatus, ProviderConfig, ProviderKind, SftpAuth};
 pub use file::{DirectoryListing, FileEntry, FileKind, FileMetadata, FileVersion};

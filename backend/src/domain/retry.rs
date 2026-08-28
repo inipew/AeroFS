@@ -64,6 +64,8 @@ impl RetryPolicy {
                 | crate::errors::VfsError::Security(_) => false,
                 crate::errors::VfsError::ConnectionError(_)
                 | crate::errors::VfsError::IoError(_)
+                | crate::errors::VfsError::RateLimited(_)
+                | crate::errors::VfsError::Timeout(_)
                 | crate::errors::VfsError::ChecksumMismatch(_) => true,
             },
             AppError::Conflict(_) => false,

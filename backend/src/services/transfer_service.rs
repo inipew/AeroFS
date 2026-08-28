@@ -251,7 +251,9 @@ impl TransferService {
             id: r.get("id"),
             user_id: r.get("user_id"),
             name: r.get("name"),
-            transfer_type: crate::transfer::TransferType::from_str(&r.get::<String, _>("transfer_type")),
+            transfer_type: crate::transfer::TransferType::from_str(
+                &r.get::<String, _>("transfer_type"),
+            ),
             source_connection_id: r.get("source_connection_id"),
             source_path: r.get("source_path"),
             destination_connection_id: r.get("destination_connection_id"),
@@ -305,7 +307,10 @@ impl TransferService {
         }
 
         if let Some(conn) = connection {
-            query_str.push_str(&format!(" AND (source_connection_id = '{0}' OR destination_connection_id = '{0}')", conn.replace('\'', "''")));
+            query_str.push_str(&format!(
+                " AND (source_connection_id = '{0}' OR destination_connection_id = '{0}')",
+                conn.replace('\'', "''")
+            ));
         }
 
         query_str.push_str(&format!(" ORDER BY created_at DESC LIMIT {}", limit));
@@ -337,7 +342,9 @@ impl TransferService {
                 id: r.get("id"),
                 user_id: r.get("user_id"),
                 name: r.get("name"),
-                transfer_type: crate::transfer::TransferType::from_str(&r.get::<String, _>("transfer_type")),
+                transfer_type: crate::transfer::TransferType::from_str(
+                    &r.get::<String, _>("transfer_type"),
+                ),
                 source_connection_id: r.get("source_connection_id"),
                 source_path: r.get("source_path"),
                 destination_connection_id: r.get("destination_connection_id"),

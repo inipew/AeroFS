@@ -90,6 +90,12 @@ pub enum VfsError {
     #[error("Insufficient storage: {0}")]
     InsufficientStorage(String),
 
+    #[error("Rate limited by storage provider: {0}")]
+    RateLimited(String),
+
+    #[error("Storage operation timed out: {0}")]
+    Timeout(String),
+
     #[error("Checksum mismatch: {0}")]
     ChecksumMismatch(String),
 
@@ -293,6 +299,22 @@ impl IntoResponse for AppError {
                 ErrorCategory::Io,
                 true,
                 Some("retransfer_payload".to_string()),
+                msg.clone(),
+            ),
+            AppError::Vfs(VfsError::RateLimited(msg)) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMITED",
+                ErrorCategory::RateLimited,
+                true,
+                Some("retry_after_backoff".to_string()),
+                msg.clone(),
+            ),
+            AppError::Vfs(VfsError::Timeout(msg)) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "STORAGE_TIMEOUT",
+                ErrorCategory::Timeout,
+                true,
+                Some("retry_operation".to_string()),
                 msg.clone(),
             ),
             AppError::Vfs(vfs_err) => (

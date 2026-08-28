@@ -18,7 +18,11 @@ pub async fn handle(ctx: &CliContext) -> Result<(), CliError> {
         version: env!("CARGO_PKG_VERSION"),
         target_arch: std::env::consts::ARCH,
         target_os: std::env::consts::OS,
-        profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+        profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
         features: &[
             "sqlite",
             "opendal-fs",
@@ -34,8 +38,19 @@ pub async fn handle(ctx: &CliContext) -> Result<(), CliError> {
     ctx.output.print_success("version", &version_data, || {
         println!("AeroFS v{}", env!("CARGO_PKG_VERSION"));
         println!("  • Name: {}", env!("CARGO_PKG_NAME"));
-        println!("  • Platform: {}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        println!("  • Build Profile: {}", if cfg!(debug_assertions) { "debug" } else { "release" });
+        println!(
+            "  • Platform: {}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+        println!(
+            "  • Build Profile: {}",
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+        );
         println!("  • Providers: Local Filesystem, AWS S3, FTP, SFTP");
         println!("  • Security: Argon2id, Session HMAC, Strict Path Sandboxing");
     });

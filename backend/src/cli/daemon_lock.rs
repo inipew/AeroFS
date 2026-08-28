@@ -105,10 +105,7 @@ impl DaemonLock {
             return ProcessStatus::Stopped;
         }
 
-        let file_res = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(lock_path);
+        let file_res = OpenOptions::new().read(true).write(false).open(lock_path);
 
         let file = match file_res {
             Ok(f) => f,

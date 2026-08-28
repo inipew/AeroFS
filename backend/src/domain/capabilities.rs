@@ -1,6 +1,42 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Typed granular checksum capabilities for storage backends
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ChecksumCapabilities {
+    pub md5: bool,
+    pub crc32: bool,
+    pub crc32c: bool,
+    pub sha1: bool,
+    pub sha256: bool,
+}
+
+impl ChecksumCapabilities {
+    pub fn all() -> Self {
+        Self {
+            md5: true,
+            crc32: true,
+            crc32c: true,
+            sha1: true,
+            sha256: true,
+        }
+    }
+
+    pub fn s3_default() -> Self {
+        Self {
+            md5: true,
+            crc32: true,
+            crc32c: true,
+            sha1: true,
+            sha256: true,
+        }
+    }
+
+    pub fn has_any(&self) -> bool {
+        self.md5 || self.crc32 || self.crc32c || self.sha1 || self.sha256
+    }
+}
+
 /// Describes the operational capabilities supported by a specific VFS provider instance.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Capabilities {
@@ -18,11 +54,20 @@ pub struct Capabilities {
     pub copy: bool,
     pub move_: bool,
 
-    // Transfer
+    // Transfer & Streaming
     pub upload: bool,
     pub download: bool,
     pub resume_upload: bool,
     pub resume_download: bool,
+    pub range_read: bool,
+    pub resumable_read: bool,
+    pub multipart_write: bool,
+    pub resumable_write: bool,
+
+    // Object Storage & Acceleration
+    pub presign_read: bool,
+    pub presign_write: bool,
+    pub conditional_write: bool,
 
     // Advanced & Integrity
     pub atomic_write: bool,
@@ -32,7 +77,7 @@ pub struct Capabilities {
     pub permissions: bool,
     pub watch: bool,
     pub checksum: bool,
-    pub range_read: bool,
+    pub checksums: ChecksumCapabilities,
 }
 
 impl Capabilities {
@@ -53,6 +98,13 @@ impl Capabilities {
             download: true,
             resume_upload: true,
             resume_download: true,
+            range_read: true,
+            resumable_read: true,
+            multipart_write: false,
+            resumable_write: true,
+            presign_read: false,
+            presign_write: false,
+            conditional_write: false,
             atomic_write: true,
             atomic_rename: true,
             server_side_copy: true,
@@ -60,7 +112,7 @@ impl Capabilities {
             permissions: true,
             watch: true,
             checksum: true,
-            range_read: true,
+            checksums: ChecksumCapabilities::all(),
         }
     }
 
@@ -73,6 +125,11 @@ impl Capabilities {
         self.rename = false;
         self.move_ = false;
         self.upload = false;
+        self.resume_upload = false;
+        self.multipart_write = false;
+        self.resumable_write = false;
+        self.presign_write = false;
+        self.conditional_write = false;
         self.atomic_write = false;
         self.atomic_rename = false;
         self

@@ -503,5 +503,8 @@ async fn test_transfer_dynamic_limits_update() {
         }
     }
 
-    assert!(completed, "Transfer job must complete successfully under updated dynamic limits");
+    assert!(
+        completed,
+        "Transfer job must complete successfully under updated dynamic limits"
+    );
 }

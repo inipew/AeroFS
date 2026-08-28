@@ -140,8 +140,15 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/{id}/files/rename", post(files::rename_entry))
         .route("/{id}/files/copy", post(files::copy_entry))
-        .route("/{id}/files/move", post(files::rename_entry))
         .route("/{id}/files/chmod", post(files::chmod_file))
+        .route(
+            "/{id}/files/presign/download",
+            post(files::presign_download_file),
+        )
+        .route(
+            "/{id}/files/presign/upload",
+            post(files::presign_upload_file),
+        )
         .route("/{id}/storage-info", get(files::get_storage_info))
         .route("/{id}/upload", post(files::upload_file))
         .route("/{id}/archive/compress", post(archive::compress_files))

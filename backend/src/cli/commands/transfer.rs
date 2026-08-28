@@ -82,11 +82,32 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     println!("  • Type:                {}", j.transfer_type.as_str());
                     println!("  • Status:              {}", j.status.as_str());
                     println!("  • Phase:               {}", j.phase.as_str());
-                    println!("  • User ID:             {}", j.user_id.as_deref().unwrap_or("System"));
-                    println!("  • Source:              {}:{}", j.source_connection_id, j.source_path);
-                    println!("  • Destination:         {}:{}", j.destination_connection_id, j.destination_path);
-                    println!("  • Progress:            {} / {} bytes ({:.1}%)", j.transferred_bytes, j.total_bytes, if j.total_bytes > 0 { (j.transferred_bytes as f64 / j.total_bytes as f64) * 100.0 } else { 0.0 });
-                    println!("  • Speed:               {} bytes/sec", j.speed_bytes_per_sec);
+                    println!(
+                        "  • User ID:             {}",
+                        j.user_id.as_deref().unwrap_or("System")
+                    );
+                    println!(
+                        "  • Source:              {}:{}",
+                        j.source_connection_id, j.source_path
+                    );
+                    println!(
+                        "  • Destination:         {}:{}",
+                        j.destination_connection_id, j.destination_path
+                    );
+                    println!(
+                        "  • Progress:            {} / {} bytes ({:.1}%)",
+                        j.transferred_bytes,
+                        j.total_bytes,
+                        if j.total_bytes > 0 {
+                            (j.transferred_bytes as f64 / j.total_bytes as f64) * 100.0
+                        } else {
+                            0.0
+                        }
+                    );
+                    println!(
+                        "  • Speed:               {} bytes/sec",
+                        j.speed_bytes_per_sec
+                    );
                     if let Some(eta) = j.eta_seconds {
                         println!("  • ETA:                 {} seconds", eta);
                     }
@@ -98,7 +119,10 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                 });
                 Ok(())
             } else {
-                Err(CliError::not_found(format!("Transfer job '{}' not found", id)))
+                Err(CliError::not_found(format!(
+                    "Transfer job '{}' not found",
+                    id
+                )))
             }
         }
         TransferAction::Cancel { id } => {
@@ -158,7 +182,9 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                 .transfer_manager
                 .clear_finished_jobs(None, true)
                 .await
-                .map_err(|e| CliError::general(format!("Failed to clear finished transfers: {}", e)))?;
+                .map_err(|e| {
+                    CliError::general(format!("Failed to clear finished transfers: {}", e))
+                })?;
 
             let out = serde_json::json!({
                 "cleared_count": cleared,
@@ -166,7 +192,10 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             });
 
             ctx.output.print_success("transfer.clear", &out, || {
-                println!("✓ Cleared {} finished transfer job(s) from history.", cleared);
+                println!(
+                    "✓ Cleared {} finished transfer job(s) from history.",
+                    cleared
+                );
             });
             Ok(())
         }
@@ -176,7 +205,8 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             }
 
             if dry_run {
-                let count = TransferService::purge_transfers_older_than(&pool, days, true).await
+                let count = TransferService::purge_transfers_older_than(&pool, days, true)
+                    .await
                     .map_err(|e| CliError::database(format!("Dry-run query error: {}", e)))?;
 
                 let out = TransferPurgeOutput {
@@ -185,11 +215,18 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     dry_run: true,
                 };
                 ctx.output.print_success("transfer.purge", &out, || {
-                    println!("ℹ Dry-run: Would purge {} transfer record(s) older than {} days.", count, days);
+                    println!(
+                        "ℹ Dry-run: Would purge {} transfer record(s) older than {} days.",
+                        count, days
+                    );
                 });
                 Ok(())
             } else {
-                let confirmed = yes || prompt_confirm(&format!("Purge finished transfer records older than {} days?", days), false)
+                let confirmed = yes
+                    || prompt_confirm(
+                        &format!("Purge finished transfer records older than {} days?", days),
+                        false,
+                    )
                     .unwrap_or(false);
 
                 if !confirmed {
@@ -197,7 +234,8 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     return Ok(());
                 }
 
-                let count = TransferService::purge_transfers_older_than(&pool, days, false).await
+                let count = TransferService::purge_transfers_older_than(&pool, days, false)
+                    .await
                     .map_err(|e| CliError::database(format!("Purge execution error: {}", e)))?;
 
                 let out = TransferPurgeOutput {
@@ -206,14 +244,18 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     dry_run: false,
                 };
                 ctx.output.print_success("transfer.purge", &out, || {
-                    println!("✓ Successfully purged {} transfer record(s) older than {} days.", count, days);
+                    println!(
+                        "✓ Successfully purged {} transfer record(s) older than {} days.",
+                        count, days
+                    );
                 });
                 Ok(())
             }
         }
         TransferAction::Repair { dry_run, yes } => {
             if dry_run {
-                let count = TransferService::repair_stuck_transfers(&pool, true).await
+                let count = TransferService::repair_stuck_transfers(&pool, true)
+                    .await
                     .map_err(|e| CliError::database(format!("Query error: {}", e)))?;
 
                 let out = TransferRepairOutput {
@@ -221,11 +263,18 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     dry_run: true,
                 };
                 ctx.output.print_success("transfer.repair", &out, || {
-                    println!("ℹ Dry-run: Found {} stuck transfer record(s) that would be marked failed.", count);
+                    println!(
+                        "ℹ Dry-run: Found {} stuck transfer record(s) that would be marked failed.",
+                        count
+                    );
                 });
                 Ok(())
             } else {
-                let confirmed = yes || prompt_confirm("Mark all orphaned/stuck running transfers as failed?", false)
+                let confirmed = yes
+                    || prompt_confirm(
+                        "Mark all orphaned/stuck running transfers as failed?",
+                        false,
+                    )
                     .unwrap_or(false);
 
                 if !confirmed {
@@ -233,7 +282,8 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     return Ok(());
                 }
 
-                let count = TransferService::repair_stuck_transfers(&pool, false).await
+                let count = TransferService::repair_stuck_transfers(&pool, false)
+                    .await
                     .map_err(|e| CliError::database(format!("Repair error: {}", e)))?;
 
                 let out = TransferRepairOutput {

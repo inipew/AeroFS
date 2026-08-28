@@ -171,10 +171,7 @@ pub fn read_password_prompt(prompt: &str) -> anyhow::Result<String> {
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
         let ret = unsafe { libc::tcgetattr(fd, &mut termios) };
         if ret == 0 {
-            let guard = TermiosGuard {
-                fd,
-                orig: termios,
-            };
+            let guard = TermiosGuard { fd, orig: termios };
 
             let mut silent_termios = termios;
             silent_termios.c_lflag &= !(libc::ECHO | libc::ECHONL);

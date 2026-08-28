@@ -37,7 +37,10 @@ impl CliContext {
             CliError::new(
                 ExitCode::DatabaseError,
                 "DATABASE_CONNECT_ERROR",
-                format!("Failed to connect to database at {}: {}", self.config.database.url, e),
+                format!(
+                    "Failed to connect to database at {}: {}",
+                    self.config.database.url, e
+                ),
             )
         })
     }

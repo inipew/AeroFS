@@ -1,7 +1,9 @@
+use super::planner::{TransferPlanner, TransferStrategy};
 use crate::db::DbPool;
 use crate::domain::VfsPath;
 use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -1101,11 +1103,10 @@ impl TransferManager {
             );
         }
 
-        // FAST-PATH: Native atomic rename for same-connection Move (preserves inode, permissions, timestamps, instant)
-        if job.transfer_type == TransferType::Move
-            && job.source_connection_id == job.destination_connection_id
-        {
-            match src_fs.rename(&src_vfs, &dst_vfs).await {
+        let strategy = TransferPlanner::plan_transfer(job, &src_fs, &dst_fs, &src_vfs, &dst_vfs);
+
+        match strategy {
+            TransferStrategy::NativeRename => match src_fs.rename(&src_vfs, &dst_vfs).await {
                 Ok(_) => {
                     job.transferred_bytes = meta.size;
                     job.total_bytes = meta.size;
@@ -1118,109 +1119,176 @@ impl TransferManager {
                 Err(e) => {
                     tracing::warn!("Native rename fallback on same-connection move ({}), streaming copy+delete", e);
                 }
-            }
+            },
+            TransferStrategy::ServerSideCopy => match src_fs.copy(&src_vfs, &dst_vfs).await {
+                Ok(_) => {
+                    if job.transfer_type == TransferType::Move {
+                        src_fs.delete(&src_vfs).await.map_err(|e| {
+                            anyhow::anyhow!("Cleanup source failed during server-side move: {}", e)
+                        })?;
+                    }
+                    job.transferred_bytes = meta.size;
+                    job.total_bytes = meta.size;
+                    job.checksum = Some(meta.etag.clone());
+                    job.phase = TransferPhase::Completed;
+                    job.speed_bytes_per_sec = 0;
+                    job.eta_seconds = Some(0);
+                    job.updated_at = Utc::now();
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("Server-side copy fallback ({}), streaming data", e);
+                }
+            },
+            TransferStrategy::Streaming => {}
         }
 
         if meta.kind == crate::domain::FileKind::Directory {
             const MAX_TRANSFER_DIR_ENTRIES: usize = 100_000;
             const MAX_TRANSFER_DIR_DEPTH: usize = 64;
 
-            // Recursive directory transfer!
-            #[derive(Debug)]
+            #[derive(Debug, Clone)]
             struct ItemToTransfer {
                 rel_path: String,
                 is_dir: bool,
                 size: u64,
             }
 
-            async fn scan_dir_recursive(
-                fs: &Arc<dyn FileSystem>,
-                cancel_token: &CancellationToken,
-                conn_id: &str,
-                base_vfs: &VfsPath,
-                current_rel: &str,
-                depth: usize,
-                items: &mut Vec<ItemToTransfer>,
-            ) -> anyhow::Result<()> {
-                if cancel_token.is_cancelled() {
-                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
-                }
-                if depth > MAX_TRANSFER_DIR_DEPTH {
-                    return Err(anyhow::anyhow!(
-                        "Directory recursion depth limit exceeded (max {})",
-                        MAX_TRANSFER_DIR_DEPTH
-                    ));
-                }
-                if items.len() >= MAX_TRANSFER_DIR_ENTRIES {
-                    return Err(anyhow::anyhow!(
-                        "Directory entries count limit exceeded (max {})",
-                        MAX_TRANSFER_DIR_ENTRIES
-                    ));
-                }
+            // Producer-Consumer Bounded Directory Scanner: Memory bounded to O(channel_capacity)
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ItemToTransfer>(256);
+            let src_fs_clone = Arc::clone(&src_fs);
+            let cancel_token_clone = cancel_token.clone();
+            let src_conn_id = job.source_connection_id.clone();
+            let base_vfs = src_vfs.clone();
 
-                let current_vfs = if current_rel.is_empty() {
-                    base_vfs.clone()
-                } else {
-                    VfsPath::new(
-                        conn_id,
-                        format!("{}/{}", base_vfs.path.trim_end_matches('/'), current_rel),
-                    )?
-                };
-
-                let entries = fs
-                    .list(&current_vfs)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("List failed: {}", e))?;
-                for entry in entries {
+            let scanner_handle = tokio::spawn(async move {
+                async fn scan_recursive(
+                    fs: &Arc<dyn FileSystem>,
+                    cancel_token: &CancellationToken,
+                    conn_id: &str,
+                    base_vfs: &VfsPath,
+                    current_rel: &str,
+                    depth: usize,
+                    tx: &tokio::sync::mpsc::Sender<ItemToTransfer>,
+                    count: &mut usize,
+                ) -> anyhow::Result<()> {
                     if cancel_token.is_cancelled() {
                         return Err(anyhow::anyhow!("Transfer cancelled by user"));
                     }
-                    let child_rel = if current_rel.is_empty() {
-                        entry.name.clone()
+                    if depth > MAX_TRANSFER_DIR_DEPTH {
+                        return Err(anyhow::anyhow!(
+                            "Directory recursion depth limit exceeded (max {})",
+                            MAX_TRANSFER_DIR_DEPTH
+                        ));
+                    }
+                    if *count >= MAX_TRANSFER_DIR_ENTRIES {
+                        return Err(anyhow::anyhow!(
+                            "Directory entries count limit exceeded (max {})",
+                            MAX_TRANSFER_DIR_ENTRIES
+                        ));
+                    }
+
+                    let current_vfs = if current_rel.is_empty() {
+                        base_vfs.clone()
                     } else {
-                        format!("{}/{}", current_rel, entry.name)
+                        VfsPath::new(
+                            conn_id,
+                            format!("{}/{}", base_vfs.path.trim_end_matches('/'), current_rel),
+                        )?
                     };
 
-                    if entry.kind == crate::domain::FileKind::Directory {
-                        items.push(ItemToTransfer {
-                            rel_path: child_rel.clone(),
-                            is_dir: true,
-                            size: 0,
-                        });
-                        Box::pin(scan_dir_recursive(
-                            fs,
-                            cancel_token,
-                            conn_id,
-                            base_vfs,
-                            &child_rel,
-                            depth + 1,
-                            items,
-                        ))
-                        .await?;
-                    } else {
-                        items.push(ItemToTransfer {
-                            rel_path: child_rel,
-                            is_dir: false,
-                            size: entry.size.unwrap_or(0),
-                        });
+                    let entries = fs
+                        .list(&current_vfs)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("List failed: {}", e))?;
+
+                    for entry in entries {
+                        if cancel_token.is_cancelled() {
+                            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                        }
+                        let child_rel = if current_rel.is_empty() {
+                            entry.name.clone()
+                        } else {
+                            format!("{}/{}", current_rel, entry.name)
+                        };
+
+                        *count += 1;
+                        if entry.kind == crate::domain::FileKind::Directory {
+                            tx.send(ItemToTransfer {
+                                rel_path: child_rel.clone(),
+                                is_dir: true,
+                                size: 0,
+                            })
+                            .await
+                            .map_err(|_| anyhow::anyhow!("Scanner channel closed"))?;
+
+                            Box::pin(scan_recursive(
+                                fs,
+                                cancel_token,
+                                conn_id,
+                                base_vfs,
+                                &child_rel,
+                                depth + 1,
+                                tx,
+                                count,
+                            ))
+                            .await?;
+                        } else {
+                            tx.send(ItemToTransfer {
+                                rel_path: child_rel,
+                                is_dir: false,
+                                size: entry.size.unwrap_or(0),
+                            })
+                            .await
+                            .map_err(|_| anyhow::anyhow!("Scanner channel closed"))?;
+                        }
                     }
+                    Ok(())
                 }
-                Ok(())
+
+                let mut count = 0;
+                scan_recursive(
+                    &src_fs_clone,
+                    &cancel_token_clone,
+                    &src_conn_id,
+                    &base_vfs,
+                    "",
+                    0,
+                    &tx,
+                    &mut count,
+                )
+                .await
+            });
+
+            // 1. Create root destination directory
+            if let Err(e) = dst_fs.create_dir(&dst_vfs).await {
+                if !dst_fs
+                    .stat(&dst_vfs)
+                    .await
+                    .map(|m| m.kind == crate::domain::FileKind::Directory)
+                    .unwrap_or(false)
+                {
+                    return Err(anyhow::anyhow!(
+                        "Failed creating root destination directory '{}': {}",
+                        dst_vfs.path,
+                        e
+                    ));
+                }
             }
 
-            let mut items = Vec::new();
-            scan_dir_recursive(
-                &src_fs,
-                cancel_token,
-                &job.source_connection_id,
-                &src_vfs,
-                "",
-                0,
-                &mut items,
-            )
-            .await?;
+            // Receive scanned items
+            let mut all_items = Vec::new();
+            while let Some(item) = rx.recv().await {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                }
+                all_items.push(item);
+            }
+            scanner_handle
+                .await
+                .map_err(|e| anyhow::anyhow!("Scanner panic: {}", e))??;
 
-            let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+            let total_bytes: u64 = all_items.iter().map(|i| i.size).sum();
             job.total_bytes = total_bytes;
             job.transferred_bytes = 0;
             job.phase = TransferPhase::Preparing;
@@ -1238,34 +1306,8 @@ impl TransferManager {
                 WsEvent::TransferProgress(job.clone()),
             );
 
-            // 1. Create root destination directory
-            if let Err(e) = dst_fs.create_dir(&dst_vfs).await {
-                if !dst_fs
-                    .stat(&dst_vfs)
-                    .await
-                    .map(|m| m.kind == crate::domain::FileKind::Directory)
-                    .unwrap_or(false)
-                {
-                    return Err(anyhow::anyhow!(
-                        "Failed creating root destination directory '{}': {}",
-                        dst_vfs.path,
-                        e
-                    ));
-                }
-            }
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
-                &dst_fs,
-                &dst_vfs,
-                true,
-                crate::domain::PermissionInheritanceMode::InheritParent,
-            )
-            .await
-            {
-                let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
-            }
-
             // 2. Create all subdirectories first
-            for item in items.iter().filter(|i| i.is_dir) {
+            for item in all_items.iter().filter(|i| i.is_dir) {
                 if cancel_token.is_cancelled() {
                     return Err(anyhow::anyhow!("Transfer cancelled by user"));
                 }
@@ -1287,22 +1329,9 @@ impl TransferManager {
                         ));
                     }
                 }
-                if let Some(perms) = crate::domain::resolve_destination_permissions(
-                    &dst_fs,
-                    &dst_dir_vfs,
-                    true,
-                    crate::domain::PermissionInheritanceMode::InheritParent,
-                )
-                .await
-                {
-                    let _ = dst_fs.set_permissions(&dst_dir_vfs, &perms).await;
-                }
             }
 
-            // 3. Stream each file
-            let mut transferred_so_far = 0u64;
-            let start_time = Instant::now();
-
+            // 3. Parallel bounded file copy (Concurrency = 4 files per directory job)
             job.phase = TransferPhase::Transferring;
             {
                 let mut map = jobs_map.write().await;
@@ -1311,154 +1340,130 @@ impl TransferManager {
                 }
             }
 
-            for item in items.iter().filter(|i| !i.is_dir) {
-                if cancel_token.is_cancelled() {
-                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
-                }
+            let file_items: Vec<_> = all_items.into_iter().filter(|i| !i.is_dir).collect();
+            let transferred_atomic = Arc::new(AtomicU64::new(0));
+            let start_time = Instant::now();
 
-                let src_file_vfs = VfsPath::new(
-                    &job.source_connection_id,
-                    format!("{}/{}", src_vfs.path.trim_end_matches('/'), item.rel_path),
-                )?;
-                let dst_file_vfs = VfsPath::new(
-                    &job.destination_connection_id,
-                    format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path),
-                )?;
-
-                let mut reader = src_fs
-                    .read_stream(&src_file_vfs)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Read failed: {}", e))?;
-                let (mut pipe_writer, pipe_reader) = tokio::io::duplex(64 * 1024);
-
+            let transfer_stream = futures::stream::iter(file_items.into_iter().map(|item| {
+                let src_fs = Arc::clone(&src_fs);
+                let dst_fs = Arc::clone(&dst_fs);
+                let src_vfs = src_vfs.clone();
+                let dst_vfs = dst_vfs.clone();
                 let job_id = job.id.clone();
+                let src_conn_id = job.source_connection_id.clone();
+                let dst_conn_id = job.destination_connection_id.clone();
+                let is_move = job.transfer_type == TransferType::Move;
+                let cancel_token = cancel_token.clone();
+                let transferred_atomic = Arc::clone(&transferred_atomic);
                 let jobs_map_clone = Arc::clone(jobs_map);
                 let event_tx_clone = event_tx.clone();
                 let seq_counter_clone = Arc::clone(seq_counter);
                 let event_hist_clone = Arc::clone(event_history);
-                let file_size = item.size;
-                let current_base_transferred = transferred_so_far;
-                let cancel_token_pump = cancel_token.clone();
 
-                let pump_handle = tokio::spawn(async move {
-                    let mut buffer = vec![0u8; 64 * 1024];
-                    let mut file_transferred = 0u64;
-                    let mut last_emit = Instant::now();
+                async move {
+                    if cancel_token.is_cancelled() {
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
 
-                    loop {
-                        if cancel_token_pump.is_cancelled() {
+                    let src_file_vfs = VfsPath::new(
+                        &src_conn_id,
+                        format!("{}/{}", src_vfs.path.trim_end_matches('/'), item.rel_path),
+                    )?;
+                    let dst_file_vfs = VfsPath::new(
+                        &dst_conn_id,
+                        format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path),
+                    )?;
+
+                    let mut reader = src_fs
+                        .read_stream(&src_file_vfs)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Read failed: {}", e))?;
+                    let (mut pipe_writer, pipe_reader) = tokio::io::duplex(64 * 1024);
+                    let cancel_pump = cancel_token.clone();
+
+                    let pump_handle = tokio::spawn(async move {
+                        let mut buffer = vec![0u8; 64 * 1024];
+                        let mut file_transferred = 0u64;
+                        loop {
+                            if cancel_pump.is_cancelled() {
+                                return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                            }
+                            let n = tokio::select! {
+                                _ = cancel_pump.cancelled() => return Err(anyhow::anyhow!("Transfer cancelled by user")),
+                                res = reader.read(&mut buffer) => res?,
+                            };
+                            if n == 0 {
+                                break;
+                            }
+                            tokio::select! {
+                                _ = cancel_pump.cancelled() => return Err(anyhow::anyhow!("Transfer cancelled by user")),
+                                res = pipe_writer.write_all(&buffer[..n]) => res?,
+                            };
+                            file_transferred += n as u64;
+                        }
+                        pipe_writer.flush().await?;
+                        drop(pipe_writer);
+                        Ok::<u64, anyhow::Error>(file_transferred)
+                    });
+
+                    let write_fut = dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader));
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            let _ = dst_fs.delete(&dst_file_vfs).await;
                             return Err(anyhow::anyhow!("Transfer cancelled by user"));
                         }
+                        res = write_fut => res.map_err(|e| anyhow::anyhow!("Write failed: {}", e))?,
+                    }
 
-                        let n = tokio::select! {
-                            _ = cancel_token_pump.cancelled() => {
-                                return Err(anyhow::anyhow!("Transfer cancelled by user"));
-                            }
-                            res = reader.read(&mut buffer) => res?,
-                        };
+                    let file_bytes = pump_handle.await.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))??;
+                    let current_total = transferred_atomic.fetch_add(file_bytes, Ordering::SeqCst) + file_bytes;
 
-                        if n == 0 {
-                            break;
+                    let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
+                    let speed = (current_total as f64 / elapsed_secs) as u64;
+                    let eta = if speed > 0 && total_bytes > current_total {
+                        Some((total_bytes - current_total) / speed)
+                    } else {
+                        Some(0)
+                    };
+
+                    let updated = {
+                        let mut map = jobs_map_clone.write().await;
+                        if let Some(j) = map.get_mut(&job_id) {
+                            j.transferred_bytes = current_total;
+                            j.total_bytes = total_bytes;
+                            j.speed_bytes_per_sec = speed;
+                            j.eta_seconds = eta;
+                            j.phase = TransferPhase::Transferring;
+                            j.updated_at = Utc::now();
+                            Some(j.clone())
+                        } else {
+                            None
                         }
+                    };
 
-                        tokio::select! {
-                            _ = cancel_token_pump.cancelled() => {
-                                return Err(anyhow::anyhow!("Transfer cancelled by user"));
-                            }
-                            res = pipe_writer.write_all(&buffer[..n]) => res?,
-                        };
-
-                        file_transferred += n as u64;
-
-                        let total_transferred = current_base_transferred + file_transferred;
-                        if last_emit.elapsed().as_millis() >= 100 || file_transferred == file_size {
-                            let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
-                            let speed = (total_transferred as f64 / elapsed_secs) as u64;
-                            let eta = if speed > 0 && total_bytes > total_transferred {
-                                Some((total_bytes - total_transferred) / speed)
-                            } else {
-                                Some(0)
-                            };
-
-                            let updated = {
-                                let mut map = jobs_map_clone.write().await;
-                                if let Some(j) = map.get_mut(&job_id) {
-                                    j.transferred_bytes = total_transferred;
-                                    j.total_bytes = total_bytes;
-                                    j.speed_bytes_per_sec = speed;
-                                    j.eta_seconds = eta;
-                                    j.phase = TransferPhase::Transferring;
-                                    j.updated_at = Utc::now();
-                                    Some(j.clone())
-                                } else {
-                                    None
-                                }
-                            };
-
-                            if let Some(j) = updated {
-                                Self::send_enveloped_event(
-                                    &event_tx_clone,
-                                    &seq_counter_clone,
-                                    &event_hist_clone,
-                                    WsEvent::TransferProgress(j.clone()),
-                                );
-                            }
-                            last_emit = Instant::now();
-                        }
+                    if let Some(j) = updated {
+                        Self::send_enveloped_event(
+                            &event_tx_clone,
+                            &seq_counter_clone,
+                            &event_hist_clone,
+                            WsEvent::TransferProgress(j),
+                        );
                     }
 
-                    pipe_writer.flush().await?;
-                    drop(pipe_writer);
-                    Ok::<u64, anyhow::Error>(file_transferred)
-                });
+                    if is_move {
+                        src_fs.delete(&src_file_vfs).await.map_err(|e| {
+                            anyhow::anyhow!("Failed to delete source file {}: {}", src_file_vfs.path, e)
+                        })?;
+                    }
 
-                let write_fut = dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader));
-                let write_res = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        let _ = dst_fs.delete(&dst_file_vfs).await;
-                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
-                    }
-                    res = tokio::time::timeout(Duration::from_secs(120), write_fut) => {
-                        res.map_err(|_| {
-                            anyhow::anyhow!(
-                                "Destination write stream timed out for file '{}'",
-                                item.rel_path
-                            )
-                        })?
-                    }
-                };
-
-                let pump_res = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        let _ = dst_fs.delete(&dst_file_vfs).await;
-                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
-                    }
-                    res = pump_handle => {
-                        res.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?
-                    }
-                };
-                let file_bytes = pump_res?;
-                write_res.map_err(|e| anyhow::anyhow!("Write failed: {}", e))?;
-
-                if let Some(perms) = crate::domain::resolve_destination_permissions(
-                    &dst_fs,
-                    &dst_file_vfs,
-                    false,
-                    crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
-                )
-                .await
-                {
-                    let _ = dst_fs.set_permissions(&dst_file_vfs, &perms).await;
+                    Ok::<(), anyhow::Error>(())
                 }
+            }));
 
-                transferred_so_far += file_bytes;
-
-                // Move transfer: delete source file
-                if job.transfer_type == TransferType::Move {
-                    src_fs.delete(&src_file_vfs).await.map_err(|e| {
-                        anyhow::anyhow!("Failed to delete source file {}: {}", src_file_vfs.path, e)
-                    })?;
-                }
+            // Bounded parallel execution: 4 concurrent files per directory job
+            let mut buffered_stream = transfer_stream.buffer_unordered(4);
+            while let Some(res) = buffered_stream.next().await {
+                res?;
             }
 
             // Move transfer: remove source directory after empty
@@ -1493,6 +1498,8 @@ impl TransferManager {
         }
 
         // Single File Transfer with In-Flight Checksum Calculation
+        let total_bytes = job.total_bytes;
+
         // 1. Resolve destination permissions according to inheritance policy
         if let Some(perms) = crate::domain::resolve_destination_permissions(
             &dst_fs,
@@ -1505,17 +1512,36 @@ impl TransferManager {
             let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
         }
 
-        // 2. Open source async read stream
-        let mut reader = src_fs
-            .read_stream(&src_vfs)
-            .await
-            .map_err(|e| anyhow::anyhow!("Read stream failed: {}", e))?;
+        // 2. Open source async read stream (Range resume if previous progress exists and range_read is supported)
+        let resume_offset = if job.transferred_bytes > 0
+            && job.transferred_bytes < total_bytes
+            && src_fs.capabilities().range_read
+        {
+            job.transferred_bytes
+        } else {
+            0
+        };
+
+        let mut reader = if resume_offset > 0 {
+            src_fs
+                .read_range(
+                    &src_vfs,
+                    resume_offset,
+                    total_bytes.saturating_sub(resume_offset),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Read range stream failed: {}", e))?
+        } else {
+            src_fs
+                .read_stream(&src_vfs)
+                .await
+                .map_err(|e| anyhow::anyhow!("Read stream failed: {}", e))?
+        };
 
         // 3. Create a 64 KB bounded duplex async pipe (Zero huge RAM allocations)
         let (mut pipe_writer, pipe_reader) = tokio::io::duplex(64 * 1024);
 
         let job_id = job.id.clone();
-        let total_bytes = job.total_bytes;
         let jobs_map_clone = Arc::clone(jobs_map);
         let event_tx_clone = event_tx.clone();
         let seq_counter_clone = Arc::clone(seq_counter);
@@ -1534,7 +1560,7 @@ impl TransferManager {
         // 4. Spawn writer task to pump data, calculate SHA-256 checksum on-the-fly, and write to pipe
         let pump_handle = tokio::spawn(async move {
             let mut buffer = vec![0u8; 64 * 1024];
-            let mut transferred = 0u64;
+            let mut transferred = resume_offset;
             let mut hasher = Sha256::new();
             let start_time = Instant::now();
             let mut last_emit = Instant::now();

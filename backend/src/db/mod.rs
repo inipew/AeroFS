@@ -59,9 +59,11 @@ pub async fn migrate_db(pool: &DbPool) -> anyhow::Result<Vec<String>> {
     migrator.run(pool).await?;
 
     // Query applied migrations from _sqlx_migrations table
-    let rows = sqlx::query("SELECT version, description, installed_on FROM _sqlx_migrations ORDER BY version ASC")
-        .fetch_all(pool)
-        .await;
+    let rows = sqlx::query(
+        "SELECT version, description, installed_on FROM _sqlx_migrations ORDER BY version ASC",
+    )
+    .fetch_all(pool)
+    .await;
 
     let mut applied = Vec::new();
     if let Ok(rows) = rows {

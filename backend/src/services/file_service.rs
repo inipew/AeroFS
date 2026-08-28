@@ -15,7 +15,7 @@ use tokio::task::JoinSet;
 pub struct FileService;
 
 impl FileService {
-    /// List entries in a directory, applying sorting and hidden file filtering
+    /// List entries in a directory with backward-compatible non-paged signature
     pub async fn list_directory(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -25,6 +25,35 @@ impl FileService {
         sort_field_opt: Option<&str>,
         sort_order_opt: Option<&str>,
     ) -> Result<DirectoryListing, AppError> {
+        Self::list_directory_paged(
+            state,
+            user,
+            connection_id,
+            raw_path,
+            show_hidden_opt,
+            sort_field_opt,
+            sort_order_opt,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// List entries in a directory using streaming lister with early filtering and opaque cursor pagination
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_directory_paged(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        connection_id: &str,
+        raw_path: Option<String>,
+        show_hidden_opt: Option<bool>,
+        sort_field_opt: Option<&str>,
+        sort_order_opt: Option<&str>,
+        cursor_opt: Option<&str>,
+        limit_opt: Option<usize>,
+    ) -> Result<DirectoryListing, AppError> {
+        use futures::StreamExt;
+
         check_permission(&state.db, user, connection_id, PermissionAction::Read).await?;
 
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
@@ -34,9 +63,6 @@ impl FileService {
         let path_str = raw_path.unwrap_or_else(|| "/".to_string());
         let vfs_path = VfsPath::new(connection_id, path_str)?;
 
-        let mut entries = provider.list(&vfs_path).await?;
-
-        // 1. Filter hidden files if not requested
         let show_hidden = match show_hidden_opt {
             Some(val) => val,
             None => {
@@ -50,18 +76,61 @@ impl FileService {
             }
         };
 
-        // Filter out internal staging files (e.g. .aerofs-part-*) from user directory listings
-        entries.retain(|e| !e.name.contains(".aerofs-part-"));
+        // Decode opaque cursor (offset based or last item marker)
+        let skip_offset = if let Some(cursor_str) = cursor_opt {
+            if let Ok(decoded) =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, cursor_str)
+            {
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&decoded) {
+                    val["offset"].as_u64().unwrap_or(0) as usize
+                } else if let Ok(offset_num) = String::from_utf8_lossy(&decoded).parse::<usize>() {
+                    offset_num
+                } else {
+                    0
+                }
+            } else {
+                cursor_str.parse::<usize>().unwrap_or(0)
+            }
+        } else {
+            0
+        };
 
-        if !show_hidden {
-            entries.retain(|e| !e.is_hidden);
+        let page_limit = limit_opt.unwrap_or(state.config.limits.max_directory_entries);
+        let mut stream = provider.list_stream(&vfs_path).await?;
+        let mut filtered_entries = Vec::new();
+        let mut current_idx = 0;
+        let mut has_more = false;
+
+        while let Some(res) = stream.next().await {
+            let entry = res?;
+
+            // Early filter: skip internal staging files and hidden files if not requested
+            if entry.name.contains(".aerofs-part-") {
+                continue;
+            }
+            if !show_hidden && entry.is_hidden {
+                continue;
+            }
+
+            if current_idx < skip_offset {
+                current_idx += 1;
+                continue;
+            }
+
+            if filtered_entries.len() < page_limit {
+                filtered_entries.push(entry);
+                current_idx += 1;
+            } else {
+                has_more = true;
+                break;
+            }
         }
 
-        // 2. Sort entries (directories first, then by field)
+        // Sort entries in the current page (directories first, then by field)
         let sort_field = sort_field_opt.unwrap_or("name");
         let sort_order = sort_order_opt.unwrap_or("asc");
 
-        entries.sort_by(|a, b| {
+        filtered_entries.sort_by(|a, b| {
             let a_is_dir = a.kind == FileKind::Directory;
             let b_is_dir = b.kind == FileKind::Directory;
 
@@ -90,15 +159,97 @@ impl FileService {
             }
         });
 
-        let total_count = entries.len();
+        let next_cursor = if has_more {
+            let cursor_payload = serde_json::json!({
+                "offset": current_idx,
+            });
+            Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                cursor_payload.to_string().as_bytes(),
+            ))
+        } else {
+            None
+        };
+
+        let total_count = filtered_entries.len();
 
         Ok(DirectoryListing {
             path: vfs_path.path,
             connection_id: connection_id.to_string(),
-            entries,
+            entries: filtered_entries,
             total_count,
-            next_cursor: None,
+            next_cursor,
         })
+    }
+
+    /// Generate a pre-signed URL for direct browser download
+    pub async fn get_presigned_download_url(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        connection_id: &str,
+        raw_path: &str,
+        expire_secs: Option<u64>,
+    ) -> Result<String, AppError> {
+        check_permission(&state.db, user, connection_id, PermissionAction::Read).await?;
+        let provider = state.get_provider(connection_id).await.ok_or_else(|| {
+            VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+        })?;
+        let presign = provider.as_presign().ok_or_else(|| {
+            VfsError::NotSupported(format!(
+                "Pre-signed download URLs are not supported by provider '{}'",
+                connection_id
+            ))
+        })?;
+        let vfs_path = VfsPath::new(connection_id, raw_path)?;
+        let ttl = std::time::Duration::from_secs(expire_secs.unwrap_or(3600).clamp(60, 86400));
+        let url = presign.presign_read_url(&vfs_path, ttl).await?;
+        record_audit_log(
+            &state.db,
+            Some(&user.id),
+            "presign_download",
+            Some(connection_id),
+            Some(raw_path),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        Ok(url)
+    }
+
+    /// Generate a pre-signed URL for direct browser upload
+    pub async fn get_presigned_upload_url(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        connection_id: &str,
+        raw_path: &str,
+        expire_secs: Option<u64>,
+    ) -> Result<String, AppError> {
+        check_permission(&state.db, user, connection_id, PermissionAction::Write).await?;
+        let provider = state.get_provider(connection_id).await.ok_or_else(|| {
+            VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+        })?;
+        let presign = provider.as_presign().ok_or_else(|| {
+            VfsError::NotSupported(format!(
+                "Pre-signed upload URLs are not supported by provider '{}'",
+                connection_id
+            ))
+        })?;
+        let vfs_path = VfsPath::new(connection_id, raw_path)?;
+        let ttl = std::time::Duration::from_secs(expire_secs.unwrap_or(3600).clamp(60, 86400));
+        let url = presign.presign_write_url(&vfs_path, ttl).await?;
+        record_audit_log(
+            &state.db,
+            Some(&user.id),
+            "presign_upload",
+            Some(connection_id),
+            Some(raw_path),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        Ok(url)
     }
 
     /// Retrieve file metadata

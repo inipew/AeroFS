@@ -103,7 +103,11 @@ pub struct DoctorArgs {
     #[arg(long, help = "Simulate repair operations without making changes")]
     pub dry_run: bool,
 
-    #[arg(short, long, help = "Automatically confirm repair actions without prompt")]
+    #[arg(
+        short,
+        long,
+        help = "Automatically confirm repair actions without prompt"
+    )]
     pub yes: bool,
 }
 
@@ -151,7 +155,10 @@ pub enum DbAction {
     #[command(about = "Run pending database migrations")]
     Migrate,
 
-    #[command(about = "Run SQLite PRAGMA integrity_check and foreign_key_check", alias = "integrity-check")]
+    #[command(
+        about = "Run SQLite PRAGMA integrity_check and foreign_key_check",
+        alias = "integrity-check"
+    )]
     Integrity,
 
     #[command(about = "Run SQLite VACUUM to reclaim disk space")]
@@ -165,7 +172,11 @@ pub enum DbAction {
         #[arg(help = "Destination path for the database backup file")]
         target: PathBuf,
 
-        #[arg(short, long, help = "Force overwrite destination if file already exists")]
+        #[arg(
+            short,
+            long,
+            help = "Force overwrite destination if file already exists"
+        )]
         force: bool,
     },
 }
@@ -180,10 +191,17 @@ pub struct TransferCommand {
 pub enum TransferAction {
     #[command(about = "List transfer jobs with filtering")]
     List {
-        #[arg(long, help = "Filter by job status (queued, running, completed, failed, cancelled)")]
+        #[arg(
+            long,
+            help = "Filter by job status (queued, running, completed, failed, cancelled)"
+        )]
         status: Option<String>,
 
-        #[arg(long, default_value = "50", help = "Maximum number of records to return")]
+        #[arg(
+            long,
+            default_value = "50",
+            help = "Maximum number of records to return"
+        )]
         limit: usize,
 
         #[arg(long, help = "Filter by username or user ID")]
@@ -216,7 +234,11 @@ pub enum TransferAction {
 
     #[command(about = "Purge old finished & dismissed transfer records")]
     Purge {
-        #[arg(long, default_value = "30", help = "Purge items older than N days (>= 1)")]
+        #[arg(
+            long,
+            default_value = "30",
+            help = "Purge items older than N days (>= 1)"
+        )]
         days: u32,
 
         #[arg(long, help = "Simulate purge operation without deleting records")]
@@ -261,7 +283,10 @@ pub enum UserAction {
         #[arg(long, help = "Grant administrator privileges")]
         admin: bool,
 
-        #[arg(long, help = "Read password from stdin pipe instead of interactive prompt")]
+        #[arg(
+            long,
+            help = "Read password from stdin pipe instead of interactive prompt"
+        )]
         password_stdin: bool,
     },
 
@@ -270,7 +295,10 @@ pub enum UserAction {
         #[arg(help = "Username")]
         username: String,
 
-        #[arg(long, help = "Read new password from stdin pipe instead of interactive prompt")]
+        #[arg(
+            long,
+            help = "Read new password from stdin pipe instead of interactive prompt"
+        )]
         password_stdin: bool,
     },
 

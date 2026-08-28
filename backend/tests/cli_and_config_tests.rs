@@ -120,21 +120,25 @@ async fn test_db_isolation_and_stats() {
     // connect_db should NOT run migrations or create tables
     let pool = connect_db(&db_url).await.unwrap();
 
-    let table_exists: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'",
-    )
-    .fetch_optional(&pool)
-    .await
-    .unwrap();
+    let table_exists: Option<(String,)> =
+        sqlx::query_as("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
 
-    assert!(table_exists.is_none(), "connect_db must not create tables or run migrations");
+    assert!(
+        table_exists.is_none(),
+        "connect_db must not create tables or run migrations"
+    );
 
     // Now explicitly run migrate_db
     let applied = migrate_db(&pool).await.unwrap();
     assert!(!applied.is_empty(), "migrate_db should apply migrations");
 
     // get_db_stats test
-    let stats = get_db_stats(&pool, "sqlite://username:secret@127.0.0.1/test.db").await.unwrap();
+    let stats = get_db_stats(&pool, "sqlite://username:secret@127.0.0.1/test.db")
+        .await
+        .unwrap();
     assert_eq!(stats.journal_mode, "WAL");
     assert!(stats.foreign_keys);
     assert!(stats.sanitized_url.contains("***:***@"));
@@ -204,10 +208,16 @@ async fn test_user_service_safeguards() {
     assert!(!bob_id.is_empty());
 
     // 4. Now demoting or deleting one admin should succeed because another remains
-    assert!(UserService::set_admin_role(&pool, "bob", false).await.is_ok());
+    assert!(UserService::set_admin_role(&pool, "bob", false)
+        .await
+        .is_ok());
 
     // 5. Updating password
-    assert!(UserService::update_password(&pool, "bob", "new_bob_pass_456").await.is_ok());
+    assert!(
+        UserService::update_password(&pool, "bob", "new_bob_pass_456")
+            .await
+            .is_ok()
+    );
 
     // 6. Delete bob
     assert!(UserService::delete_user(&pool, "bob").await.is_ok());
@@ -219,8 +229,12 @@ async fn test_config_provenance_and_descriptors() {
 
     let provenance = config.get_effective_provenance(None);
     assert!(!provenance.is_empty());
-    assert!(provenance.iter().any(|e| e.key == "server.port" && e.value == "8080"));
-    assert!(provenance.iter().any(|e| e.key == "server.host" && e.value == "127.0.0.1"));
+    assert!(provenance
+        .iter()
+        .any(|e| e.key == "server.port" && e.value == "8080"));
+    assert!(provenance
+        .iter()
+        .any(|e| e.key == "server.host" && e.value == "127.0.0.1"));
 
     // Descriptors
     let desc = AppConfig::describe_key("server.port").unwrap();
@@ -256,7 +270,9 @@ async fn test_transfer_cli_service_queries() {
     .unwrap();
 
     // Test get_transfer
-    let job = TransferService::get_transfer(&pool, "test_job_1").await.unwrap();
+    let job = TransferService::get_transfer(&pool, "test_job_1")
+        .await
+        .unwrap();
     assert!(job.is_some());
     let j = job.unwrap();
     assert_eq!(j.name, "Upload Test");
@@ -264,21 +280,32 @@ async fn test_transfer_cli_service_queries() {
     assert_eq!(j.transferred_bytes, 500);
 
     // Test list_transfers_filtered
-    let list = TransferService::list_transfers_filtered(&pool, Some("running"), 10, None, None).await.unwrap();
+    let list = TransferService::list_transfers_filtered(&pool, Some("running"), 10, None, None)
+        .await
+        .unwrap();
     assert_eq!(list.len(), 1);
 
     // Test repair_stuck_transfers
-    let dry_repair = TransferService::repair_stuck_transfers(&pool, true).await.unwrap();
+    let dry_repair = TransferService::repair_stuck_transfers(&pool, true)
+        .await
+        .unwrap();
     assert_eq!(dry_repair, 1);
 
-    let actual_repair = TransferService::repair_stuck_transfers(&pool, false).await.unwrap();
+    let actual_repair = TransferService::repair_stuck_transfers(&pool, false)
+        .await
+        .unwrap();
     assert_eq!(actual_repair, 1);
 
-    let updated_job = TransferService::get_transfer(&pool, "test_job_1").await.unwrap().unwrap();
+    let updated_job = TransferService::get_transfer(&pool, "test_job_1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(updated_job.status.as_str(), "failed");
 
     // Test purge dry-run
-    let dry_purge = TransferService::purge_transfers_older_than(&pool, 0, true).await.unwrap();
+    let dry_purge = TransferService::purge_transfers_older_than(&pool, 0, true)
+        .await
+        .unwrap();
     assert_eq!(dry_purge, 1);
 }
 
@@ -364,9 +391,11 @@ url = "sqlite://{}?mode=rwc"
         quiet: false,
         verbose: false,
         log_level: None,
-        command: Some(backend::cli::Commands::User(backend::cli::args::UserCommand {
-            action: backend::cli::args::UserAction::List,
-        })),
+        command: Some(backend::cli::Commands::User(
+            backend::cli::args::UserCommand {
+                action: backend::cli::args::UserAction::List,
+            },
+        )),
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
 }

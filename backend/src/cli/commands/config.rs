@@ -29,13 +29,19 @@ pub async fn handle(cmd: ConfigCommand, ctx: &CliContext) -> Result<(), CliError
             Ok(())
         }
         ConfigAction::Effective => {
-            let provenance = ctx.config.get_effective_provenance(ctx.config_path.as_deref());
-            ctx.output.print_success("config.effective", &provenance, || {
-                println!("AeroFS Layered Effective Configuration:");
-                for entry in &provenance {
-                    println!("  • {:<35} = {:<25} (Source: {})", entry.key, entry.value, entry.source);
-                }
-            });
+            let provenance = ctx
+                .config
+                .get_effective_provenance(ctx.config_path.as_deref());
+            ctx.output
+                .print_success("config.effective", &provenance, || {
+                    println!("AeroFS Layered Effective Configuration:");
+                    for entry in &provenance {
+                        println!(
+                            "  • {:<35} = {:<25} (Source: {})",
+                            entry.key, entry.value, entry.source
+                        );
+                    }
+                });
             Ok(())
         }
         ConfigAction::Get { key } => {
@@ -57,7 +63,10 @@ pub async fn handle(cmd: ConfigCommand, ctx: &CliContext) -> Result<(), CliError
         }
         ConfigAction::Explain { key } => {
             if let Some(desc) = crate::config::AppConfig::describe_key(&key) {
-                let effective_val = ctx.config.get_by_key_path(&key).unwrap_or_else(|| "N/A".to_string());
+                let effective_val = ctx
+                    .config
+                    .get_by_key_path(&key)
+                    .unwrap_or_else(|| "N/A".to_string());
                 ctx.output.print_success("config.explain", &desc, || {
                     println!("Configuration Key: {}", desc.key);
                     println!("  • Description:      {}", desc.description);
@@ -67,8 +76,14 @@ pub async fn handle(cmd: ConfigCommand, ctx: &CliContext) -> Result<(), CliError
                     if let Some(env) = desc.env_variable {
                         println!("  • Environment Var:  {}", env);
                     }
-                    println!("  • Runtime Mutable:  {}", if desc.runtime_mutable { "Yes" } else { "No" });
-                    println!("  • Restart Required: {}", if desc.restart_required { "Yes" } else { "No" });
+                    println!(
+                        "  • Runtime Mutable:  {}",
+                        if desc.runtime_mutable { "Yes" } else { "No" }
+                    );
+                    println!(
+                        "  • Restart Required: {}",
+                        if desc.restart_required { "Yes" } else { "No" }
+                    );
                     println!("  • Subsystems:       {}", desc.subsystems.join(", "));
                 });
                 Ok(())
@@ -79,20 +94,21 @@ pub async fn handle(cmd: ConfigCommand, ctx: &CliContext) -> Result<(), CliError
                 )))
             }
         }
-        ConfigAction::Validate => {
-            match ctx.config.validate() {
-                Ok(_) => {
-                    let out = ConfigValidationOutput {
-                        valid: true,
-                        message: "Configuration is valid and passes all consistency checks".to_string(),
-                    };
-                    ctx.output.print_success("config.validate", &out, || {
-                        println!("✓ Configuration is valid and passes all checks.");
-                    });
-                    Ok(())
-                }
-                Err(e) => Err(CliError::config(format!("Configuration validation failed: {}", e))),
+        ConfigAction::Validate => match ctx.config.validate() {
+            Ok(_) => {
+                let out = ConfigValidationOutput {
+                    valid: true,
+                    message: "Configuration is valid and passes all consistency checks".to_string(),
+                };
+                ctx.output.print_success("config.validate", &out, || {
+                    println!("✓ Configuration is valid and passes all checks.");
+                });
+                Ok(())
             }
-        }
+            Err(e) => Err(CliError::config(format!(
+                "Configuration validation failed: {}",
+                e
+            ))),
+        },
     }
 }

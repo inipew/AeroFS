@@ -19,25 +19,37 @@ pub async fn handle(ctx: &CliContext) -> Result<(), CliError> {
         PathBuf::from("./aerofs.lock")
     };
 
-    let status = DaemonLock::inspect_status(
-        &lock_path,
-        &ctx.config.server.host,
-        ctx.config.server.port,
-    );
+    let status =
+        DaemonLock::inspect_status(&lock_path, &ctx.config.server.host, ctx.config.server.port);
 
     let output_data = StatusOutput {
         status: status.clone(),
         configured_host: ctx.config.server.host.clone(),
         configured_port: ctx.config.server.port,
-        storage_root: ctx.config.filesystem.default_local_root.display().to_string(),
+        storage_root: ctx
+            .config
+            .filesystem
+            .default_local_root
+            .display()
+            .to_string(),
     };
 
     let human_status = || {
         println!("AeroFS Runtime Status:");
-        println!("  • Configured Listen: {}:{}", ctx.config.server.host, ctx.config.server.port);
-        println!("  • Storage Root: {}", ctx.config.filesystem.default_local_root.display());
+        println!(
+            "  • Configured Listen: {}:{}",
+            ctx.config.server.host, ctx.config.server.port
+        );
+        println!(
+            "  • Storage Root: {}",
+            ctx.config.filesystem.default_local_root.display()
+        );
         match &status {
-            ProcessStatus::Running { pid, endpoint, lock_file } => {
+            ProcessStatus::Running {
+                pid,
+                endpoint,
+                lock_file,
+            } => {
                 println!("  • State: RUNNING (PID: {})", pid);
                 println!("  • Active Endpoint: http://{}", endpoint);
                 println!("  • Lock File: {}", lock_file);
@@ -45,12 +57,20 @@ pub async fn handle(ctx: &CliContext) -> Result<(), CliError> {
             ProcessStatus::Stopped => {
                 println!("  • State: STOPPED (No active daemon process)");
             }
-            ProcessStatus::Stale { stale_pid, lock_file, message } => {
+            ProcessStatus::Stale {
+                stale_pid,
+                lock_file,
+                message,
+            } => {
                 println!("  • State: STALE LOCK (Previous PID: {})", stale_pid);
                 println!("  • Lock File: {}", lock_file);
                 println!("  • Warning: {}", message);
             }
-            ProcessStatus::Unhealthy { pid, endpoint, reason } => {
+            ProcessStatus::Unhealthy {
+                pid,
+                endpoint,
+                reason,
+            } => {
                 println!("  • State: UNHEALTHY (PID: {})", pid);
                 println!("  • Endpoint: http://{}", endpoint);
                 println!("  • Diagnostic: {}", reason);
@@ -60,7 +80,8 @@ pub async fn handle(ctx: &CliContext) -> Result<(), CliError> {
 
     match status {
         ProcessStatus::Running { .. } => {
-            ctx.output.print_success("status", &output_data, human_status);
+            ctx.output
+                .print_success("status", &output_data, human_status);
             Ok(())
         }
         _ => {
@@ -69,7 +90,8 @@ pub async fn handle(ctx: &CliContext) -> Result<(), CliError> {
                 "DAEMON_NOT_RUNNING",
                 "AeroFS daemon is not running",
             );
-            ctx.output.print_failure("status", &output_data, &err, human_status);
+            ctx.output
+                .print_failure("status", &output_data, &err, human_status);
             Err(err)
         }
     }

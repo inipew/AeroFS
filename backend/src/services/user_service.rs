@@ -64,13 +64,12 @@ impl UserService {
         let r = row.ok_or_else(|| AppError::NotFound(format!("User '{}' not found", username)))?;
 
         let user_id: String = r.get("id");
-        let perm_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM permissions WHERE user_id = ?",
-        )
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+        let perm_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM permissions WHERE user_id = ?")
+                .bind(&user_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or((0,));
 
         Ok(UserDetail {
             id: user_id,
@@ -101,12 +100,11 @@ impl UserService {
         }
 
         // Check if user already exists
-        let exists: Option<(i64,)> =
-            sqlx::query_as("SELECT 1 FROM users WHERE username = ?")
-                .bind(username_clean)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM users WHERE username = ?")
+            .bind(username_clean)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
         if exists.is_some() {
             return Err(AppError::Conflict(format!(
@@ -150,15 +148,16 @@ impl UserService {
         let hashed = hash_password(new_password)?;
         let now = Utc::now().to_rfc3339();
 
-        let res = sqlx::query(
-            "UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?",
-        )
-        .bind(&hashed)
-        .bind(&now)
-        .bind(username)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to update password: {}", e)))?;
+        let res =
+            sqlx::query("UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?")
+                .bind(&hashed)
+                .bind(&now)
+                .bind(username)
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("Failed to update password: {}", e))
+                })?;
 
         if res.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("User '{}' not found", username)));

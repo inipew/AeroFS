@@ -41,8 +41,19 @@ pub async fn handle(cmd: DbCommand, ctx: &CliContext) -> Result<(), CliError> {
                 println!("Database Engine Status:");
                 println!("  • Location:       {}", stats.sanitized_url);
                 println!("  • Journal Mode:   {}", stats.journal_mode);
-                println!("  • Foreign Keys:   {}", if stats.foreign_keys { "Enabled (1)" } else { "Disabled (0)" });
-                println!("  • Total Size:     {} bytes ({} KB)", stats.total_size_bytes, stats.total_size_bytes / 1024);
+                println!(
+                    "  • Foreign Keys:   {}",
+                    if stats.foreign_keys {
+                        "Enabled (1)"
+                    } else {
+                        "Disabled (0)"
+                    }
+                );
+                println!(
+                    "  • Total Size:     {} bytes ({} KB)",
+                    stats.total_size_bytes,
+                    stats.total_size_bytes / 1024
+                );
                 println!("  • Users:          {}", stats.users_count);
                 println!("  • Connections:    {}", stats.connections_count);
                 println!("  • Transfer Jobs:  {}", stats.transfer_jobs_count);
@@ -60,7 +71,10 @@ pub async fn handle(cmd: DbCommand, ctx: &CliContext) -> Result<(), CliError> {
             };
 
             ctx.output.print_success("db.migrate", &out, || {
-                println!("✓ Database migrations up to date ({} migrations applied):", applied.len());
+                println!(
+                    "✓ Database migrations up to date ({} migrations applied):",
+                    applied.len()
+                );
                 for m in &applied {
                     println!("  • {}", m);
                 }
@@ -86,11 +100,16 @@ pub async fn handle(cmd: DbCommand, ctx: &CliContext) -> Result<(), CliError> {
             };
 
             if healthy {
-                ctx.output.print_success("db.integrity", &out, human_integrity);
+                ctx.output
+                    .print_success("db.integrity", &out, human_integrity);
                 Ok(())
             } else {
-                let err = CliError::database(format!("Integrity violations detected: {}", reports.join(", ")));
-                ctx.output.print_failure("db.integrity", &out, &err, human_integrity);
+                let err = CliError::database(format!(
+                    "Integrity violations detected: {}",
+                    reports.join(", ")
+                ));
+                ctx.output
+                    .print_failure("db.integrity", &out, &err, human_integrity);
                 Err(err)
             }
         }
@@ -101,7 +120,9 @@ pub async fn handle(cmd: DbCommand, ctx: &CliContext) -> Result<(), CliError> {
 
             let out = DbActionOutput {
                 status: "ok",
-                message: "VACUUM completed successfully. Database defragmented and disk space reclaimed.".to_string(),
+                message:
+                    "VACUUM completed successfully. Database defragmented and disk space reclaimed."
+                        .to_string(),
             };
 
             ctx.output.print_success("db.vacuum", &out, || {
@@ -135,7 +156,10 @@ pub async fn handle(cmd: DbCommand, ctx: &CliContext) -> Result<(), CliError> {
             };
 
             ctx.output.print_success("db.backup", &out, || {
-                println!("✓ Online database backup snapshot created at: {}", target.display());
+                println!(
+                    "✓ Online database backup snapshot created at: {}",
+                    target.display()
+                );
             });
             Ok(())
         }

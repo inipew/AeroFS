@@ -24,8 +24,15 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             ctx.output.print_success("user.list", &users, || {
                 println!("Registered System Users ({} total):", users.len());
                 for u in &users {
-                    let role = if u.is_admin { "Administrator" } else { "Standard User" };
-                    println!("  • {:<20} [{:<13}] (Created: {})", u.username, role, u.created_at);
+                    let role = if u.is_admin {
+                        "Administrator"
+                    } else {
+                        "Standard User"
+                    };
+                    println!(
+                        "  • {:<20} [{:<13}] (Created: {})",
+                        u.username, role, u.created_at
+                    );
                 }
             });
             Ok(())
@@ -34,7 +41,9 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             let user = UserService::get_user(&pool, &username)
                 .await
                 .map_err(|e| match e {
-                    crate::errors::AppError::NotFound(_) => CliError::not_found(format!("User '{}' not found", username)),
+                    crate::errors::AppError::NotFound(_) => {
+                        CliError::not_found(format!("User '{}' not found", username))
+                    }
                     _ => CliError::database(format!("Database error: {}", e)),
                 })?;
 
@@ -42,8 +51,18 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
                 println!("User Account Details:");
                 println!("  • ID:                  {}", user.id);
                 println!("  • Username:            {}", user.username);
-                println!("  • Role:                {}", if user.is_admin { "Administrator" } else { "Standard User" });
-                println!("  • Custom Permissions:  {} granted", user.permissions_count);
+                println!(
+                    "  • Role:                {}",
+                    if user.is_admin {
+                        "Administrator"
+                    } else {
+                        "Standard User"
+                    }
+                );
+                println!(
+                    "  • Custom Permissions:  {} granted",
+                    user.permissions_count
+                );
                 println!("  • Created At:          {}", user.created_at);
                 println!("  • Updated At:          {}", user.updated_at);
             });
@@ -55,13 +74,15 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             password_stdin,
         } => {
             let password = if password_stdin {
-                read_password_stdin()
-                    .map_err(|e| CliError::usage(format!("Failed to read password from stdin: {}", e)))?
+                read_password_stdin().map_err(|e| {
+                    CliError::usage(format!("Failed to read password from stdin: {}", e))
+                })?
             } else {
                 let p1 = read_password_prompt(&format!("Enter password for user '{}': ", username))
                     .map_err(|e| CliError::usage(format!("Failed to read password: {}", e)))?;
-                let p2 = read_password_prompt("Confirm password: ")
-                    .map_err(|e| CliError::usage(format!("Failed to read password confirmation: {}", e)))?;
+                let p2 = read_password_prompt("Confirm password: ").map_err(|e| {
+                    CliError::usage(format!("Failed to read password confirmation: {}", e))
+                })?;
                 if p1 != p2 {
                     return Err(CliError::usage("Passwords do not match"));
                 }
@@ -83,7 +104,10 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             };
 
             ctx.output.print_success("user.create", &out, || {
-                println!("✓ User '{}' created successfully (Admin: {}).", username, admin);
+                println!(
+                    "✓ User '{}' created successfully (Admin: {}).",
+                    username, admin
+                );
             });
             Ok(())
         }
@@ -92,18 +116,21 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             password_stdin,
         } => {
             // Verify user exists first
-            UserService::get_user(&pool, &username).await.map_err(|_| {
-                CliError::not_found(format!("User '{}' not found", username))
-            })?;
+            UserService::get_user(&pool, &username)
+                .await
+                .map_err(|_| CliError::not_found(format!("User '{}' not found", username)))?;
 
             let password = if password_stdin {
-                read_password_stdin()
-                    .map_err(|e| CliError::usage(format!("Failed to read password from stdin: {}", e)))?
+                read_password_stdin().map_err(|e| {
+                    CliError::usage(format!("Failed to read password from stdin: {}", e))
+                })?
             } else {
-                let p1 = read_password_prompt(&format!("Enter new password for user '{}': ", username))
-                    .map_err(|e| CliError::usage(format!("Failed to read password: {}", e)))?;
-                let p2 = read_password_prompt("Confirm new password: ")
-                    .map_err(|e| CliError::usage(format!("Failed to read password confirmation: {}", e)))?;
+                let p1 =
+                    read_password_prompt(&format!("Enter new password for user '{}': ", username))
+                        .map_err(|e| CliError::usage(format!("Failed to read password: {}", e)))?;
+                let p2 = read_password_prompt("Confirm new password: ").map_err(|e| {
+                    CliError::usage(format!("Failed to read password confirmation: {}", e))
+                })?;
                 if p1 != p2 {
                     return Err(CliError::usage("Passwords do not match"));
                 }
@@ -130,8 +157,14 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
         }
         UserAction::Delete { username, yes } => {
             if !yes {
-                let confirmed = prompt_confirm(&format!("Are you sure you want to permanently delete user '{}'?", username), false)
-                    .unwrap_or(false);
+                let confirmed = prompt_confirm(
+                    &format!(
+                        "Are you sure you want to permanently delete user '{}'?",
+                        username
+                    ),
+                    false,
+                )
+                .unwrap_or(false);
                 if !confirmed {
                     println!("Deletion cancelled.");
                     return Ok(());

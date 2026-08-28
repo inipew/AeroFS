@@ -22,6 +22,7 @@ pub struct AppConfig {
     pub filesystem: FilesystemConfig,
     pub limits: LimitsConfig,
     pub database: DatabaseConfig,
+    pub storage: StorageConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -121,6 +122,91 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: "sqlite://./filemanager.db?mode=rwc".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct StorageConfig {
+    pub default_timeout_secs: u64,
+    pub default_io_timeout_secs: u64,
+    pub default_concurrency: usize,
+    pub retry_attempts: usize,
+    pub s3: ProviderStorageConfig,
+    pub sftp: ProviderStorageConfig,
+    pub ftp: ProviderStorageConfig,
+    pub fs: ProviderStorageConfig,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout_secs: 60,
+            default_io_timeout_secs: 60,
+            default_concurrency: 16,
+            retry_attempts: 3,
+            s3: ProviderStorageConfig {
+                max_concurrency: 64,
+                control_timeout_secs: 10,
+                io_timeout_secs: 60,
+                retry_attempts: 3,
+            },
+            sftp: ProviderStorageConfig {
+                max_concurrency: 8,
+                control_timeout_secs: 15,
+                io_timeout_secs: 120,
+                retry_attempts: 3,
+            },
+            ftp: ProviderStorageConfig {
+                max_concurrency: 8,
+                control_timeout_secs: 15,
+                io_timeout_secs: 60,
+                retry_attempts: 3,
+            },
+            fs: ProviderStorageConfig {
+                max_concurrency: 0,
+                control_timeout_secs: 10,
+                io_timeout_secs: 60,
+                retry_attempts: 1,
+            },
+        }
+    }
+}
+
+impl StorageConfig {
+    pub fn get_provider_config(&self, scheme: &str) -> ProviderStorageConfig {
+        match scheme {
+            "s3" => self.s3.clone(),
+            "sftp" => self.sftp.clone(),
+            "ftp" | "ftps" => self.ftp.clone(),
+            "fs" => self.fs.clone(),
+            _ => ProviderStorageConfig {
+                max_concurrency: self.default_concurrency,
+                control_timeout_secs: self.default_timeout_secs,
+                io_timeout_secs: self.default_io_timeout_secs,
+                retry_attempts: self.retry_attempts,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProviderStorageConfig {
+    pub max_concurrency: usize,
+    pub control_timeout_secs: u64,
+    pub io_timeout_secs: u64,
+    pub retry_attempts: usize,
+}
+
+impl Default for ProviderStorageConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrency: 16,
+            control_timeout_secs: 30,
+            io_timeout_secs: 60,
+            retry_attempts: 3,
         }
     }
 }
@@ -402,38 +488,85 @@ impl AppConfig {
             "server.host" | "host" => Some(self.server.host.clone()),
             "server.port" | "port" => Some(self.server.port.to_string()),
             "security.session_secret" | "session_secret" => Some("********".to_string()),
-            "security.session_ttl_secs" | "session_ttl" => Some(self.security.session_ttl_secs.to_string()),
-            "security.allow_symlinks_outside_root" | "allow_symlinks" => Some(self.security.allow_symlinks_outside_root.to_string()),
-            "security.allow_private_network_connections" | "allow_private_networks" => Some(self.security.allow_private_network_connections.to_string()),
-            "security.allowed_origins" | "allowed_origins" => Some(format!("{:?}", self.security.allowed_origins)),
-            "security.cookie_secure" | "cookie_secure" => Some(self.security.cookie_secure.to_string()),
-            "filesystem.default_local_root" | "default_local_root" | "local_root" => Some(self.filesystem.default_local_root.display().to_string()),
-            "filesystem.temp_dir" | "temp_dir" => Some(self.filesystem.temp_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "None".to_string())),
-            "filesystem.show_hidden_default" | "show_hidden" => Some(self.filesystem.show_hidden_default.to_string()),
-            "filesystem.read_only_default" | "read_only" => Some(self.filesystem.read_only_default.to_string()),
-            "limits.max_upload_size" | "max_upload_size" => Some(format!("{} bytes ({} MB)", self.limits.max_upload_size, self.limits.max_upload_size / (1024 * 1024))),
-            "limits.max_editable_size" | "max_editable_size" => Some(format!("{} bytes ({} MB)", self.limits.max_editable_size, self.limits.max_editable_size / (1024 * 1024))),
-            "limits.max_preview_size" | "max_preview_size" => Some(format!("{} bytes ({} MB)", self.limits.max_preview_size, self.limits.max_preview_size / (1024 * 1024))),
-            "limits.max_directory_entries" | "max_directory_entries" => Some(self.limits.max_directory_entries.to_string()),
-            "limits.max_concurrent_transfers" | "max_concurrent_transfers" => Some(self.limits.max_concurrent_transfers.to_string()),
+            "security.session_ttl_secs" | "session_ttl" => {
+                Some(self.security.session_ttl_secs.to_string())
+            }
+            "security.allow_symlinks_outside_root" | "allow_symlinks" => {
+                Some(self.security.allow_symlinks_outside_root.to_string())
+            }
+            "security.allow_private_network_connections" | "allow_private_networks" => {
+                Some(self.security.allow_private_network_connections.to_string())
+            }
+            "security.allowed_origins" | "allowed_origins" => {
+                Some(format!("{:?}", self.security.allowed_origins))
+            }
+            "security.cookie_secure" | "cookie_secure" => {
+                Some(self.security.cookie_secure.to_string())
+            }
+            "filesystem.default_local_root" | "default_local_root" | "local_root" => {
+                Some(self.filesystem.default_local_root.display().to_string())
+            }
+            "filesystem.temp_dir" | "temp_dir" => Some(
+                self.filesystem
+                    .temp_dir
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "None".to_string()),
+            ),
+            "filesystem.show_hidden_default" | "show_hidden" => {
+                Some(self.filesystem.show_hidden_default.to_string())
+            }
+            "filesystem.read_only_default" | "read_only" => {
+                Some(self.filesystem.read_only_default.to_string())
+            }
+            "limits.max_upload_size" | "max_upload_size" => Some(format!(
+                "{} bytes ({} MB)",
+                self.limits.max_upload_size,
+                self.limits.max_upload_size / (1024 * 1024)
+            )),
+            "limits.max_editable_size" | "max_editable_size" => Some(format!(
+                "{} bytes ({} MB)",
+                self.limits.max_editable_size,
+                self.limits.max_editable_size / (1024 * 1024)
+            )),
+            "limits.max_preview_size" | "max_preview_size" => Some(format!(
+                "{} bytes ({} MB)",
+                self.limits.max_preview_size,
+                self.limits.max_preview_size / (1024 * 1024)
+            )),
+            "limits.max_directory_entries" | "max_directory_entries" => {
+                Some(self.limits.max_directory_entries.to_string())
+            }
+            "limits.max_concurrent_transfers" | "max_concurrent_transfers" => {
+                Some(self.limits.max_concurrent_transfers.to_string())
+            }
             "database.url" | "database_url" => Some(crate::db::sanitize_db_url(&self.database.url)),
             _ => None,
         }
     }
 
     /// Retrieve provenance metadata for effective configuration layers
-    pub fn get_effective_provenance(&self, config_path: Option<&Path>) -> Vec<ConfigProvenanceEntry> {
-        let loaded_file = config_path.map(PathBuf::from).or_else(|| {
-            env::var("AEROFS_CONFIG").or_else(|_| env::var("WFM_CONFIG")).ok().map(PathBuf::from)
-        }).or_else(|| {
-            let candidates = [
-                PathBuf::from("/etc/aerofs/config.toml"),
-                dirs_config_path(),
-                PathBuf::from("./aerofs.toml"),
-                PathBuf::from("./config.toml"),
-            ];
-            candidates.into_iter().find(|p| p.exists())
-        });
+    pub fn get_effective_provenance(
+        &self,
+        config_path: Option<&Path>,
+    ) -> Vec<ConfigProvenanceEntry> {
+        let loaded_file = config_path
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var("AEROFS_CONFIG")
+                    .or_else(|_| env::var("WFM_CONFIG"))
+                    .ok()
+                    .map(PathBuf::from)
+            })
+            .or_else(|| {
+                let candidates = [
+                    PathBuf::from("/etc/aerofs/config.toml"),
+                    dirs_config_path(),
+                    PathBuf::from("./aerofs.toml"),
+                    PathBuf::from("./config.toml"),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+            });
 
         let mut entries = Vec::new();
 
@@ -468,13 +601,14 @@ impl AppConfig {
         });
 
         // database.url
-        let db_src = if env::var("AEROFS_DATABASE_URL").is_ok() || env::var("WFM_DATABASE_URL").is_ok() {
-            ConfigSource::Environment("AEROFS_DATABASE_URL".to_string())
-        } else if let Some(ref f) = loaded_file {
-            ConfigSource::ConfigFile(f.clone())
-        } else {
-            ConfigSource::Default
-        };
+        let db_src =
+            if env::var("AEROFS_DATABASE_URL").is_ok() || env::var("WFM_DATABASE_URL").is_ok() {
+                ConfigSource::Environment("AEROFS_DATABASE_URL".to_string())
+            } else if let Some(ref f) = loaded_file {
+                ConfigSource::ConfigFile(f.clone())
+            } else {
+                ConfigSource::Default
+            };
         entries.push(ConfigProvenanceEntry {
             key: "database.url".to_string(),
             value: crate::db::sanitize_db_url(&self.database.url),
@@ -483,7 +617,10 @@ impl AppConfig {
         });
 
         // filesystem.default_local_root
-        let root_src = if env::var("AEROFS_ROOT_PATH").is_ok() || env::var("WFM_ROOT_PATH").is_ok() || env::var("WFM_LOCAL_ROOT").is_ok() {
+        let root_src = if env::var("AEROFS_ROOT_PATH").is_ok()
+            || env::var("WFM_ROOT_PATH").is_ok()
+            || env::var("WFM_LOCAL_ROOT").is_ok()
+        {
             ConfigSource::Environment("AEROFS_ROOT_PATH".to_string())
         } else if let Some(ref f) = loaded_file {
             ConfigSource::ConfigFile(f.clone())
@@ -507,9 +644,16 @@ impl AppConfig {
         };
         entries.push(ConfigProvenanceEntry {
             key: "filesystem.temp_dir".to_string(),
-            value: self.filesystem.temp_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "None".to_string()),
+            value: self
+                .filesystem
+                .temp_dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".to_string()),
             source: temp_src,
-            description: Some("Temporary directory for staging file uploads & archives".to_string()),
+            description: Some(
+                "Temporary directory for staging file uploads & archives".to_string(),
+            ),
         });
 
         // limits.max_concurrent_transfers
@@ -528,16 +672,21 @@ impl AppConfig {
         });
 
         // limits.max_upload_size
-        let upload_src = if env::var("AEROFS_MAX_UPLOAD_MB").is_ok() || env::var("WFM_MAX_UPLOAD_MB").is_ok() {
-            ConfigSource::Environment("AEROFS_MAX_UPLOAD_MB".to_string())
-        } else if let Some(ref f) = loaded_file {
-            ConfigSource::ConfigFile(f.clone())
-        } else {
-            ConfigSource::Default
-        };
+        let upload_src =
+            if env::var("AEROFS_MAX_UPLOAD_MB").is_ok() || env::var("WFM_MAX_UPLOAD_MB").is_ok() {
+                ConfigSource::Environment("AEROFS_MAX_UPLOAD_MB".to_string())
+            } else if let Some(ref f) = loaded_file {
+                ConfigSource::ConfigFile(f.clone())
+            } else {
+                ConfigSource::Default
+            };
         entries.push(ConfigProvenanceEntry {
             key: "limits.max_upload_size".to_string(),
-            value: format!("{} bytes ({} MB)", self.limits.max_upload_size, self.limits.max_upload_size / (1024 * 1024)),
+            value: format!(
+                "{} bytes ({} MB)",
+                self.limits.max_upload_size,
+                self.limits.max_upload_size / (1024 * 1024)
+            ),
             source: upload_src,
             description: Some("Maximum allowed size per uploaded file".to_string()),
         });
@@ -552,7 +701,11 @@ impl AppConfig {
         };
         entries.push(ConfigProvenanceEntry {
             key: "security.session_ttl_secs".to_string(),
-            value: format!("{}s ({} hours)", self.security.session_ttl_secs, self.security.session_ttl_secs / 3600),
+            value: format!(
+                "{}s ({} hours)",
+                self.security.session_ttl_secs,
+                self.security.session_ttl_secs / 3600
+            ),
             source: ttl_src,
             description: Some("Session expiration time in seconds".to_string()),
         });
@@ -569,7 +722,9 @@ impl AppConfig {
             key: "security.allow_symlinks_outside_root".to_string(),
             value: self.security.allow_symlinks_outside_root.to_string(),
             source: sym_src,
-            description: Some("Whether symlinks pointing outside storage root are resolved".to_string()),
+            description: Some(
+                "Whether symlinks pointing outside storage root are resolved".to_string(),
+            ),
         });
 
         // security.allow_private_network_connections
@@ -584,7 +739,9 @@ impl AppConfig {
             key: "security.allow_private_network_connections".to_string(),
             value: self.security.allow_private_network_connections.to_string(),
             source: priv_src,
-            description: Some("Allow remote connections in private RFC1918 / loopback networks".to_string()),
+            description: Some(
+                "Allow remote connections in private RFC1918 / loopback networks".to_string(),
+            ),
         });
 
         // limits.max_editable_size
@@ -597,7 +754,11 @@ impl AppConfig {
         };
         entries.push(ConfigProvenanceEntry {
             key: "limits.max_editable_size".to_string(),
-            value: format!("{} bytes ({} MB)", self.limits.max_editable_size, self.limits.max_editable_size / (1024 * 1024)),
+            value: format!(
+                "{} bytes ({} MB)",
+                self.limits.max_editable_size,
+                self.limits.max_editable_size / (1024 * 1024)
+            ),
             source: edit_src,
             description: Some("Maximum file size allowed for in-browser editor".to_string()),
         });
@@ -618,7 +779,9 @@ impl AppConfig {
         });
 
         // security.session_secret
-        let secret_src = if env::var("AEROFS_SESSION_SECRET").is_ok() || env::var("WFM_SESSION_SECRET").is_ok() {
+        let secret_src = if env::var("AEROFS_SESSION_SECRET").is_ok()
+            || env::var("WFM_SESSION_SECRET").is_ok()
+        {
             ConfigSource::Environment("AEROFS_SESSION_SECRET".to_string())
         } else if let Some(ref f) = loaded_file {
             ConfigSource::ConfigFile(f.clone())
@@ -629,7 +792,10 @@ impl AppConfig {
             key: "security.session_secret".to_string(),
             value: "********".to_string(),
             source: secret_src,
-            description: Some("HMAC cryptographic key used for cookie signing & credential encryption".to_string()),
+            description: Some(
+                "HMAC cryptographic key used for cookie signing & credential encryption"
+                    .to_string(),
+            ),
         });
 
         entries
@@ -638,7 +804,10 @@ impl AppConfig {
     /// Describe metadata for a specific configuration key
     pub fn describe_key(key: &str) -> Option<ConfigDescriptor> {
         let key_lower = key.to_lowercase();
-        CONFIG_DESCRIPTORS.iter().find(|d| d.key.eq_ignore_ascii_case(&key_lower)).copied()
+        CONFIG_DESCRIPTORS
+            .iter()
+            .find(|d| d.key.eq_ignore_ascii_case(&key_lower))
+            .copied()
     }
 
     /// Return all registered configuration descriptors

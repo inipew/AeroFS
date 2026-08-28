@@ -28,30 +28,31 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
                 .await
                 .map_err(|e| CliError::database(format!("Failed to list connections: {}", e)))?;
 
-            ctx.output.print_success("connection.list", &connections, || {
-                if connections.is_empty() {
-                    println!("No storage connections configured.");
-                } else {
-                    println!("Storage Connections ({} total):", connections.len());
-                    for c in &connections {
-                        let status_str = match c.status {
-                            crate::domain::ConnectionStatus::Connected => "Connected",
-                            crate::domain::ConnectionStatus::Disconnected => "Disabled",
-                            crate::domain::ConnectionStatus::Connecting => "Connecting",
-                            crate::domain::ConnectionStatus::Reconnecting => "Reconnecting",
-                            crate::domain::ConnectionStatus::Failed => "Failed",
-                        };
-                        println!(
-                            "  • {:<12} | {:<20} | Provider: {:<6} | Path: {:<15} | Status: {}",
-                            c.id,
-                            c.name,
-                            c.provider.as_str(),
-                            c.base_path,
-                            status_str
-                        );
+            ctx.output
+                .print_success("connection.list", &connections, || {
+                    if connections.is_empty() {
+                        println!("No storage connections configured.");
+                    } else {
+                        println!("Storage Connections ({} total):", connections.len());
+                        for c in &connections {
+                            let status_str = match c.status {
+                                crate::domain::ConnectionStatus::Connected => "Connected",
+                                crate::domain::ConnectionStatus::Disconnected => "Disabled",
+                                crate::domain::ConnectionStatus::Connecting => "Connecting",
+                                crate::domain::ConnectionStatus::Reconnecting => "Reconnecting",
+                                crate::domain::ConnectionStatus::Failed => "Failed",
+                            };
+                            println!(
+                                "  • {:<12} | {:<20} | Provider: {:<6} | Path: {:<15} | Status: {}",
+                                c.id,
+                                c.name,
+                                c.provider.as_str(),
+                                c.base_path,
+                                status_str
+                            );
+                        }
                     }
-                }
-            });
+                });
             Ok(())
         }
         ConnectionAction::Show { id } => {
@@ -68,23 +69,86 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
                 println!("Connection Details:");
                 println!("  • ID:                  {}", detail.connection.id);
                 println!("  • Name:                {}", detail.connection.name);
-                println!("  • Provider:            {}", detail.connection.provider.as_str());
+                println!(
+                    "  • Provider:            {}",
+                    detail.connection.provider.as_str()
+                );
                 if let Some(host) = &detail.connection.host {
-                    println!("  • Host:                {}:{}", host, detail.connection.port.unwrap_or(0));
+                    println!(
+                        "  • Host:                {}:{}",
+                        host,
+                        detail.connection.port.unwrap_or(0)
+                    );
                 }
                 if let Some(user) = &detail.connection.username {
                     println!("  • Username:            {}", user);
                 }
                 println!("  • Base Path:           {}", detail.connection.base_path);
-                println!("  • Read-Only:           {}", if detail.connection.read_only { "Yes" } else { "No" });
-                println!("  • Enabled:             {}", if detail.connection.enabled { "Yes" } else { "No" });
+                println!(
+                    "  • Read-Only:           {}",
+                    if detail.connection.read_only {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
+                println!(
+                    "  • Enabled:             {}",
+                    if detail.connection.enabled {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
                 println!("Capabilities:");
-                println!("  • Read / Download:     {}", if detail.capabilities.read { "Yes" } else { "No" });
-                println!("  • Write / Upload:      {}", if detail.capabilities.write { "Yes" } else { "No" });
-                println!("  • Atomic Write:        {}", if detail.capabilities.atomic_write { "Yes" } else { "No" });
-                println!("  • Server-Side Copy:    {}", if detail.capabilities.server_side_copy { "Yes" } else { "No" });
-                println!("  • Checksum & Integrity:{}", if detail.capabilities.checksum { "Yes" } else { "No" });
-                println!("  • Symlink Resolution:  {}", if detail.capabilities.symlink { "Yes" } else { "No" });
+                println!(
+                    "  • Read / Download:     {}",
+                    if detail.capabilities.read {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
+                println!(
+                    "  • Write / Upload:      {}",
+                    if detail.capabilities.write {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
+                println!(
+                    "  • Atomic Write:        {}",
+                    if detail.capabilities.atomic_write {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
+                println!(
+                    "  • Server-Side Copy:    {}",
+                    if detail.capabilities.server_side_copy {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
+                println!(
+                    "  • Checksum & Integrity:{}",
+                    if detail.capabilities.checksum {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
+                println!(
+                    "  • Symlink Resolution:  {}",
+                    if detail.capabilities.symlink {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
             });
             Ok(())
         }
@@ -95,32 +159,44 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
 
             let human_test = || {
                 println!("Connection Diagnostic Test for '{}':", id);
-                println!("  • Reachable:           {}", if res.success { "Yes" } else { "No" });
+                println!(
+                    "  • Reachable:           {}",
+                    if res.success { "Yes" } else { "No" }
+                );
                 println!("  • Latency:             {} ms", res.latency_ms);
                 println!("  • Message:             {}", res.message);
             };
 
             if res.success {
-                ctx.output.print_success("connection.test", &res, human_test);
+                ctx.output
+                    .print_success("connection.test", &res, human_test);
                 Ok(())
             } else {
-                let err = CliError::health(format!("Connection test for '{}' failed: {}", id, res.message));
-                ctx.output.print_failure("connection.test", &res, &err, human_test);
+                let err = CliError::health(format!(
+                    "Connection test for '{}' failed: {}",
+                    id, res.message
+                ));
+                ctx.output
+                    .print_failure("connection.test", &res, &err, human_test);
                 Err(err)
             }
         }
         ConnectionAction::Enable { id } => {
             let pool = ctx.db().await?;
             let now = chrono::Utc::now().to_rfc3339();
-            let res = sqlx::query("UPDATE connections SET enabled = 1, updated_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(&id)
-                .execute(&pool)
-                .await
-                .map_err(|e| CliError::database(format!("DB error: {}", e)))?;
+            let res =
+                sqlx::query("UPDATE connections SET enabled = 1, updated_at = ? WHERE id = ?")
+                    .bind(&now)
+                    .bind(&id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| CliError::database(format!("DB error: {}", e)))?;
 
             if res.rows_affected() == 0 {
-                return Err(CliError::not_found(format!("Connection '{}' not found", id)));
+                return Err(CliError::not_found(format!(
+                    "Connection '{}' not found",
+                    id
+                )));
             }
 
             let out = ConnectionActionOutput {
@@ -136,20 +212,26 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
         }
         ConnectionAction::Disable { id } => {
             if id == "local" {
-                return Err(CliError::forbidden("Default Local connection cannot be disabled"));
+                return Err(CliError::forbidden(
+                    "Default Local connection cannot be disabled",
+                ));
             }
 
             let pool = ctx.db().await?;
             let now = chrono::Utc::now().to_rfc3339();
-            let res = sqlx::query("UPDATE connections SET enabled = 0, updated_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(&id)
-                .execute(&pool)
-                .await
-                .map_err(|e| CliError::database(format!("DB error: {}", e)))?;
+            let res =
+                sqlx::query("UPDATE connections SET enabled = 0, updated_at = ? WHERE id = ?")
+                    .bind(&now)
+                    .bind(&id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| CliError::database(format!("DB error: {}", e)))?;
 
             if res.rows_affected() == 0 {
-                return Err(CliError::not_found(format!("Connection '{}' not found", id)));
+                return Err(CliError::not_found(format!(
+                    "Connection '{}' not found",
+                    id
+                )));
             }
 
             let out = ConnectionActionOutput {

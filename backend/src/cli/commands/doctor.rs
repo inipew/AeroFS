@@ -59,7 +59,8 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
         PathBuf::from("./aerofs.lock")
     };
 
-    let p_status = DaemonLock::inspect_status(&lock_path, &ctx.config.server.host, ctx.config.server.port);
+    let p_status =
+        DaemonLock::inspect_status(&lock_path, &ctx.config.server.host, ctx.config.server.port);
     match &p_status {
         ProcessStatus::Running { pid, endpoint, .. } => {
             checks.push(DoctorCheck {
@@ -79,7 +80,9 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 fixable: false,
             });
         }
-        ProcessStatus::Stale { stale_pid, message, .. } => {
+        ProcessStatus::Stale {
+            stale_pid, message, ..
+        } => {
             checks.push(DoctorCheck {
                 category: "Runtime",
                 name: "Daemon Process Liveness",
@@ -88,14 +91,19 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 fixable: true,
             });
             if args.repair {
-                let should_fix = args.yes || prompt_confirm("Remove stale daemon lock file?", false).unwrap_or(false);
+                let should_fix = args.yes
+                    || prompt_confirm("Remove stale daemon lock file?", false).unwrap_or(false);
                 if should_fix && !args.dry_run {
                     let _ = std::fs::remove_file(&lock_path);
                     repairs_applied.push("Removed stale daemon lock file".to_string());
                 }
             }
         }
-        ProcessStatus::Unhealthy { pid, endpoint, reason } => {
+        ProcessStatus::Unhealthy {
+            pid,
+            endpoint,
+            reason,
+        } => {
             checks.push(DoctorCheck {
                 category: "Runtime",
                 name: "Daemon Process Liveness",
@@ -126,7 +134,11 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                     checks.push(DoctorCheck {
                         category: "Database",
                         name: "PRAGMA Integrity & Foreign Keys",
-                        severity: if pass { Severity::Ok } else { Severity::Critical },
+                        severity: if pass {
+                            Severity::Ok
+                        } else {
+                            Severity::Critical
+                        },
                         details: reports.join("; "),
                         fixable: false,
                     });
@@ -163,7 +175,8 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                         category: "Database",
                         name: "Administrator Accounts",
                         severity: Severity::Critical,
-                        details: "No administrator accounts found. System has no administrator!".to_string(),
+                        details: "No administrator accounts found. System has no administrator!"
+                            .to_string(),
                         fixable: false,
                     });
                 }
@@ -187,20 +200,37 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                     .await;
 
             if let Ok((stuck,)) = stuck_jobs {
-                if stuck > 0 && matches!(p_status, ProcessStatus::Stopped | ProcessStatus::Stale { .. }) {
+                if stuck > 0
+                    && matches!(
+                        p_status,
+                        ProcessStatus::Stopped | ProcessStatus::Stale { .. }
+                    )
+                {
                     checks.push(DoctorCheck {
                         category: "Transfers",
                         name: "Orphaned Transfer Jobs",
                         severity: Severity::Warning,
-                        details: format!("{} transfer job(s) marked 'running' while daemon is offline", stuck),
+                        details: format!(
+                            "{} transfer job(s) marked 'running' while daemon is offline",
+                            stuck
+                        ),
                         fixable: true,
                     });
 
                     if args.repair {
-                        let should_fix = args.yes || prompt_confirm(&format!("Mark {} orphaned transfers as failed?", stuck), false).unwrap_or(false);
+                        let should_fix = args.yes
+                            || prompt_confirm(
+                                &format!("Mark {} orphaned transfers as failed?", stuck),
+                                false,
+                            )
+                            .unwrap_or(false);
                         if should_fix && !args.dry_run {
-                            let _ = crate::services::TransferService::repair_stuck_transfers(&pool, false).await;
-                            repairs_applied.push(format!("Marked {} orphaned transfers as failed", stuck));
+                            let _ = crate::services::TransferService::repair_stuck_transfers(
+                                &pool, false,
+                            )
+                            .await;
+                            repairs_applied
+                                .push(format!("Marked {} orphaned transfers as failed", stuck));
                         }
                     }
                 } else {
@@ -226,7 +256,11 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 checks.push(DoctorCheck {
                     category: "Connections",
                     name: "Active Storage Providers",
-                    severity: if conns > 0 { Severity::Ok } else { Severity::Warning },
+                    severity: if conns > 0 {
+                        Severity::Ok
+                    } else {
+                        Severity::Warning
+                    },
                     details: format!("{} enabled storage connection(s) configured", conns),
                     fixable: false,
                 });
@@ -282,10 +316,18 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
         });
 
         if args.repair {
-            let should_fix = args.yes || prompt_confirm(&format!("Create missing directory '{}'?", root.display()), true).unwrap_or(false);
+            let should_fix = args.yes
+                || prompt_confirm(
+                    &format!("Create missing directory '{}'?", root.display()),
+                    true,
+                )
+                .unwrap_or(false);
             if should_fix && !args.dry_run {
                 if let Ok(_) = std::fs::create_dir_all(root) {
-                    repairs_applied.push(format!("Created storage root directory: {}", root.display()));
+                    repairs_applied.push(format!(
+                        "Created storage root directory: {}",
+                        root.display()
+                    ));
                 }
             }
         }
@@ -303,7 +345,12 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
             });
 
             if args.repair {
-                let should_fix = args.yes || prompt_confirm(&format!("Create missing temp directory '{}'?", temp.display()), true).unwrap_or(false);
+                let should_fix = args.yes
+                    || prompt_confirm(
+                        &format!("Create missing temp directory '{}'?", temp.display()),
+                        true,
+                    )
+                    .unwrap_or(false);
                 if should_fix && !args.dry_run {
                     if let Ok(_) = std::fs::create_dir_all(temp) {
                         repairs_applied.push(format!("Created temp directory: {}", temp.display()));
@@ -330,7 +377,8 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
             category: "Security",
             name: "Session Secret HMAC",
             severity: Severity::Warning,
-            details: "Using default development secret. Set AEROFS_SESSION_SECRET for production.".to_string(),
+            details: "Using default development secret. Set AEROFS_SESSION_SECRET for production."
+                .to_string(),
             fixable: false,
         });
     } else if secret.len() < 32 {
@@ -356,7 +404,8 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
             category: "Security",
             name: "Symlink Traversal Policy",
             severity: Severity::Warning,
-            details: "allow_symlinks_outside_root is enabled (may expose host filesystem)".to_string(),
+            details: "allow_symlinks_outside_root is enabled (may expose host filesystem)"
+                .to_string(),
             fixable: false,
         });
     } else {
@@ -371,8 +420,14 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
 
     // Calculate totals
     let ok_count = checks.iter().filter(|c| c.severity == Severity::Ok).count();
-    let warning_count = checks.iter().filter(|c| c.severity == Severity::Warning).count();
-    let critical_count = checks.iter().filter(|c| c.severity == Severity::Critical).count();
+    let warning_count = checks
+        .iter()
+        .filter(|c| c.severity == Severity::Warning)
+        .count();
+    let critical_count = checks
+        .iter()
+        .filter(|c| c.severity == Severity::Critical)
+        .count();
 
     let overall_status = if critical_count > 0 {
         "critical_issues_detected"
@@ -399,10 +454,18 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 current_cat = check.category;
                 println!("  [{}]", current_cat);
             }
-            println!("    {} {}: {}", check.severity.symbol(), check.name, check.details);
+            println!(
+                "    {} {}: {}",
+                check.severity.symbol(),
+                check.name,
+                check.details
+            );
         }
 
-        println!("\nSummary: {} passed, {} warning(s), {} critical failure(s)", ok_count, warning_count, critical_count);
+        println!(
+            "\nSummary: {} passed, {} warning(s), {} critical failure(s)",
+            ok_count, warning_count, critical_count
+        );
         if !repairs_applied.is_empty() {
             println!("\nRepairs Applied:");
             for r in &repairs_applied {
@@ -416,7 +479,8 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
             "Doctor detected {} critical failure(s)",
             critical_count
         ));
-        ctx.output.print_failure("doctor", &report, &err, human_report);
+        ctx.output
+            .print_failure("doctor", &report, &err, human_report);
         Err(err)
     } else {
         ctx.output.print_success("doctor", &report, human_report);

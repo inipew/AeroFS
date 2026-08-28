@@ -170,7 +170,8 @@ async fn test_editor_edit_save_reopen_cycle() {
 
     // 3. User edits and saves Version B with If-Match: etag_v1
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    let version_b_content = "fn main() {\n    println!(\"Updated to Version B with new features\");\n}";
+    let version_b_content =
+        "fn main() {\n    println!(\"Updated to Version B with new features\");\n}";
     let save_v2_req = Request::builder()
         .uri("/api/v1/connections/local/files/content")
         .method("PUT")
@@ -178,8 +179,7 @@ async fn test_editor_edit_save_reopen_cycle() {
         .header(header::IF_MATCH, &etag_v1)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            json!({ "path": "/code.rs", "content": version_b_content })
-                .to_string(),
+            json!({ "path": "/code.rs", "content": version_b_content }).to_string(),
         ))
         .unwrap();
 

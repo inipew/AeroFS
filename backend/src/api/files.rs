@@ -40,12 +40,26 @@ pub struct ListFilesQuery {
     pub show_hidden: Option<bool>,
     pub sort: Option<String>,
     pub order: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PathQuery {
     pub path: String,
     pub download: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PresignRequest {
+    pub path: String,
+    pub expire_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PresignResponse {
+    pub url: String,
+    pub expires_in_seconds: u64,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -85,14 +99,14 @@ pub struct SuccessResponse {
 
 use crate::services::FileService;
 
-/// List files and directories in a given path for a connection
+/// List files and directories in a given path for a connection with streaming and pagination support
 pub async fn list_files(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<ListFilesQuery>,
 ) -> Result<Json<crate::domain::DirectoryListing>, AppError> {
-    let listing = FileService::list_directory(
+    let listing = FileService::list_directory_paged(
         &state,
         &user,
         &connection_id,
@@ -100,10 +114,58 @@ pub async fn list_files(
         query.show_hidden,
         query.sort.as_deref(),
         query.order.as_deref(),
+        query.cursor.as_deref(),
+        query.limit,
     )
     .await?;
 
     Ok(Json(listing))
+}
+
+/// Generate a pre-signed URL for direct browser-to-storage download
+pub async fn presign_download_file(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(connection_id): Path<String>,
+    Json(payload): Json<PresignRequest>,
+) -> Result<Json<PresignResponse>, AppError> {
+    let expire_secs = payload.expire_seconds.unwrap_or(3600);
+    let url = FileService::get_presigned_download_url(
+        &state,
+        &user,
+        &connection_id,
+        &payload.path,
+        Some(expire_secs),
+    )
+    .await?;
+
+    Ok(Json(PresignResponse {
+        url,
+        expires_in_seconds: expire_secs,
+    }))
+}
+
+/// Generate a pre-signed URL for direct browser-to-storage upload
+pub async fn presign_upload_file(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(connection_id): Path<String>,
+    Json(payload): Json<PresignRequest>,
+) -> Result<Json<PresignResponse>, AppError> {
+    let expire_secs = payload.expire_seconds.unwrap_or(3600);
+    let url = FileService::get_presigned_upload_url(
+        &state,
+        &user,
+        &connection_id,
+        &payload.path,
+        Some(expire_secs),
+    )
+    .await?;
+
+    Ok(Json(PresignResponse {
+        url,
+        expires_in_seconds: expire_secs,
+    }))
 }
 
 /// Get detailed metadata for a file or directory
@@ -158,10 +220,7 @@ pub async fn get_file_content(
         header::CACHE_CONTROL,
         "no-store, no-cache, must-revalidate".parse().unwrap(),
     );
-    resp_headers.insert(
-        header::PRAGMA,
-        "no-cache".parse().unwrap(),
-    );
+    resp_headers.insert(header::PRAGMA, "no-cache".parse().unwrap());
 
     if let Some(mtime) = meta.modified_at {
         resp_headers.insert(LAST_MODIFIED, mtime.to_rfc2822().parse().unwrap());

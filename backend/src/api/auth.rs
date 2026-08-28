@@ -52,7 +52,11 @@ pub async fn login(
     // Determine whether to set the Secure flag on the session cookie.
     // Use the explicit config field (cookie_secure, default false).
     // On Android/LAN plain-HTTP deployments keep this false (the default).
-    let secure_flag = if state.config.security.cookie_secure { "; Secure" } else { "" };
+    let secure_flag = if state.config.security.cookie_secure {
+        "; Secure"
+    } else {
+        ""
+    };
 
     // SameSite=Lax works for same-site navigation but breaks cross-origin requests
     // (e.g. WebView on Android hitting a LAN IP). Use SameSite=Lax only when Secure

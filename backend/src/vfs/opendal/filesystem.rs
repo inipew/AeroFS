@@ -1,18 +1,19 @@
 use super::capabilities::map_opendal_capabilities_for_scheme;
 use super::error::map_opendal_error;
-use super::metadata::{map_opendal_entry, map_opendal_metadata};
-use crate::domain::{Capabilities, FileEntry, FileKind, FileMetadata, VfsPath};
+use super::lister::{create_opendal_stream, FileStreamBox};
+use super::metadata::map_opendal_metadata;
+use crate::domain::{Capabilities, FileKind, FileMetadata, VfsPath};
 use crate::errors::VfsError;
-use crate::vfs::traits::{AsyncReadBox, FileSystem};
+use crate::vfs::traits::{AsyncReadBox, FileSystem, PresignSupport};
 use async_trait::async_trait;
 use futures::StreamExt;
 use opendal::{ErrorKind, Operator};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio_util::bytes::BytesMut;
 
 /// Universal OpenDAL-backed VFS FileSystem implementation
 pub struct OpenDalFileSystem {
-    #[allow(dead_code)]
     connection_id: String,
     operator: Operator,
     capabilities: Capabilities,
@@ -22,6 +23,10 @@ pub struct OpenDalFileSystem {
 impl OpenDalFileSystem {
     pub fn connection_id(&self) -> &str {
         &self.connection_id
+    }
+
+    pub fn operator(&self) -> &Operator {
+        &self.operator
     }
 
     pub fn new(connection_id: impl Into<String>, operator: Operator) -> Self {
@@ -76,7 +81,7 @@ impl OpenDalFileSystem {
     }
 
     /// Strict path validation: converts VfsPath to OpenDAL relative path.
-    /// Traversal attempts (`..`) and invalid prefixes are strictly REJECTED (P0 #1).
+    /// Traversal attempts (`..`) and invalid prefixes are strictly REJECTED.
     fn to_operator_path(&self, vfs_path: &VfsPath) -> Result<String, VfsError> {
         let path_str = &vfs_path.path;
         for comp in std::path::Path::new(path_str).components() {
@@ -112,39 +117,55 @@ impl OpenDalFileSystem {
 }
 
 #[async_trait]
+impl PresignSupport for OpenDalFileSystem {
+    async fn presign_read_url(&self, path: &VfsPath, expire: Duration) -> Result<String, VfsError> {
+        let op_path = self.to_operator_path(path)?;
+        let signed_req = self
+            .operator
+            .presign_read(&op_path, expire)
+            .await
+            .map_err(|e| {
+                map_opendal_error(e, &format!("Presign read failed for '{}'", path.path))
+            })?;
+        Ok(signed_req.uri().to_string())
+    }
+
+    async fn presign_write_url(
+        &self,
+        path: &VfsPath,
+        expire: Duration,
+    ) -> Result<String, VfsError> {
+        let op_path = self.to_operator_path(path)?;
+        let signed_req = self
+            .operator
+            .presign_write(&op_path, expire)
+            .await
+            .map_err(|e| {
+                map_opendal_error(e, &format!("Presign write failed for '{}'", path.path))
+            })?;
+        Ok(signed_req.uri().to_string())
+    }
+}
+
+#[async_trait]
 impl FileSystem for OpenDalFileSystem {
     fn capabilities(&self) -> Capabilities {
         self.capabilities.clone()
     }
 
+    fn as_presign(&self) -> Option<&dyn PresignSupport> {
+        if self.capabilities.presign_read || self.capabilities.presign_write {
+            Some(self)
+        } else {
+            None
+        }
+    }
+
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
-    async fn list(&self, path: &VfsPath) -> Result<Vec<FileEntry>, VfsError> {
+    async fn list_stream(&self, path: &VfsPath) -> Result<FileStreamBox, VfsError> {
         let op_path = self.to_operator_dir_path(path)?;
         let list_target = if op_path.is_empty() { "/" } else { &op_path };
-
-        let entries = self
-            .operator
-            .list(list_target)
-            .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to list '{}'", path.path)))?;
-
-        let mut results = Vec::new();
-        for entry in entries {
-            if let Some(mut mapped) = map_opendal_entry(&entry, path) {
-                #[cfg(unix)]
-                if let Some(ref root) = self.local_root {
-                    use std::os::unix::fs::PermissionsExt;
-                    let abs_child = root.join(mapped.path.trim_start_matches('/'));
-                    if let Ok(sym_meta) = std::fs::symlink_metadata(&abs_child) {
-                        let mode = sym_meta.permissions().mode() & 0o7777;
-                        mapped.permissions = Some(format!("{:04o}", mode));
-                    }
-                }
-                results.push(mapped);
-            }
-        }
-
-        Ok(results)
+        create_opendal_stream(&self.operator, list_target, path, self.local_root.clone()).await
     }
 
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
@@ -244,7 +265,6 @@ impl FileSystem for OpenDalFileSystem {
             map_opendal_error(e, &format!("Failed to open reader for '{}'", path.path))
         })?;
 
-        // P0 #4: Stream error propagation using tokio_util StreamReader
         let stream = reader
             .into_bytes_stream(..)
             .await
@@ -272,18 +292,7 @@ impl FileSystem for OpenDalFileSystem {
             return Ok(Box::new(std::io::Cursor::new(Vec::new())));
         }
 
-        let meta = self
-            .operator
-            .stat(&op_path)
-            .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to stat '{}'", path.path)))?;
-
-        let file_size = meta.content_length();
-        if offset >= file_size {
-            return Ok(Box::new(std::io::Cursor::new(Vec::new())));
-        }
-
-        let end = offset.saturating_add(length).min(file_size);
+        // OpenDAL Native: Range read directly without mandatory pre-stat HEAD request
         let reader = self.operator.reader(&op_path).await.map_err(|e| {
             map_opendal_error(
                 e,
@@ -292,7 +301,7 @@ impl FileSystem for OpenDalFileSystem {
         })?;
 
         let stream = reader
-            .into_bytes_stream(offset..end)
+            .into_bytes_stream(offset..)
             .await
             .map_err(|e| {
                 map_opendal_error(
@@ -302,7 +311,7 @@ impl FileSystem for OpenDalFileSystem {
             })?
             .map(|res| res.map_err(|e| std::io::Error::other(e.to_string())));
 
-        let async_reader = tokio_util::io::StreamReader::new(stream);
+        let async_reader = tokio_util::io::StreamReader::new(stream).take(length);
         Ok(Box::new(async_reader))
     }
 
@@ -313,7 +322,6 @@ impl FileSystem for OpenDalFileSystem {
             map_opendal_error(e, &format!("Failed to open writer for '{}'", path.path))
         })?;
 
-        // P2 #2: Zero-copy BytesMut buffer optimization
         let mut buf = BytesMut::with_capacity(64 * 1024);
         loop {
             buf.clear();
@@ -410,7 +418,6 @@ impl FileSystem for OpenDalFileSystem {
         let from_path = self.to_operator_path(from)?;
         let to_path = self.to_operator_path(to)?;
 
-        // P0 #5: Selective rename fallback when native operator rename is unsupported (e.g. on FTP / S3)
         match self.operator.rename(&from_path, &to_path).await {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == ErrorKind::Unsupported => {
@@ -449,7 +456,6 @@ impl FileSystem for OpenDalFileSystem {
         let from_path = self.to_operator_path(from)?;
         let to_path = self.to_operator_path(to)?;
 
-        // P0 #5: Selective copy fallback
         match self.operator.copy(&from_path, &to_path).await {
             Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::Unsupported => {
