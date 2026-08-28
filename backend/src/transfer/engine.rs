@@ -182,6 +182,17 @@ pub enum WsEvent {
         path: String,
         action: String,
     },
+    #[serde(rename = "resync_required")]
+    ResyncRequired {
+        reason: String,
+        latest_sequence: u64,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ReplayResult {
+    Events(Vec<EventEnvelope>),
+    Expired { latest_sequence: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,11 +314,28 @@ impl TransferManager {
                     };
 
                     if let Some(mut job) = job_opt {
-                        // Skip cancelled or already finished jobs
-                        if job.status != TransferStatus::Cancelled
-                            && job.status != TransferStatus::CancellationRequested
-                            && !cancel_token.is_cancelled()
+                        // Handle cancelled or pending-cancellation jobs
+                        if job.status == TransferStatus::Cancelled {
+                            // Already marked cancelled
+                        } else if job.status == TransferStatus::CancellationRequested
+                            || cancel_token.is_cancelled()
                         {
+                            job.status = TransferStatus::Cancelled;
+                            job.speed_bytes_per_sec = 0;
+                            job.eta_seconds = None;
+                            job.updated_at = Utc::now();
+                            {
+                                let mut map = jobs_worker.write().await;
+                                map.insert(job.id.clone(), job.clone());
+                            }
+                            let _ = Self::save_job_to_db(&db_worker, &job).await;
+                            Self::send_enveloped_event(
+                                &event_tx_worker,
+                                &seq_worker,
+                                &hist_worker,
+                                WsEvent::TransferFailed(job),
+                            );
+                        } else {
                             job.status = TransferStatus::Running;
                             job.updated_at = Utc::now();
                             {
@@ -374,6 +402,33 @@ impl TransferManager {
                                             map.insert(job.id.clone(), job.clone());
                                         }
                                         let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                        // 1. Broadcast real-time FileChange event FIRST so open panels auto-refresh immediately (Plan 41 #22)
+                                        Self::send_enveloped_event(
+                                            &event_tx_worker,
+                                            &seq_worker,
+                                            &hist_worker,
+                                            WsEvent::FileChange {
+                                                connection_id: job
+                                                    .destination_connection_id
+                                                    .clone(),
+                                                path: job.destination_path.clone(),
+                                                action: "create".into(),
+                                            },
+                                        );
+                                        if job.transfer_type == TransferType::Move {
+                                            Self::send_enveloped_event(
+                                                &event_tx_worker,
+                                                &seq_worker,
+                                                &hist_worker,
+                                                WsEvent::FileChange {
+                                                    connection_id: job.source_connection_id.clone(),
+                                                    path: job.source_path.clone(),
+                                                    action: "delete".into(),
+                                                },
+                                            );
+                                        }
+
+                                        // 2. Then emit TransferCompleted
                                         Self::send_enveloped_event(
                                             &event_tx_worker,
                                             &seq_worker,
@@ -480,12 +535,26 @@ impl TransferManager {
         self.event_tx.subscribe()
     }
 
-    pub async fn get_events_since(&self, since_seq: u64) -> Vec<EventEnvelope> {
+    pub async fn get_events_since(&self, since_seq: u64) -> ReplayResult {
         let hist = self.event_history.read().await;
-        hist.iter()
+        if hist.is_empty() {
+            return ReplayResult::Events(Vec::new());
+        }
+        if since_seq == 0 {
+            return ReplayResult::Events(hist.iter().cloned().collect());
+        }
+        let oldest_seq = hist.front().map(|f| f.sequence).unwrap_or(0);
+        if since_seq + 1 < oldest_seq {
+            return ReplayResult::Expired {
+                latest_sequence: self.sequence_counter.load(Ordering::SeqCst),
+            };
+        }
+        let events = hist
+            .iter()
             .filter(|e| e.sequence > since_seq)
             .cloned()
-            .collect()
+            .collect();
+        ReplayResult::Events(events)
     }
 
     pub fn broadcast_event(&self, event: WsEvent) {
@@ -676,10 +745,11 @@ impl TransferManager {
             Ok(true)
         } else {
             // DB Fallback if job is not in RAM
-            if let Ok(Some(row)) = sqlx::query("SELECT user_id, status FROM transfer_jobs WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.db)
-                .await
+            if let Ok(Some(row)) =
+                sqlx::query("SELECT user_id, status FROM transfer_jobs WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(&self.db)
+                    .await
             {
                 let db_user_id: Option<String> = row.try_get("user_id").ok();
                 let db_status_str: String = row.try_get("status").unwrap_or_default();
@@ -1571,11 +1641,26 @@ impl TransferManager {
             Ok::<(u64, String), anyhow::Error>((transferred, checksum_hex))
         });
 
-        // 5. Destination writes into an isolated .part staging file
-        let part_vfs = VfsPath::new(
-            &job.destination_connection_id,
-            format!("{}.aerofs-part-{}", dst_vfs.path, job.id),
-        )?;
+        // 5. Destination writes into an isolated hidden .part staging file
+        let parent = std::path::Path::new(&dst_vfs.path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+        let filename = std::path::Path::new(&dst_vfs.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+        let staging_path = if parent.is_empty() || parent == "/" {
+            format!("/.{}.aerofs-part-{}", filename, job.id)
+        } else {
+            format!(
+                "{}/.{}.aerofs-part-{}",
+                parent.trim_end_matches('/'),
+                filename,
+                job.id
+            )
+        };
+        let part_vfs = VfsPath::new(&job.destination_connection_id, staging_path)?;
 
         // Best effort cleanup of any stale part file from previous attempt
         let _ = dst_fs.delete(&part_vfs).await;

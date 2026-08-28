@@ -186,6 +186,9 @@ pub fn create_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(
             crate::middleware::idempotency_middleware,
         ))
+        .layer(axum::middleware::from_fn(
+            crate::middleware::request_id_middleware,
+        ))
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

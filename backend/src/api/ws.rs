@@ -1,7 +1,6 @@
 use crate::auth::AuthenticatedUser;
-use crate::db::DbPool;
 use crate::state::AppState;
-use crate::transfer::WsEvent;
+use crate::transfer::{ReplayResult, WsEvent};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -11,6 +10,7 @@ use axum::{
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Deserialize;
+use std::collections::HashSet;
 
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
@@ -26,42 +26,25 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, user, query.last_seq))
 }
 
-async fn is_event_authorized(event: &WsEvent, is_admin: bool, user_id: &str, db: &DbPool) -> bool {
+fn is_event_authorized(
+    event: &WsEvent,
+    is_admin: bool,
+    authorized_conns: &HashSet<String>,
+) -> bool {
     if is_admin {
         return true;
     }
 
-    let event_conn_ids: Vec<&str> = match event {
+    match event {
         WsEvent::TransferProgress(job)
         | WsEvent::TransferCompleted(job)
         | WsEvent::TransferFailed(job) => {
-            vec![
-                job.source_connection_id.as_str(),
-                job.destination_connection_id.as_str(),
-            ]
+            authorized_conns.contains(&job.source_connection_id)
+                || authorized_conns.contains(&job.destination_connection_id)
         }
-        WsEvent::FileChange { connection_id, .. } => vec![connection_id.as_str()],
-    };
-
-    for conn_id in event_conn_ids {
-        if conn_id == "local" {
-            return true;
-        }
-        let has_perm: Option<(i64,)> = sqlx::query_as(
-            "SELECT can_read FROM permissions WHERE user_id = ? AND connection_id = ?",
-        )
-        .bind(user_id)
-        .bind(conn_id)
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
-
-        if has_perm.map(|p| p.0 != 0).unwrap_or(false) {
-            return true;
-        }
+        WsEvent::FileChange { connection_id, .. } => authorized_conns.contains(connection_id),
+        WsEvent::ResyncRequired { .. } => true,
     }
-
-    false
 }
 
 async fn handle_socket(
@@ -77,12 +60,47 @@ async fn handle_socket(
     let user_id = user.id.clone();
     let db = state.db.clone();
 
-    // 1. Initial replay of missed events if last_seq is specified (P2 #28)
+    // Pre-load in-memory authorized connection snapshot to eliminate high-frequency DB queries (P1.15)
+    let mut authorized_conns = HashSet::new();
+    authorized_conns.insert("local".to_string());
+    if !is_admin {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1",
+        )
+        .bind(&user_id)
+        .fetch_all(&db)
+        .await
+        .unwrap_or_default();
+        for (conn_id,) in rows {
+            authorized_conns.insert(conn_id);
+        }
+    }
+
+    // 1. Initial replay of missed events or emit resync_required if buffer expired (Plan 40 P0.2, P1.13)
     if let Some(seq) = last_seq {
-        let missed = state.transfer_manager.get_events_since(seq).await;
-        for envelope in missed {
-            if is_event_authorized(&envelope.event, is_admin, &user_id, &db).await {
-                if let Ok(json_str) = serde_json::to_string(&envelope) {
+        match state.transfer_manager.get_events_since(seq).await {
+            ReplayResult::Events(missed) => {
+                for envelope in missed {
+                    if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
+                        if let Ok(json_str) = serde_json::to_string(&envelope) {
+                            if sender.send(Message::Text(json_str.into())).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            ReplayResult::Expired { latest_sequence } => {
+                let resync_envelope = crate::transfer::EventEnvelope {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    sequence: latest_sequence,
+                    timestamp: chrono::Utc::now(),
+                    event: WsEvent::ResyncRequired {
+                        reason: "sequence_expired".into(),
+                        latest_sequence,
+                    },
+                };
+                if let Ok(json_str) = serde_json::to_string(&resync_envelope) {
                     if sender.send(Message::Text(json_str.into())).await.is_err() {
                         return;
                     }
@@ -92,11 +110,9 @@ async fn handle_socket(
     }
 
     // 2. Spawn live sender task
-    let user_id_clone = user_id.clone();
-    let db_clone = db.clone();
     let mut send_task = tokio::spawn(async move {
         while let Ok(envelope) = rx.recv().await {
-            if is_event_authorized(&envelope.event, is_admin, &user_id_clone, &db_clone).await {
+            if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
                 if let Ok(json_str) = serde_json::to_string(&envelope) {
                     if sender.send(Message::Text(json_str.into())).await.is_err() {
                         break;

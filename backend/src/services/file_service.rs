@@ -49,6 +49,10 @@ impl FileService {
                 }
             }
         };
+
+        // Filter out internal staging files (e.g. .aerofs-part-*) from user directory listings
+        entries.retain(|e| !e.name.contains(".aerofs-part-"));
+
         if !show_hidden {
             entries.retain(|e| !e.is_hidden);
         }

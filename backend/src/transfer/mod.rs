@@ -1,6 +1,6 @@
 pub mod engine;
 
 pub use engine::{
-    EventEnvelope, TransferJob, TransferManager, TransferPhase, TransferStatus, TransferType,
-    WsEvent,
+    EventEnvelope, ReplayResult, TransferJob, TransferManager, TransferPhase, TransferStatus,
+    TransferType, WsEvent,
 };

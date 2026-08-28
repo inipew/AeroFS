@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia';
 import { ref, computed, reactive } from 'vue';
 import { listFilesApi } from '../api/files';
+import { subscribeFileChanges } from '../services/fileChangeBus';
 import { useTransferStore } from './transferStore';
 import { useUiStore } from './uiStore';
-import { parentPath } from '../utils/path';
+import { normalizePath, parentPath } from '../utils/path';
 import { isAbortError, normalizeApiError } from '../utils/errorNormalizer';
 import type { FileEntry } from '../types/vfs';
 import type {
@@ -624,10 +625,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (isCut) {
         clearClipboard();
       }
-
-      setTimeout(() => {
-        refresh(id);
-      }, 1000);
     } catch (err: any) {
       uiStore.showToast(err.response?.data?.error?.message || 'Paste transfer failed', 'error');
     }
@@ -690,8 +687,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         destPath
       );
     }
-
-    await refreshAll();
   }
 
   // --- WORKSPACE PRESETS ---
@@ -733,6 +728,31 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveState();
   }
 
+  function notifyFileChange(connectionId: string, filePath: string) {
+    const normFile = normalizePath(filePath);
+    const parentDir = parentPath(normFile);
+
+    function isPanelAffected(loc: PanelLocation): boolean {
+      if (loc.connectionId !== connectionId) return false;
+      const normPanelPath = normalizePath(loc.path);
+      return normPanelPath === parentDir || normPanelPath === normFile;
+    }
+
+    // Check left panel
+    if (isPanelAffected(leftPanel.value.location)) {
+      fetchPanelEntries('left');
+    }
+    // Check right panel
+    if (isDualPane.value && isPanelAffected(rightPanel.value.location)) {
+      fetchPanelEntries('right');
+    }
+  }
+
+  // Realtime Filesystem Event Invalidation (Plan 41 P0 #5, #6, #7, #9, #10)
+  subscribeFileChanges((event) => {
+    notifyFileChange(event.connectionId, event.path);
+  });
+
   return {
     layout,
     isDualPane,
@@ -773,6 +793,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     paste,
     isCutItem,
     transferBetweenPanels,
+    notifyFileChange,
     saveState,
   };
 });

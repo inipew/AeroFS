@@ -2,7 +2,9 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::ProviderKind;
-use backend::services::{ConnectionService, CreateConnectionRequest, EditorService, FileService, TransferService};
+use backend::services::{
+    ConnectionService, CreateConnectionRequest, EditorService, FileService, TransferService,
+};
 use backend::transfer::{TransferPhase, TransferStatus, TransferType};
 use backend::AppState;
 use std::time::Duration;
@@ -86,7 +88,10 @@ async fn test_realtime_cancellation_with_token() {
     // 5. Verify staging .aerofs-part file is cleaned up
     let part_path = format!("/dest_cancel_test.dat.aerofs-part-{}", job_id);
     let part_stat = FileService::stat_file(&state, &admin, "local", &part_path).await;
-    assert!(part_stat.is_err(), "Staging part file should be deleted on cancellation");
+    assert!(
+        part_stat.is_err(),
+        "Staging part file should be deleted on cancellation"
+    );
 }
 
 #[tokio::test]
@@ -218,13 +223,14 @@ async fn test_connection_deletion_drains_active_transfers() {
     .await
     .unwrap();
 
-    // 4. Delete the connection
+    // 4. Delete the connection (should cancel all queued/active transfers for this connection)
     ConnectionService::delete_connection(&state, &admin, &conn_id)
         .await
         .unwrap();
 
-    // 5. Verify the transfer job was cancelled
+    // 5. Verify the transfer job was cancelled or aborted
     let mut settled = false;
+    let mut last_status = None;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let jobs = state
@@ -232,6 +238,7 @@ async fn test_connection_deletion_drains_active_transfers() {
             .list_jobs(Some(&admin.id), true, true)
             .await;
         if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
+            last_status = Some(j.status);
             if j.status == TransferStatus::Cancelled || j.status == TransferStatus::Failed {
                 settled = true;
                 break;
@@ -239,5 +246,9 @@ async fn test_connection_deletion_drains_active_transfers() {
         }
     }
 
-    assert!(settled, "Transfer should be cancelled upon connection deletion");
+    assert!(
+        settled,
+        "Transfer should be cancelled or aborted upon connection deletion, actual status: {:?}",
+        last_status
+    );
 }

@@ -51,13 +51,19 @@ async fn test_ws_event_sequence_and_durable_replay() {
     });
 
     // 2. Fetch missed events since sequence 1
-    let missed = state.transfer_manager.get_events_since(1).await;
+    let missed = match state.transfer_manager.get_events_since(1).await {
+        backend::transfer::ReplayResult::Events(e) => e,
+        _ => panic!("Expected Events"),
+    };
     assert_eq!(missed.len(), 2, "Expected 2 events with sequence > 1");
     assert_eq!(missed[0].sequence, 2);
     assert_eq!(missed[1].sequence, 3);
 
     // 3. Fetch all events since 0
-    let all = state.transfer_manager.get_events_since(0).await;
+    let all = match state.transfer_manager.get_events_since(0).await {
+        backend::transfer::ReplayResult::Events(e) => e,
+        _ => panic!("Expected Events"),
+    };
     assert_eq!(all.len(), 3);
     assert_eq!(all[0].sequence, 1);
     assert_eq!(all[1].sequence, 2);

@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { apiClient } from '../api/client';
+import {
+  createTransferApi,
+  listTransfersApi,
+  cancelTransferApi,
+  dismissTransferApi,
+  clearFinishedTransfersApi,
+} from '../api/transfers';
+import { realtimeClient } from '../transport/websocket';
 import type { TransferJob, TransferType } from '../types/transfer';
 
 export type ConflictResolution = 'replace' | 'skip' | 'keep_both' | 'cancel';
@@ -22,18 +29,16 @@ export const useTransferStore = defineStore('transfer', () => {
   const jobs = ref<TransferJob[]>([]);
   const isDrawerOpen = ref<boolean>(false);
   const isConnected = ref<boolean>(false);
+  const isRefreshing = ref<boolean>(false);
 
-  // Live speed tracking (jobId -> { lastBytes, lastTimestamp, speed, eta })
+  // Live speed tracking (jobId -> { speed, eta })
   const speedMetrics = ref<Record<string, LiveSpeedMetrics>>({});
 
   // Conflict Resolution State
   const conflictState = ref<ConflictState | null>(null);
   let batchResolution: ConflictResolution | null = null;
-
-  let socket: WebSocket | null = null;
-  let reconnectTimer: any = null;
-  let pollInterval: any = null;
-  let lastSequence = 0;
+  let isRealtimeSubscribed = false;
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
 
   const activeJobs = computed(() => {
     return jobs.value.filter(
@@ -46,14 +51,14 @@ export const useTransferStore = defineStore('transfer', () => {
 
   const activeCount = computed(() => activeJobs.value.length);
 
-  // Background fallback poll while jobs are active (5,000ms safety interval)
+  // Background fallback poll while offline or recovering (5,000ms safety interval)
   function startPollingIfNeeded() {
-    if (pollInterval) return;
+    if (pollInterval || isConnected.value) return;
     pollInterval = setInterval(async () => {
-      if (activeCount.value > 0) {
+      if (activeCount.value > 0 && !isConnected.value) {
         await fetchJobs();
       } else {
-        clearInterval(pollInterval);
+        if (pollInterval) clearInterval(pollInterval);
         pollInterval = null;
       }
     }, 5000);
@@ -61,9 +66,8 @@ export const useTransferStore = defineStore('transfer', () => {
 
   async function fetchJobs() {
     try {
-      const resp = await apiClient.get<TransferJob[]>('/transfers');
-      jobs.value = resp.data;
-      if (activeCount.value > 0) {
+      jobs.value = await listTransfersApi();
+      if (!isConnected.value && activeCount.value > 0) {
         startPollingIfNeeded();
       }
     } catch (err) {
@@ -84,81 +88,45 @@ export const useTransferStore = defineStore('transfer', () => {
     } else {
       jobs.value = [job, ...jobs.value];
     }
+  }
 
-    if (
-      job.status === 'running' ||
-      job.status === 'queued' ||
-      job.status === 'cancellation_requested'
-    ) {
-      startPollingIfNeeded();
-    }
+  function setupRealtimeListeners() {
+    if (isRealtimeSubscribed) return;
+    isRealtimeSubscribed = true;
+
+    realtimeClient.onProgress((job) => {
+      updateJobProgress(job);
+    });
+
+    realtimeClient.onCompleted((job) => {
+      updateJobProgress(job);
+    });
+
+    realtimeClient.onFailed((job) => {
+      updateJobProgress(job);
+    });
+
+    realtimeClient.onResyncRequired(() => {
+      fetchJobs();
+    });
+
+    realtimeClient.onStatusChange((connected) => {
+      isConnected.value = connected;
+      if (connected) {
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        fetchJobs();
+      } else {
+        startPollingIfNeeded();
+      }
+    });
   }
 
   function connectWs() {
-    if (socket && socket.readyState === WebSocket.OPEN) return;
-
-    // Use current origin to preserve cookie & proxy across ports
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/api/v1/ws`;
-
-    try {
-      socket = new WebSocket(url);
-
-      socket.onopen = () => {
-        const wasDisconnected = !isConnected.value;
-        isConnected.value = true;
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-        // Resync state on initial open / reconnect
-        if (wasDisconnected || lastSequence === 0) {
-          fetchJobs();
-        }
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-
-          // Sequence Gap Detection & Auto-Resync
-          if (typeof payload.sequence === 'number') {
-            if (lastSequence > 0 && payload.sequence > lastSequence + 1) {
-              console.warn(`WS sequence gap detected (${lastSequence} -> ${payload.sequence}). Re-syncing transfer state.`);
-              fetchJobs();
-            }
-            lastSequence = payload.sequence;
-          }
-
-          if (
-            payload.type === 'transfer_progress' ||
-            payload.type === 'transfer_completed' ||
-            payload.type === 'transfer_failed'
-          ) {
-            updateJobProgress(payload.data);
-          }
-        } catch (e) {
-          console.error('WS Parse Error', e);
-        }
-      };
-
-      socket.onclose = () => {
-        isConnected.value = false;
-        if (!reconnectTimer) {
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWs();
-          }, 3000);
-        }
-      };
-
-      socket.onerror = () => {
-        isConnected.value = false;
-        socket?.close();
-      };
-    } catch (e) {
-      console.error('Failed creating WebSocket', e);
-    }
+    setupRealtimeListeners();
+    realtimeClient.connect();
   }
 
   async function submitTransfer(
@@ -169,18 +137,21 @@ export const useTransferStore = defineStore('transfer', () => {
     destConnectionId: string,
     destPath: string
   ) {
-    const resp = await apiClient.post('/transfers', {
-      name,
-      transfer_type: transferType,
-      source_connection_id: sourceConnectionId,
-      source_path: sourcePath,
-      destination_connection_id: destConnectionId,
-      destination_path: destPath,
-    });
+    const idempotencyKey = crypto.randomUUID();
+    const data = await createTransferApi(
+      {
+        name,
+        transfer_type: transferType,
+        source_connection_id: sourceConnectionId,
+        source_path: sourcePath,
+        destination_connection_id: destConnectionId,
+        destination_path: destPath,
+      },
+      idempotencyKey
+    );
     isDrawerOpen.value = true;
-    startPollingIfNeeded();
     await fetchJobs();
-    return resp.data;
+    return data;
   }
 
   async function cancelTransfer(jobId: string) {
@@ -196,13 +167,11 @@ export const useTransferStore = defineStore('transfer', () => {
       jobs.value = [...jobs.value];
     }
     try {
-      await apiClient.post(`/transfers/${jobId}/cancel`);
+      await cancelTransferApi(jobId);
     } catch (err) {
       console.error('Failed to cancel transfer', err);
     }
   }
-
-  const isRefreshing = ref<boolean>(false);
 
   const totalSpeedBytesPerSec = computed(() => {
     let total = 0;
@@ -232,7 +201,7 @@ export const useTransferStore = defineStore('transfer', () => {
     jobs.value = jobs.value.filter((j) => j.id !== jobId);
     delete speedMetrics.value[jobId];
     try {
-      await apiClient.post(`/transfers/${jobId}/dismiss`);
+      await dismissTransferApi(jobId);
     } catch (err) {
       console.error('Failed to dismiss transfer on server', err);
     }
@@ -246,7 +215,7 @@ export const useTransferStore = defineStore('transfer', () => {
         j.status === 'cancellation_requested'
     );
     try {
-      await apiClient.post('/transfers/clear-finished');
+      await clearFinishedTransfersApi();
     } catch (err) {
       console.error('Failed to clear finished transfers on server', err);
     }
