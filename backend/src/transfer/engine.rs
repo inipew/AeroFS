@@ -139,6 +139,7 @@ impl TransferManager {
     pub fn new(
         providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         db: DbPool,
+        max_concurrent_workers: usize,
     ) -> Self {
         let (queue_tx, queue_rx) = mpsc::channel::<String>(200);
         let (event_tx, _) = broadcast::channel::<EventEnvelope>(400);
@@ -153,13 +154,17 @@ impl TransferManager {
         let queue_tx_clone = queue_tx.clone();
         let sequence_counter_clone = Arc::clone(&sequence_counter);
 
-        // 1. Initial startup recovery: Load jobs from SQLite into memory
+        // 1. Initial startup recovery: Load jobs from SQLite into memory (bound to non-dismissed / recent active)
         let db_init = db.clone();
         let jobs_init = Arc::clone(&jobs);
         tokio::spawn(async move {
             if let Ok(saved_jobs) = Self::load_jobs_from_db(&db_init).await {
                 let mut map = jobs_init.write().await;
                 for mut job in saved_jobs {
+                    // Only keep non-dismissed and active/recent jobs in RAM
+                    if job.dismissed_at.is_some() {
+                        continue;
+                    }
                     // Mark interrupted 'running' jobs as failed on restart
                     if job.status == TransferStatus::Running {
                         job.status = TransferStatus::Failed;
@@ -173,11 +178,11 @@ impl TransferManager {
             }
         });
 
-        // 2. Multi-Worker Concurrent Transfer Scheduler (Pool of 3 workers)
+        // 2. Multi-Worker Concurrent Transfer Scheduler (Dynamic bounded pool)
         let queue_rx_shared = Arc::new(Mutex::new(queue_rx));
-        let max_concurrent_workers = 3;
+        let pool_size = max_concurrent_workers.clamp(1, 16);
 
-        for _ in 0..max_concurrent_workers {
+        for _ in 0..pool_size {
             let rx_worker = Arc::clone(&queue_rx_shared);
             let jobs_worker = Arc::clone(&jobs_clone);
             let providers_worker = Arc::clone(&providers);
@@ -389,6 +394,26 @@ impl TransferManager {
     }
 
     pub async fn list_jobs(&self, user_id: Option<&str>, is_admin: bool, include_dismissed: bool) -> Vec<TransferJob> {
+        if include_dismissed {
+            if let Ok(all_db_jobs) = Self::load_jobs_from_db(&self.db).await {
+                let mut list: Vec<TransferJob> = all_db_jobs
+                    .into_iter()
+                    .filter(|j| {
+                        if is_admin {
+                            return true;
+                        }
+                        match (&j.user_id, user_id) {
+                            (Some(owner), Some(uid)) => owner == uid,
+                            (None, _) => true,
+                            _ => false,
+                        }
+                    })
+                    .collect();
+                list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                return list;
+            }
+        }
+
         let map = self.jobs.read().await;
         let mut list: Vec<TransferJob> = map
             .values()
@@ -463,7 +488,9 @@ impl TransferManager {
                 }
                 job.dismissed_at = Some(Utc::now());
                 job.updated_at = Utc::now();
-                Some(job.clone())
+                let j = job.clone();
+                map.remove(id); // Evict dismissed job from RAM to bound memory
+                Some(j)
             } else {
                 None
             }
@@ -473,7 +500,41 @@ impl TransferManager {
             let _ = Self::save_job_to_db(&self.db, &job).await;
             Ok(true)
         } else {
-            Ok(false)
+            let now = Utc::now().to_rfc3339();
+            let res = if is_admin {
+                sqlx::query(
+                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND dismissed_at IS NULL",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(id)
+                .execute(&self.db)
+                .await
+            } else if let Some(uid) = user_id {
+                sqlx::query(
+                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND dismissed_at IS NULL",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(id)
+                .bind(uid)
+                .execute(&self.db)
+                .await
+            } else {
+                sqlx::query(
+                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND dismissed_at IS NULL",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(id)
+                .execute(&self.db)
+                .await
+            };
+
+            match res {
+                Ok(r) => Ok(r.rows_affected() > 0),
+                Err(e) => Err(e.to_string()),
+            }
         }
     }
 
@@ -481,10 +542,11 @@ impl TransferManager {
         let now = Utc::now();
         let mut count = 0;
         let mut jobs_to_persist = Vec::new();
+        let mut ids_to_evict = Vec::new();
 
         {
             let mut map = self.jobs.write().await;
-            for job in map.values_mut() {
+            for (id, job) in map.iter_mut() {
                 if job.dismissed_at.is_none()
                     && (job.status == TransferStatus::Completed
                         || job.status == TransferStatus::Failed
@@ -504,14 +566,39 @@ impl TransferManager {
                         job.dismissed_at = Some(now);
                         job.updated_at = now;
                         jobs_to_persist.push(job.clone());
+                        ids_to_evict.push(id.clone());
                         count += 1;
                     }
                 }
+            }
+            // Evict dismissed jobs from RAM
+            for id in ids_to_evict {
+                map.remove(&id);
             }
         }
 
         for j in &jobs_to_persist {
             let _ = Self::save_job_to_db(&self.db, j).await;
+        }
+
+        // Also update any finished jobs in DB that might have already been evicted from RAM
+        if is_admin {
+            let _ = sqlx::query(
+                "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND status IN ('completed', 'failed', 'cancelled')",
+            )
+            .bind(&now)
+            .bind(&now)
+            .execute(&self.db)
+            .await;
+        } else if let Some(uid) = user_id {
+            let _ = sqlx::query(
+                "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND user_id = ? AND status IN ('completed', 'failed', 'cancelled')",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(uid)
+            .execute(&self.db)
+            .await;
         }
 
         Ok(count)

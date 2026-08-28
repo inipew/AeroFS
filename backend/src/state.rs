@@ -28,7 +28,11 @@ impl AppState {
         let master_key = derive_master_key(&config.security.session_secret);
         let providers_map = Arc::new(RwLock::new(HashMap::new()));
         let connection_errors = Arc::new(RwLock::new(HashMap::new()));
-        let transfer_manager = TransferManager::new(Arc::clone(&providers_map), db.clone());
+        let transfer_manager = TransferManager::new(
+            Arc::clone(&providers_map),
+            db.clone(),
+            config.limits.max_concurrent_transfers,
+        );
 
         let state = Self {
             config: Arc::new(config),

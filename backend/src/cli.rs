@@ -28,6 +28,9 @@ pub enum Commands {
     #[command(about = "Inspect and validate configuration")]
     Config(ConfigCommand),
 
+    #[command(about = "Display daemon process status")]
+    Status,
+
     #[command(about = "Run self-diagnostics and system health checks")]
     Doctor(DoctorArgs),
 
@@ -60,6 +63,13 @@ pub struct ConfigCommand {
 pub enum ConfigAction {
     #[command(about = "Display active configuration (secrets masked)")]
     Show,
+    #[command(about = "Display effective configuration with layer sources")]
+    Effective,
+    #[command(about = "Explain a specific configuration key")]
+    Explain {
+        #[arg(help = "Configuration key path (e.g. limits.max_concurrent_transfers)")]
+        key: String,
+    },
     #[command(about = "Validate configuration without starting server")]
     Validate,
 }
@@ -169,11 +179,52 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Some(Commands::Config(cmd)) => handle_config_command(cmd, config_path, json_output),
+        Some(Commands::Status) => handle_status_command(config_path, json_output).await,
         Some(Commands::Doctor(args)) => handle_doctor_command(args, config_path, json_output).await,
         Some(Commands::Db(cmd)) => handle_db_command(cmd, config_path, json_output).await,
         Some(Commands::Transfer(cmd)) => handle_transfer_command(cmd, config_path, json_output).await,
         Some(Commands::Admin(cmd)) => handle_admin_command(cmd, config_path, json_output).await,
     }
+}
+
+async fn handle_status_command(config_path: Option<&Path>, json_output: bool) -> anyhow::Result<()> {
+    let config = AppConfig::load(config_path)?;
+    let lock_paths = [
+        PathBuf::from("/data/adb/aerofs/aerofs.lock"),
+        PathBuf::from("./aerofs.lock"),
+    ];
+
+    let mut active_pid = None;
+    for lp in &lock_paths {
+        if lp.exists() {
+            if let Ok(content) = std::fs::read_to_string(lp) {
+                if let Ok(pid) = content.trim().parse::<i32>() {
+                    active_pid = Some((pid, lp.clone()));
+                    break;
+                }
+            }
+        }
+    }
+
+    if json_output {
+        println!("{}", json!({
+            "configured_host": config.server.host,
+            "configured_port": config.server.port,
+            "lock_pid": active_pid.as_ref().map(|(p, _)| *p),
+            "lock_file": active_pid.as_ref().map(|(_, f)| f.display().to_string()),
+            "status": if active_pid.is_some() { "running" } else { "stopped" }
+        }));
+    } else {
+        println!("AeroFS Process Status:");
+        println!("  • Listen Endpoint: {}:{}", config.server.host, config.server.port);
+        if let Some((pid, lock_file)) = active_pid {
+            println!("  • Status: Running (PID: {}, Lock: {})", pid, lock_file.display());
+        } else {
+            println!("  • Status: Stopped (No active lock file)");
+        }
+    }
+
+    Ok(())
 }
 
 fn handle_config_command(cmd: ConfigCommand, config_path: Option<&Path>, json_output: bool) -> anyhow::Result<()> {
@@ -191,6 +242,62 @@ fn handle_config_command(cmd: ConfigCommand, config_path: Option<&Path>, json_ou
             } else {
                 println!("{}", config.to_sanitized_toml());
             }
+        }
+        ConfigAction::Effective => {
+            let config = AppConfig::load(config_path)?;
+            if json_output {
+                println!("{}", json!({
+                    "server": {
+                        "host": config.server.host,
+                        "port": config.server.port,
+                        "env": std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into())
+                    },
+                    "limits": {
+                        "max_upload_size": config.limits.max_upload_size,
+                        "max_concurrent_transfers": config.limits.max_concurrent_transfers,
+                        "max_editable_size": config.limits.max_editable_size,
+                        "max_directory_entries": config.limits.max_directory_entries
+                    },
+                    "filesystem": {
+                        "default_local_root": config.filesystem.default_local_root.display().to_string(),
+                        "temp_dir": config.filesystem.temp_dir.as_ref().map(|p| p.display().to_string())
+                    }
+                }));
+            } else {
+                println!("AeroFS Layered Effective Configuration:");
+                println!("  [Server]");
+                println!("    Host: {} (Env: AEROFS_HOST)", config.server.host);
+                println!("    Port: {} (Env: AEROFS_PORT)", config.server.port);
+                println!("  [Limits]");
+                println!("    Max Upload Size: {} bytes ({} MB)", config.limits.max_upload_size, config.limits.max_upload_size / (1024 * 1024));
+                println!("    Max Concurrent Transfers: {} (Env: AEROFS_MAX_TRANSFERS)", config.limits.max_concurrent_transfers);
+                println!("    Max Editable Size: {} bytes ({} MB)", config.limits.max_editable_size, config.limits.max_editable_size / (1024 * 1024));
+                println!("    Max Directory Entries: {}", config.limits.max_directory_entries);
+                println!("  [Storage]");
+                println!("    Local Root: {}", config.filesystem.default_local_root.display());
+            }
+        }
+        ConfigAction::Explain { key } => {
+            let config = AppConfig::load(config_path)?;
+            let key_lower = key.to_lowercase();
+            let explanation = match key_lower.as_str() {
+                "server.port" | "port" => {
+                    format!("Key: server.port\nEffective Value: {}\nSource: AEROFS_PORT env / config.toml / Default (8080)\nUsed by: HTTP/WebSocket Listener", config.server.port)
+                }
+                "server.host" | "host" => {
+                    format!("Key: server.host\nEffective Value: {}\nSource: AEROFS_HOST env / config.toml / Default (127.0.0.1)\nUsed by: Network Bind Listener", config.server.host)
+                }
+                "limits.max_concurrent_transfers" | "max_concurrent_transfers" => {
+                    format!("Key: limits.max_concurrent_transfers\nEffective Value: {}\nSource: AEROFS_MAX_TRANSFERS env / config.toml / Default ({})\nUsed by: TransferScheduler Worker Pool", config.limits.max_concurrent_transfers, if cfg!(target_os = "android") { 2 } else { 3 })
+                }
+                "limits.max_upload_size" | "max_upload_size" => {
+                    format!("Key: limits.max_upload_size\nEffective Value: {} bytes ({} GB)\nSource: AEROFS_MAX_UPLOAD_MB env / config.toml / Default (50 GB)\nUsed by: Chunked Multipart Upload Engine", config.limits.max_upload_size, config.limits.max_upload_size / (1024 * 1024 * 1024))
+                }
+                _ => {
+                    format!("Key: {}\nValue: Present in active config\nUsed by: AeroFS Core Subsystem", key)
+                }
+            };
+            println!("{}", explanation);
         }
         ConfigAction::Validate => {
             let config = AppConfig::load(config_path)?;
@@ -221,9 +328,14 @@ async fn handle_doctor_command(args: DoctorArgs, config_path: Option<&Path>, jso
 
     let config = config_res.unwrap_or_default();
 
-    // Check 2: Storage root accessibility
+    // Check 2: Storage root accessibility & free space
     if config.filesystem.default_local_root.exists() {
-        checks.push(("Storage root directory exists", true, config.filesystem.default_local_root.display().to_string()));
+        let path_str = config.filesystem.default_local_root.display().to_string();
+        let free_space_str = match crate::api::files::get_available_disk_space(&config.filesystem.default_local_root) {
+            Some(bytes) => format!(" ({} GB free)", bytes / (1024 * 1024 * 1024)),
+            None => String::new(),
+        };
+        checks.push(("Storage root directory exists", true, format!("{}{}", path_str, free_space_str)));
     } else if args.repair {
         match std::fs::create_dir_all(&config.filesystem.default_local_root) {
             Ok(_) => checks.push(("Storage root directory repaired", true, config.filesystem.default_local_root.display().to_string())),
@@ -251,6 +363,18 @@ async fn handle_doctor_command(args: DoctorArgs, config_path: Option<&Path>, jso
                 Err(e) => {
                     all_ok = false;
                     checks.push(("SQLite integrity check", false, e.to_string()));
+                }
+            }
+
+            // Check 3b: Admin accounts count
+            let user_count: Result<(i64,), _> = sqlx::query_as("SELECT COUNT(*) FROM users WHERE is_admin = 1").fetch_one(&pool).await;
+            match user_count {
+                Ok((c,)) if c > 0 => {
+                    checks.push(("Admin accounts configured", true, format!("{} admin user(s) registered", c)));
+                }
+                _ => {
+                    checks.push(("Admin accounts configured", false, "No administrator accounts found".to_string()));
+                    all_ok = false;
                 }
             }
         }

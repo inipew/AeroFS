@@ -19,8 +19,13 @@ pub async fn init_db(database_url: &str) -> anyhow::Result<DbPool> {
         .foreign_keys(true)
         .busy_timeout(Duration::from_millis(5000));
 
+    let max_conns = std::env::var("AEROFS_DB_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(if cfg!(target_os = "android") { 4 } else { 8 });
+
     let pool = SqlitePoolOptions::new()
-        .max_connections(8)
+        .max_connections(max_conns)
         .min_connections(1)
         .acquire_timeout(Duration::from_secs(10))
         .connect_with(connect_options)
@@ -93,8 +98,25 @@ async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {
     if count.0 == 0 {
         let user_id = Uuid::new_v4().to_string();
         let username = "admin";
-        let default_password = std::env::var("AEROFS_ADMIN_PASSWORD")
-            .unwrap_or_else(|_| "admin12345".to_string());
+        let default_password = match std::env::var("AEROFS_ADMIN_PASSWORD") {
+            Ok(p) => p,
+            Err(_) => {
+                if std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into()) == "development"
+                    || cfg!(test)
+                {
+                    "admin12345".to_string()
+                } else {
+                    let random_pass = format!("aerofs_{}", &Uuid::new_v4().to_string().replace('-', "")[..16]);
+                    eprintln!("============================================================");
+                    eprintln!(" AeroFS First Boot Admin Password Generated:");
+                    eprintln!(" Username: admin");
+                    eprintln!(" Password: {}", random_pass);
+                    eprintln!("============================================================");
+                    tracing::warn!("Generated random bootstrap admin credentials: {}", random_pass);
+                    random_pass
+                }
+            }
+        };
         let password_hash = hash_password(&default_password)?;
         let now = Utc::now().to_rfc3339();
 
@@ -109,7 +131,7 @@ async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-        tracing::info!("Initialized default admin user: 'admin'");
+        tracing::info!("Initialized admin user: 'admin'");
     }
 
     Ok(())

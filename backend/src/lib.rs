@@ -6,6 +6,7 @@ pub mod db;
 pub mod domain;
 pub mod errors;
 pub mod filesystem;
+pub mod middleware;
 pub mod router;
 pub mod state;
 pub mod static_files;

@@ -36,6 +36,12 @@ pub enum AppError {
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
 
+    #[error("Insufficient storage: {0}")]
+    InsufficientStorage(String),
+
+    #[error("Checksum mismatch: {0}")]
+    ChecksumMismatch(String),
+
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -74,6 +80,12 @@ pub enum VfsError {
 
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
+
+    #[error("Insufficient storage: {0}")]
+    InsufficientStorage(String),
+
+    #[error("Checksum mismatch: {0}")]
+    ChecksumMismatch(String),
 
     #[error("Security error: {0}")]
     Security(#[from] SecurityError),
@@ -161,6 +173,10 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
             AppError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", msg.clone()),
+            AppError::InsufficientStorage(msg) => (StatusCode::INSUFFICIENT_STORAGE, "INSUFFICIENT_STORAGE", msg.clone()),
+            AppError::Vfs(VfsError::InsufficientStorage(msg)) => (StatusCode::INSUFFICIENT_STORAGE, "INSUFFICIENT_STORAGE", msg.clone()),
+            AppError::ChecksumMismatch(msg) => (StatusCode::UNPROCESSABLE_ENTITY, "CHECKSUM_MISMATCH", msg.clone()),
+            AppError::Vfs(VfsError::ChecksumMismatch(msg)) => (StatusCode::UNPROCESSABLE_ENTITY, "CHECKSUM_MISMATCH", msg.clone()),
             AppError::Vfs(vfs_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "VFS_ERROR",

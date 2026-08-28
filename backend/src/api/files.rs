@@ -17,6 +17,24 @@ use std::io::Cursor;
 use tokio_util::io::ReaderStream;
 use utoipa::{IntoParams, ToSchema};
 
+#[cfg(unix)]
+pub fn get_available_disk_space(path: &std::path::Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } == 0 {
+        Some((stat.f_bavail as u64) * (stat.f_frsize as u64))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+pub fn get_available_disk_space(_path: &std::path::Path) -> Option<u64> {
+    None
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListFilesQuery {
     pub path: Option<String>,
@@ -126,7 +144,12 @@ pub async fn list_files(
         }
     });
 
+    let max_entries = state.config.limits.max_directory_entries;
     let total = entries.len();
+    if entries.len() > max_entries {
+        entries.truncate(max_entries);
+    }
+
     Ok(Json(DirectoryListing {
         path: vfs_path.path,
         connection_id,
@@ -201,6 +224,25 @@ pub async fn get_file_content(
 
     if let Some(mtime) = meta.modified_at {
         resp_headers.insert(LAST_MODIFIED, mtime.to_rfc2822().parse().unwrap());
+    }
+
+    // Security Sandbox: Isolate inline HTML/SVG/JS preview from host origin (XSS mitigation)
+    let is_active_content = mime == "text/html"
+        || mime == "image/svg+xml"
+        || mime == "application/xml"
+        || mime == "text/xml"
+        || mime == "text/javascript"
+        || mime == "application/javascript";
+
+    if is_active_content && !query.download.unwrap_or(false) {
+        resp_headers.insert(
+            header::HeaderName::from_static("content-security-policy"),
+            "default-src 'none'; sandbox".parse().unwrap(),
+        );
+        resp_headers.insert(
+            header::HeaderName::from_static("x-content-type-options"),
+            "nosniff".parse().unwrap(),
+        );
     }
 
     if query.download.unwrap_or(false) {
@@ -319,6 +361,16 @@ pub async fn update_file_content(
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
 
     let vfs_path = VfsPath::new(&connection_id, &payload.path);
+
+    // Limit check: enforce max_editable_size
+    let max_editable_bytes = state.config.limits.max_editable_size;
+    if payload.content.len() as u64 > max_editable_bytes {
+        return Err(AppError::PayloadTooLarge(format!(
+            "File content length ({} bytes) exceeds maximum editable size of {} bytes",
+            payload.content.len(),
+            max_editable_bytes
+        )));
+    }
 
     // Optimistic Concurrency check
     if let Ok(meta) = provider.stat(&vfs_path).await {
@@ -640,6 +692,18 @@ pub async fn upload_file(
 
             let existing_perms = provider.stat(&target_path).await.ok().and_then(|m| m.permissions);
 
+            // Free-space preflight: check host disk capacity for local storage
+            if connection_id == "local" {
+                if let Some(free_bytes) = get_available_disk_space(&state.config.filesystem.default_local_root) {
+                    if free_bytes < 10 * 1024 * 1024 {
+                        return Err(AppError::InsufficientStorage(format!(
+                            "Local filesystem storage full: only {} MB free",
+                            free_bytes / (1024 * 1024)
+                        )));
+                    }
+                }
+            }
+
             // Bounded 64 KiB asynchronous duplex pipe with zero whole-file RAM buffering
             let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
             let write_handle = tokio::spawn({
@@ -651,6 +715,8 @@ pub async fn upload_file(
             });
 
             use tokio::io::AsyncWriteExt;
+            let max_upload_bytes = state.config.limits.max_upload_size;
+            let mut uploaded_bytes = 0u64;
             let mut stream_err = None;
             while let Some(chunk) = match field.chunk().await {
                 Ok(c) => c,
@@ -659,6 +725,14 @@ pub async fn upload_file(
                     None
                 }
             } {
+                uploaded_bytes += chunk.len() as u64;
+                if uploaded_bytes > max_upload_bytes {
+                    stream_err = Some(AppError::PayloadTooLarge(format!(
+                        "Uploaded file exceeded maximum upload size limit of {} bytes",
+                        max_upload_bytes
+                    )));
+                    break;
+                }
                 if let Err(e) = duplex_writer.write_all(&chunk).await {
                     stream_err = Some(AppError::Internal(anyhow::anyhow!("Failed writing upload chunk: {}", e)));
                     break;

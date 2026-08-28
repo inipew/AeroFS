@@ -275,3 +275,211 @@ async fn test_editor_save_preserves_destination_permissions() {
         assert_eq!(meta_val2["permissions"], "0600");
     }
 }
+
+#[tokio::test]
+async fn test_max_editable_size_enforcement() {
+    let (app, _temp) = setup_test_app().await;
+
+    // Login as admin
+    let login_req = Request::builder()
+        .uri("/api/v1/auth/login")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": "admin", "password": "admin12345" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(login_req).await.unwrap();
+    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let session_cookie = cookie_header.split(';').next().unwrap();
+
+    // Create file
+    let create_req = Request::builder()
+        .uri("/api/v1/connections/local/files")
+        .method("POST")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "path": "/big.txt" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Try to update with 15 MB payload (exceeds default 10 MB limit) -> 413 Payload Too Large
+    let huge_content = "A".repeat(15 * 1024 * 1024);
+    let update_req = Request::builder()
+        .uri("/api/v1/connections/local/files/content")
+        .method("PUT")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "path": "/big.txt",
+                "content": huge_content
+            }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(update_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn test_idempotency_key_deduplication() {
+    let (app, _temp) = setup_test_app().await;
+
+    // Login as admin
+    let login_req = Request::builder()
+        .uri("/api/v1/auth/login")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": "admin", "password": "admin12345" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(login_req).await.unwrap();
+    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let session_cookie = cookie_header.split(';').next().unwrap();
+
+    let idempotency_key = "idemp-key-create-dir-12345";
+
+    // First request with Idempotency-Key
+    let create_dir_req = Request::builder()
+        .uri("/api/v1/connections/local/directories")
+        .method("POST")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("idempotency-key", idempotency_key)
+        .body(Body::from(
+            json!({ "path": "/idempotent_folder" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp1 = app.clone().oneshot(create_dir_req).await.unwrap();
+    assert_eq!(resp1.status(), StatusCode::CREATED);
+
+    // Second request with exact same Idempotency-Key -> should return cached 201 without AlreadyExists conflict
+    let duplicate_req = Request::builder()
+        .uri("/api/v1/connections/local/directories")
+        .method("POST")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("idempotency-key", idempotency_key)
+        .body(Body::from(
+            json!({ "path": "/idempotent_folder" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp2 = app.clone().oneshot(duplicate_req).await.unwrap();
+    assert_eq!(resp2.status(), StatusCode::CREATED);
+    assert_eq!(
+        resp2.headers().get("x-cache-idempotency").unwrap().to_str().unwrap(),
+        "HIT"
+    );
+}
+
+#[tokio::test]
+async fn test_health_live_and_ready_endpoints() {
+    let (app, _temp) = setup_test_app().await;
+
+    // 1. Test /health/live
+    let live_req = Request::builder()
+        .uri("/health/live")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(live_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let val: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(val["status"], "alive");
+
+    // 2. Test /health/ready
+    let ready_req = Request::builder()
+        .uri("/health/ready")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(ready_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let val: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(val["status"], "ready");
+    assert_eq!(val["database"], "connected");
+}
+
+#[tokio::test]
+async fn test_preview_security_headers_isolation() {
+    let (app, _temp) = setup_test_app().await;
+
+    // Login as admin
+    let login_req = Request::builder()
+        .uri("/api/v1/auth/login")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": "admin", "password": "admin12345" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(login_req).await.unwrap();
+    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let session_cookie = cookie_header.split(';').next().unwrap();
+
+    // Create an HTML file
+    let create_req = Request::builder()
+        .uri("/api/v1/connections/local/files")
+        .method("POST")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "path": "/vector.svg" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(create_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Save SVG content
+    let update_req = Request::builder()
+        .uri("/api/v1/connections/local/files/content")
+        .method("PUT")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "path": "/vector.svg",
+                "content": "<svg><script>alert(1)</script></svg>"
+            }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(update_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Fetch inline preview of the SVG file -> must contain strict Content-Security-Policy & X-Content-Type-Options
+    let get_req = Request::builder()
+        .uri("/api/v1/connections/local/files/content?path=/vector.svg")
+        .method("GET")
+        .header(header::COOKIE, session_cookie)
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(get_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-security-policy").unwrap().to_str().unwrap(),
+        "default-src 'none'; sandbox"
+    );
+    assert_eq!(
+        resp.headers().get("x-content-type-options").unwrap().to_str().unwrap(),
+        "nosniff"
+    );
+}
+

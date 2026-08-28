@@ -1,4 +1,4 @@
-use crate::api::{archive, audit, auth, connections, files, health_check, search, transfers, ws};
+use crate::api::{archive, audit, auth, connections, files, search, transfers, ws};
 use crate::state::AppState;
 use axum::{
     http::{
@@ -44,18 +44,34 @@ async fn security_headers_middleware(
 }
 
 pub fn create_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::mirror_request())
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::OPTIONS,
-            Method::PATCH,
-        ])
-        .allow_headers([CONTENT_TYPE, AUTHORIZATION, ACCEPT, COOKIE])
-        .allow_credentials(true);
+    let is_dev = std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into()) == "development"
+        || cfg!(test);
+
+    let cors = if is_dev {
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::mirror_request())
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+                Method::PATCH,
+            ])
+            .allow_headers([CONTENT_TYPE, AUTHORIZATION, ACCEPT, COOKIE])
+            .allow_credentials(true)
+    } else {
+        CorsLayer::new()
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+                Method::PATCH,
+            ])
+            .allow_headers([CONTENT_TYPE, AUTHORIZATION, ACCEPT, COOKIE])
+    };
 
     let auth_routes = Router::new()
         .route("/login", post(auth::login))
@@ -122,11 +138,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/audit-logs", get(audit::list_audit_logs));
 
     Router::new()
-        .route("/health", get(health_check))
+        .route("/health", get(crate::api::health::health_check))
+        .route("/health/live", get(crate::api::health::health_live))
+        .route("/health/ready", get(crate::api::health::health_ready))
+        .route("/api/v1/health/live", get(crate::api::health::health_live))
+        .route("/api/v1/health/ready", get(crate::api::health::health_ready))
         .route("/api/v1/ws", get(ws::ws_handler))
         .route("/api/v1/shares/public/{token}", get(crate::api::shares::public_get_share))
         .nest("/api/v1", api_v1)
         .fallback(crate::static_files::static_handler)
+        .layer(axum::middleware::from_fn(crate::middleware::idempotency_middleware))
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

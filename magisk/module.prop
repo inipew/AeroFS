@@ -1,0 +1,6 @@
+id=aerofs
+name=AeroFS File Manager
+version=v0.1.0
+versionCode=100
+author=inipew & Antigravity
+description=High-performance self-hosted web file manager daemon for Android Magisk/KernelSU/APatch with native POSIX permissions and multi-cloud VFS support.
