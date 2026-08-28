@@ -1,3 +1,6 @@
+use crate::domain::path::VfsPath;
+use crate::domain::policy::PermissionInheritanceMode;
+use crate::filesystem::archive::ArchiveOverwriteMode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -14,6 +17,76 @@ pub enum OperationStatus {
     Partial,
     Failed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationIntentType {
+    Copy,
+    Move,
+    Delete,
+    Chmod,
+    Compress,
+    Extract,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureStrategy {
+    FailFast,
+    #[default]
+    ContinueOnFailure,
+    BestEffort,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OperationPlan {
+    pub id: String,
+    pub intent_type: OperationIntentType,
+    pub source_connection_id: String,
+    pub source_paths: Vec<VfsPath>,
+    pub destination_connection_id: Option<String>,
+    pub destination_path: Option<VfsPath>,
+    pub failure_strategy: FailureStrategy,
+    pub permission_mode: PermissionInheritanceMode,
+    pub overwrite_mode: Option<ArchiveOverwriteMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OperationExecutionResult {
+    pub plan_id: String,
+    pub status: OperationStatus,
+    pub total_items: usize,
+    pub succeeded_items: Vec<String>,
+    pub failed_items: Vec<(String, String)>,
+    pub skipped_items: Vec<String>,
+}
+
+impl OperationExecutionResult {
+    pub fn new(plan_id: String, total_items: usize) -> Self {
+        Self {
+            plan_id,
+            status: OperationStatus::Executing,
+            total_items,
+            succeeded_items: Vec::new(),
+            failed_items: Vec::new(),
+            skipped_items: Vec::new(),
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.failed_items.is_empty()
+    }
+
+    pub fn finalize(&mut self) {
+        if self.failed_items.is_empty() {
+            self.status = OperationStatus::Completed;
+        } else if !self.succeeded_items.is_empty() {
+            self.status = OperationStatus::Partial;
+        } else {
+            self.status = OperationStatus::Failed;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

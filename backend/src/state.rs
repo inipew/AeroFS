@@ -12,7 +12,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -21,6 +21,9 @@ pub struct AppState {
     pub providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
     pub connection_errors: Arc<RwLock<HashMap<String, String>>>,
     pub transfer_manager: TransferManager,
+    pub global_io_semaphore: Arc<Semaphore>,
+    pub archive_semaphore: Arc<Semaphore>,
+    pub search_semaphore: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -40,6 +43,9 @@ impl AppState {
             providers: providers_map,
             connection_errors,
             transfer_manager,
+            global_io_semaphore: Arc::new(Semaphore::new(32)),
+            archive_semaphore: Arc::new(Semaphore::new(4)),
+            search_semaphore: Arc::new(Semaphore::new(8)),
         };
 
         // Initialize and register all connections from DB

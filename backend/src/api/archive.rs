@@ -109,14 +109,9 @@ pub async fn list_virtual_archive_endpoint(
     Query(query): Query<ListArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let subpath = query.subpath.unwrap_or_default();
-    let entries = ArchiveService::list_virtual(
-        &state,
-        &user,
-        &connection_id,
-        &query.archive_path,
-        &subpath,
-    )
-    .await?;
+    let entries =
+        ArchiveService::list_virtual(&state, &user, &connection_id, &query.archive_path, &subpath)
+            .await?;
 
     Ok((StatusCode::OK, Json(entries)))
 }

@@ -145,9 +145,7 @@ impl FileService {
         .await;
 
         let cursor = std::io::Cursor::new(content);
-        provider
-            .write_stream(&vfs_path, Box::new(cursor))
-            .await?;
+        provider.write_stream(&vfs_path, Box::new(cursor)).await?;
 
         if let Some(perms) = resolved_perms {
             let _ = provider.set_permissions(&vfs_path, &perms).await;

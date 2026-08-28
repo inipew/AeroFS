@@ -124,6 +124,24 @@ pub enum AuthError {
     Unauthorized(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCategory {
+    Validation,
+    Authentication,
+    Authorization,
+    NotFound,
+    Conflict,
+    PayloadTooLarge,
+    InsufficientStorage,
+    RateLimited,
+    Timeout,
+    Provider,
+    Io,
+    Security,
+    Internal,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,
@@ -132,84 +150,157 @@ pub struct ErrorResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ErrorDetail {
     pub code: String,
+    pub category: ErrorCategory,
+    pub retryable: bool,
+    pub user_action: Option<String>,
     pub message: String,
     pub details: Option<serde_json::Value>,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
+        let (status, code, category, retryable, user_action, message) = match &self {
             AppError::Auth(AuthError::InvalidCredentials) => (
                 StatusCode::UNAUTHORIZED,
                 "INVALID_CREDENTIALS",
+                ErrorCategory::Authentication,
+                false,
+                Some("check_username_and_password".to_string()),
                 self.to_string(),
             ),
             AppError::Auth(AuthError::SessionExpired) => (
                 StatusCode::UNAUTHORIZED,
                 "SESSION_EXPIRED",
+                ErrorCategory::Authentication,
+                true,
+                Some("re_login".to_string()),
                 self.to_string(),
             ),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone()),
-            AppError::Auth(AuthError::Unauthorized(_)) => {
-                (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string())
-            }
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
+            AppError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                ErrorCategory::Authentication,
+                false,
+                Some("login_required".to_string()),
+                msg.clone(),
+            ),
+            AppError::Auth(AuthError::Unauthorized(_)) => (
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                ErrorCategory::Authorization,
+                false,
+                Some("request_permission_from_admin".to_string()),
+                self.to_string(),
+            ),
+            AppError::Forbidden(msg) => (
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                ErrorCategory::Authorization,
+                false,
+                Some("check_access_permissions".to_string()),
+                msg.clone(),
+            ),
             AppError::Security(_) => (
                 StatusCode::FORBIDDEN,
                 "SECURITY_VIOLATION",
+                ErrorCategory::Security,
+                false,
+                Some("verify_path_and_target_boundaries".to_string()),
                 self.to_string(),
             ),
-            AppError::Vfs(VfsError::NotFound(_)) | AppError::NotFound(_) => {
-                (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string())
-            }
-            AppError::Vfs(VfsError::PermissionDenied(_)) => {
-                (StatusCode::FORBIDDEN, "PERMISSION_DENIED", self.to_string())
-            }
-            AppError::Vfs(VfsError::AlreadyExists(_)) => {
-                (StatusCode::CONFLICT, "ALREADY_EXISTS", self.to_string())
-            }
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
+            AppError::Vfs(VfsError::NotFound(_)) | AppError::NotFound(_) => (
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                ErrorCategory::NotFound,
+                false,
+                Some("verify_item_exists".to_string()),
+                self.to_string(),
+            ),
+            AppError::Vfs(VfsError::PermissionDenied(_)) => (
+                StatusCode::FORBIDDEN,
+                "PERMISSION_DENIED",
+                ErrorCategory::Authorization,
+                false,
+                Some("grant_filesystem_permissions".to_string()),
+                self.to_string(),
+            ),
+            AppError::Vfs(VfsError::AlreadyExists(_)) => (
+                StatusCode::CONFLICT,
+                "ALREADY_EXISTS",
+                ErrorCategory::Conflict,
+                false,
+                Some("rename_or_overwrite".to_string()),
+                self.to_string(),
+            ),
+            AppError::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                "BAD_REQUEST",
+                ErrorCategory::Validation,
+                false,
+                Some("check_request_payload".to_string()),
+                msg.clone(),
+            ),
+            AppError::Conflict(msg) => (
+                StatusCode::CONFLICT,
+                "CONFLICT",
+                ErrorCategory::Conflict,
+                false,
+                Some("reload_latest_version_and_retry".to_string()),
+                msg.clone(),
+            ),
             AppError::PayloadTooLarge(msg) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "PAYLOAD_TOO_LARGE",
+                ErrorCategory::PayloadTooLarge,
+                false,
+                Some("reduce_payload_size".to_string()),
                 msg.clone(),
             ),
-            AppError::InsufficientStorage(msg) => (
+            AppError::InsufficientStorage(msg)
+            | AppError::Vfs(VfsError::InsufficientStorage(msg)) => (
                 StatusCode::INSUFFICIENT_STORAGE,
                 "INSUFFICIENT_STORAGE",
+                ErrorCategory::InsufficientStorage,
+                false,
+                Some("free_disk_space_and_retry".to_string()),
                 msg.clone(),
             ),
-            AppError::Vfs(VfsError::InsufficientStorage(msg)) => (
-                StatusCode::INSUFFICIENT_STORAGE,
-                "INSUFFICIENT_STORAGE",
-                msg.clone(),
-            ),
-            AppError::ChecksumMismatch(msg) => (
+            AppError::ChecksumMismatch(msg) | AppError::Vfs(VfsError::ChecksumMismatch(msg)) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "CHECKSUM_MISMATCH",
-                msg.clone(),
-            ),
-            AppError::Vfs(VfsError::ChecksumMismatch(msg)) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "CHECKSUM_MISMATCH",
+                ErrorCategory::Io,
+                true,
+                Some("retransfer_payload".to_string()),
                 msg.clone(),
             ),
             AppError::Vfs(vfs_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "VFS_ERROR",
+                ErrorCategory::Provider,
+                true,
+                Some("check_provider_status".to_string()),
                 vfs_err.to_string(),
             ),
             AppError::Internal(err) => {
                 let err_msg = format!("Internal error: {:?}", err);
                 tracing::error!("{}", err_msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err_msg)
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    ErrorCategory::Internal,
+                    false,
+                    Some("contact_system_administrator".to_string()),
+                    err_msg,
+                )
             }
         };
 
         let body = Json(ErrorResponse {
             error: ErrorDetail {
                 code: code.to_string(),
+                category,
+                retryable,
+                user_action,
                 message,
                 details: None,
             },

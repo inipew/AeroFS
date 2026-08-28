@@ -4,9 +4,9 @@ use crate::auth::AuthenticatedUser;
 use crate::domain::VfsPath;
 use crate::errors::{AppError, VfsError};
 use crate::filesystem::archive::{
-    compress_targz, compress_zip, extract_selected_archive_entries, extract_targz,
-    extract_zip, list_virtual_archive_entries, read_virtual_archive_entry, ArchiveFormat,
-    ArchiveOverwriteMode, VirtualArchiveEntry,
+    compress_targz, compress_zip, extract_selected_archive_entries, extract_targz, extract_zip,
+    list_virtual_archive_entries, read_virtual_archive_entry, ArchiveFormat, ArchiveOverwriteMode,
+    VirtualArchiveEntry,
 };
 use crate::state::AppState;
 use crate::transfer::WsEvent;
@@ -34,6 +34,8 @@ impl ArchiveService {
     ) -> Result<ArchiveResult, AppError> {
         check_permission(&state.db, user, connection_id, PermissionAction::Create).await?;
         check_permission(&state.db, user, connection_id, PermissionAction::Write).await?;
+
+        let _permit = state.archive_semaphore.acquire().await;
 
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
@@ -107,6 +109,8 @@ impl ArchiveService {
         check_permission(&state.db, user, connection_id, PermissionAction::Create).await?;
         check_permission(&state.db, user, connection_id, PermissionAction::Write).await?;
 
+        let _permit = state.archive_semaphore.acquire().await;
+
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
         })?;
@@ -169,6 +173,8 @@ impl ArchiveService {
     ) -> Result<ArchiveResult, AppError> {
         check_permission(&state.db, user, connection_id, PermissionAction::Create).await?;
         check_permission(&state.db, user, connection_id, PermissionAction::Write).await?;
+
+        let _permit = state.archive_semaphore.acquire().await;
 
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))

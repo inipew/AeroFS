@@ -2,6 +2,10 @@ import axios from 'axios';
 
 export interface NormalizedApiError {
   kind: 'network' | 'unauthorized' | 'forbidden' | 'not_found' | 'conflict' | 'payload_too_large' | 'insufficient_storage' | 'canceled' | 'server_error' | 'unknown';
+  code?: string;
+  category?: string;
+  retryable?: boolean;
+  userAction?: string;
   message: string;
   statusCode?: number;
   details?: unknown;
@@ -31,7 +35,12 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
   if (axios.isAxiosError(error)) {
     const status = error.response?.status;
     const data = error.response?.data;
-    const serverMessage = data?.error?.message || data?.message || error.message;
+    const errObj = data?.error;
+    const serverMessage = errObj?.message || data?.message || error.message;
+    const code = errObj?.code;
+    const category = errObj?.category;
+    const retryable = errObj?.retryable;
+    const userAction = errObj?.user_action;
 
     let kind: NormalizedApiError['kind'] = 'unknown';
     switch (status) {
@@ -67,6 +76,10 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
 
     return {
       kind,
+      code,
+      category,
+      retryable,
+      userAction,
       message: serverMessage || 'An unexpected network error occurred',
       statusCode: status,
       details: data,

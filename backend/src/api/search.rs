@@ -29,6 +29,8 @@ pub async fn search_files(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
 
+    let _permit = state.search_semaphore.acquire().await;
+
     let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
         VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
     })?;

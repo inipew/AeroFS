@@ -26,12 +26,7 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, user, query.last_seq))
 }
 
-async fn is_event_authorized(
-    event: &WsEvent,
-    is_admin: bool,
-    user_id: &str,
-    db: &DbPool,
-) -> bool {
+async fn is_event_authorized(event: &WsEvent, is_admin: bool, user_id: &str, db: &DbPool) -> bool {
     if is_admin {
         return true;
     }

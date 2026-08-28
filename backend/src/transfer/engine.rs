@@ -8,7 +8,7 @@ use sqlx::Row;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use utoipa::ToSchema;
@@ -405,7 +405,10 @@ impl TransferManager {
 
     pub async fn get_events_since(&self, since_seq: u64) -> Vec<EventEnvelope> {
         let hist = self.event_history.read().await;
-        hist.iter().filter(|e| e.sequence > since_seq).cloned().collect()
+        hist.iter()
+            .filter(|e| e.sequence > since_seq)
+            .cloned()
+            .collect()
     }
 
     pub fn broadcast_event(&self, event: WsEvent) {
@@ -764,11 +767,12 @@ impl TransferManager {
                         || err_msg.contains("invalid path")
                         || err_msg.contains("unsupported");
 
+                    let retry_policy = crate::domain::RetryPolicy::new(max_attempts);
                     if is_permanent || attempt >= max_attempts {
                         return Err(e);
                     }
 
-                    let backoff = Duration::from_secs(1 << (attempt - 1)); // 1s, 2s, 4s
+                    let backoff = retry_policy.compute_backoff(attempt);
                     tracing::warn!(
                         "Transfer {} attempt {}/{} failed ({}), retrying in {:?}",
                         job.id,
