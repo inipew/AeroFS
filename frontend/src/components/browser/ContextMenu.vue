@@ -1,5 +1,5 @@
 <template>
-  <Transition name="ios-context-menu">
+  <Transition :name="menuTransitionName">
     <div v-if="uiStore.contextMenu.visible">
       <!-- Mobile Backdrop Overlay -->
       <div
@@ -359,6 +359,8 @@ const uiStore = useUiStore();
 const menuRef = ref<HTMLElement | null>(null);
 const posTop = ref(0);
 const posLeft = ref(0);
+
+const menuTransitionName = computed(() => (uiStore.isMobile ? 'ios-bottom-sheet' : 'ios-context-menu'));
 
 const activeConnectionId = computed(() => {
   return uiStore.contextMenu.connectionId || workspaceStore.activePanel.location.connectionId;

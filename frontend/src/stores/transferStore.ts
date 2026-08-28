@@ -8,6 +8,7 @@ import {
   clearFinishedTransfersApi,
 } from '../api/transfers';
 import { realtimeClient } from '../transport/websocket';
+import { publishFileChange } from '../services/fileChangeBus';
 import type { TransferJob, TransferType } from '../types/transfer';
 
 export type ConflictResolution = 'replace' | 'skip' | 'keep_both' | 'cancel';
@@ -100,6 +101,18 @@ export const useTransferStore = defineStore('transfer', () => {
 
     realtimeClient.onCompleted((job) => {
       updateJobProgress(job);
+      publishFileChange({
+        connectionId: job.destination_connection_id,
+        path: job.destination_path,
+        action: 'write',
+      });
+      if (job.transfer_type === 'move') {
+        publishFileChange({
+          connectionId: job.source_connection_id,
+          path: job.source_path,
+          action: 'delete',
+        });
+      }
     });
 
     realtimeClient.onFailed((job) => {

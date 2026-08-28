@@ -135,7 +135,7 @@
         </div>
         <div class="w-full bg-gray-200 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
           <div
-            class="bg-blue-600 h-1.5 transition-all duration-200"
+            class="bg-blue-600 h-1.5 transition-[width] duration-standard ease-spring"
             :style="{ width: `${progress}%` }"
           ></div>
         </div>

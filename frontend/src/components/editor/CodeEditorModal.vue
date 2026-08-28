@@ -469,7 +469,7 @@
           v-show="!uiStore.isMobile || !showMarkdownPreview"
           ref="editorEl"
           :class="[
-            'h-full text-xs sm:text-sm font-mono transition-all',
+            'h-full text-xs sm:text-sm font-mono transition-[width] duration-standard ease-spring',
             !uiStore.isMobile && showMarkdownPreview ? 'w-1/2 border-r border-gray-200 dark:border-slate-800' : 'w-full'
           ]"
         ></div>

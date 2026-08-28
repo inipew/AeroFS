@@ -160,7 +160,7 @@
       <!-- Compact Progress Bar -->
       <div class="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-1 overflow-hidden">
         <div
-          class="bg-blue-600 h-full rounded-full transition-all duration-300"
+          class="bg-blue-600 h-full rounded-full transition-[width] duration-standard ease-spring"
           :style="{ width: `${storageInfo.used_percent || 0}%` }"
         ></div>
       </div>

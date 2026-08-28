@@ -10,7 +10,7 @@
         : ''
     ]"
   >
-    <!-- Dual-Pane Subheader with Navigation Engine, Connection Switcher & Actions -->
+    <!-- Dual-Pane Subheader with Apple-Grade Segmented Navigation & Breadcrumb Capsule -->
     <div
       v-if="workspaceStore.isDualPane"
       :class="[
@@ -20,13 +20,13 @@
           : 'bg-gray-50/60 dark:bg-[#080c16]/90 border-gray-200/80 dark:border-slate-800/80 text-gray-500 dark:text-slate-400'
       ]"
     >
-      <div class="flex items-center space-x-1.5 truncate">
-        <!-- Navigation Buttons: Back, Forward, Up -->
-        <div class="flex items-center bg-gray-100/80 dark:bg-slate-800/60 rounded-xl p-0.5 border border-gray-200/70 dark:border-slate-700/60">
+      <div class="flex items-center space-x-2 truncate flex-1 min-w-0 mr-2">
+        <!-- Segmented Navigation Pill: Back & Forward (‹  ›) -->
+        <div class="ios-segmented-group shrink-0">
           <button
             @click.stop="workspaceStore.goBack(panelId)"
             :disabled="panel.historyIndex <= 0"
-            class="p-1 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            class="ios-segmented-item p-1.5"
             title="Back (Alt+Left)"
           >
             <FbIcon name="chevron-left" size="13px" />
@@ -35,25 +35,14 @@
           <button
             @click.stop="workspaceStore.goForward(panelId)"
             :disabled="panel.historyIndex >= panel.history.length - 1"
-            class="p-1 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            class="ios-segmented-item p-1.5"
             title="Forward (Alt+Right)"
           >
             <FbIcon name="chevron-right" size="13px" />
           </button>
-
-          <button
-            @click.stop="workspaceStore.navigateUp(panelId)"
-            :disabled="panel.path === '/' || panel.path === ''"
-            class="p-1 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Up (Alt+Up)"
-          >
-            <FbIcon name="arrow-up" size="13px" />
-          </button>
         </div>
 
-        <div class="h-3.5 w-px bg-gray-200 dark:bg-slate-800 mx-1 shrink-0"></div>
-
-        <!-- Address Bar Mode vs Interactive Breadcrumb Path -->
+        <!-- Inline Address Bar vs Breadcrumb Capsule -->
         <div v-if="isAddressBar" class="relative flex items-center flex-1 min-w-0">
           <input
             ref="addressInputRef"
@@ -83,86 +72,138 @@
           </div>
         </div>
 
-        <!-- Interactive Clickable Segmented Breadcrumb Path -->
-        <div
+        <!-- Breadcrumb Capsule Hero Centerpiece -->
+        <nav
           v-else
-          class="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5 space-x-1"
+          class="breadcrumb-capsule flex items-center space-x-1 text-xs select-none overflow-x-auto no-scrollbar shadow-2xs flex-1 min-w-0"
         >
           <!-- Root Button (/) -->
           <button
             @click.stop="workspaceStore.navigateTo(panelId, '/')"
             :class="[
-              'px-2 py-0.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center space-x-1.5 shrink-0 border',
+              'px-2 py-0.5 rounded-lg transition-[background-color,color,transform] duration-fast ease-spring flex items-center space-x-1.5 shrink-0 active:scale-95 cursor-pointer font-medium',
               panel.path === '/'
-                ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800/60 font-bold'
-                : 'bg-transparent text-gray-600 dark:text-slate-400 border-transparent hover:border-gray-200 dark:hover:border-slate-700 font-medium'
+                ? 'text-blue-600 dark:text-blue-400 font-semibold bg-blue-50/80 dark:bg-blue-950/40'
+                : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200/60 dark:hover:bg-slate-700/60'
             ]"
             title="Root (/)"
           >
             <FbIcon :name="panel.connectionId === 'local' ? 'folder' : 'share'" size="13px" class="text-blue-500 shrink-0" />
-            <span class="text-xs font-semibold">{{ currentConnName }}</span>
+            <span class="truncate max-w-[80px] sm:max-w-[120px]">{{ currentConnName }}</span>
           </button>
 
           <!-- Breadcrumb Segments -->
-          <template v-for="(seg, idx) in breadcrumbSegments" :key="seg.path">
-            <span class="text-gray-300 dark:text-slate-600 text-xs shrink-0 select-none">/</span>
-            <button
-              @click.stop="workspaceStore.navigateTo(panelId, seg.path)"
-              :class="[
-                'px-1.5 py-0.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs truncate max-w-[120px] sm:max-w-[160px]',
-                idx === breadcrumbSegments.length - 1
-                  ? 'font-bold text-gray-900 dark:text-white bg-gray-100/70 dark:bg-slate-800/60'
-                  : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
-              ]"
-              :title="seg.path"
-            >
-              {{ seg.name }}
-            </button>
-          </template>
-
-          <!-- Edit Path Pencil / Trigger Button -->
-          <button
-            @click.stop="openAddressBar"
-            class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer shrink-0 ml-0.5"
-            title="Edit path directly (Ctrl+L)"
-          >
-            <FbIcon name="rename" size="11px" />
-          </button>
-        </div>
+          <TransitionGroup name="crumb-item" tag="div" class="flex items-center space-x-1 shrink-0">
+            <div v-for="(seg, idx) in breadcrumbSegments" :key="seg.path" class="flex items-center space-x-1">
+              <span class="text-gray-400 dark:text-slate-600 font-bold text-xs shrink-0 select-none">›</span>
+              <button
+                @click.stop="workspaceStore.navigateTo(panelId, seg.path)"
+                :class="[
+                  'px-2 py-0.5 rounded-lg transition-[background-color,color,transform] duration-fast ease-spring max-w-[110px] sm:max-w-[150px] truncate active:scale-95 cursor-pointer',
+                  idx === breadcrumbSegments.length - 1
+                    ? 'text-gray-900 dark:text-white font-bold bg-gray-200/70 dark:bg-slate-700/60'
+                    : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200/60 dark:hover:bg-slate-700/60 font-medium'
+                ]"
+                :title="seg.path"
+              >
+                {{ seg.name }}
+              </button>
+            </div>
+          </TransitionGroup>
+        </nav>
       </div>
 
-      <!-- Panel Action Buttons: View Switcher, Reload, Swap & Close -->
-      <div class="flex items-center space-x-1 shrink-0">
-        <!-- Grid / List Toggle -->
-        <button
-          @click.stop="panel.viewMode = panel.viewMode === 'grid' ? 'list' : 'grid'"
-          class="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
-          :title="panel.viewMode === 'grid' ? 'Switch to List View' : 'Switch to Grid View'"
-        >
-          <FbIcon :name="panel.viewMode === 'grid' ? 'list' : 'grid'" size="13px" />
-        </button>
+      <!-- Panel Action Controls: Segmented View Switcher, Contextual ··· Menu & Close -->
+      <div class="flex items-center space-x-1.5 shrink-0">
+        <!-- Segmented View Mode Switcher (List vs Grid) -->
+        <div class="ios-segmented-group">
+          <button
+            @click.stop="panel.viewMode = 'list'; workspaceStore.saveState()"
+            :class="['ios-segmented-item p-1.5', panel.viewMode === 'list' ? 'active' : '']"
+            title="List View"
+          >
+            <FbIcon name="list" size="13px" />
+          </button>
+          <button
+            @click.stop="panel.viewMode = 'grid'; workspaceStore.saveState()"
+            :class="['ios-segmented-item p-1.5', panel.viewMode === 'grid' ? 'active' : '']"
+            title="Grid View"
+          >
+            <FbIcon name="grid" size="13px" />
+          </button>
+        </div>
 
-        <button
-          :disabled="panel.loading"
-          @click.stop="workspaceStore.refreshPanel(panelId)"
-          class="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
-          title="Reload panel (F5)"
-        >
-          <FbIcon name="refresh" size="13px" :class="{ 'animate-spin': panel.loading }" />
-        </button>
+        <!-- Per-Pane Contextual More Menu (···) -->
+        <div ref="panelMoreRef" class="relative">
+          <button
+            @click.stop="isPanelMoreOpen = !isPanelMoreOpen"
+            :class="[
+              'p-1.5 rounded-xl border transition cursor-pointer active:scale-95 duration-fast ease-spring flex items-center justify-center font-bold text-xs',
+              isPanelMoreOpen
+                ? 'text-blue-600 dark:text-blue-400 border-blue-500/40 bg-blue-50/50 dark:bg-blue-950/40 ring-1 ring-blue-500/20'
+                : 'border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-gray-600 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800'
+            ]"
+            title="More Panel Actions"
+          >
+            <span>···</span>
+          </button>
 
-        <button
-          @click.stop="workspaceStore.swapPanels()"
-          class="p-1.5 rounded-lg text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs font-semibold"
-          title="Swap Left & Right Panels (Alt+S)"
-        >
-          ⇄
-        </button>
+          <!-- Per-Pane Popover Menu -->
+          <Transition name="ios-popover">
+            <div
+              v-if="isPanelMoreOpen"
+              @click.stop="isPanelMoreOpen = false"
+              class="absolute right-0 mt-1.5 w-52 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-2xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-0.5"
+            >
+              <button
+                @click="openAddressBar"
+                class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800/80 transition text-left cursor-pointer"
+              >
+                <div class="flex items-center space-x-2">
+                  <FbIcon name="rename" size="14px" class="text-gray-400" />
+                  <span>Edit Path Directly</span>
+                </div>
+                <kbd class="text-[10px] text-gray-400 font-mono">⌘L</kbd>
+              </button>
 
+              <button
+                @click="copyPanelPath"
+                class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800/80 transition text-left cursor-pointer"
+              >
+                <FbIcon name="copy" size="14px" class="text-gray-400" />
+                <span>Copy Path</span>
+              </button>
+
+              <button
+                @click="workspaceStore.refreshPanel(panelId)"
+                class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800/80 transition text-left cursor-pointer"
+              >
+                <div class="flex items-center space-x-2">
+                  <FbIcon name="refresh" size="14px" class="text-gray-400" :class="{ 'animate-spin': panel.loading }" />
+                  <span>Reload Panel</span>
+                </div>
+                <kbd class="text-[10px] text-gray-400 font-mono">F5</kbd>
+              </button>
+
+              <button
+                @click="workspaceStore.swapPanels()"
+                class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800/80 transition text-left cursor-pointer"
+              >
+                <div class="flex items-center space-x-2">
+                  <span class="text-sm">⇄</span>
+                  <span>Swap Panels</span>
+                </div>
+                <kbd class="text-[10px] text-gray-400 font-mono">Alt+S</kbd>
+              </button>
+            </div>
+          </Transition>
+        </div>
+
+        <!-- Close Panel Button -->
         <button
           @click.stop="workspaceStore.closePanel(panelId)"
-          class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition cursor-pointer font-bold text-xs"
-          title="Close panel"
+          class="p-1.5 rounded-xl text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition cursor-pointer font-bold text-xs active:scale-95 duration-fast ease-spring"
+          title="Close Panel"
         >
           ✕
         </button>
@@ -173,7 +214,7 @@
     <div
       v-if="isDragOver"
       :class="[
-        'absolute inset-x-4 bottom-4 z-30 bg-blue-500/10 backdrop-blur-xs border-2 border-dashed border-blue-500 rounded-3xl flex items-center justify-center pointer-events-none transition-all duration-150',
+        'absolute inset-x-4 bottom-4 z-30 bg-blue-500/10 backdrop-blur-xs border-2 border-dashed border-blue-500 rounded-3xl flex items-center justify-center pointer-events-none transition-[opacity,background-color,border-color] duration-standard ease-spring',
         workspaceStore.isDualPane ? 'top-14' : 'top-4'
       ]"
     >
@@ -222,10 +263,10 @@
       <div
         v-if="pullDistance > 0 || isPullRefreshing"
         :style="{ height: `${Math.min(50, pullDistance)}px` }"
-        class="flex items-center justify-center overflow-hidden transition-all text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/20 rounded-xl mb-3"
+        class="flex items-center justify-center overflow-hidden transition-[height,opacity,transform] duration-standard ease-spring text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/20 rounded-xl mb-3"
       >
         <div class="flex items-center space-x-2">
-          <span :class="['transition-transform duration-200 text-sm font-bold', pullDistance >= 40 || isPullRefreshing ? 'rotate-180 animate-spin' : '']">⟳</span>
+          <span :class="['transition-transform duration-standard ease-spring text-sm font-bold', pullDistance >= 40 || isPullRefreshing ? 'rotate-180 animate-spin' : '']">⟳</span>
           <span>{{ isPullRefreshing ? 'Refreshing...' : (pullDistance >= 40 ? 'Release to refresh' : 'Pull down to refresh') }}</span>
         </div>
       </div>
@@ -238,92 +279,90 @@
             v-if="displayedFolders.length === 0 && displayedFiles.length === 0 && !panel.loading"
             class="py-24 flex flex-col items-center justify-center text-center"
           >
-        <div class="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-slate-800 flex items-center justify-center text-gray-400 mb-3">
-          <FbIcon name="empty-folder" size="32px" />
-        </div>
-        <p class="font-semibold text-gray-800 dark:text-slate-200 text-base">This folder is empty</p>
-        <p class="text-xs text-gray-400 dark:text-slate-500 mt-1">Upload files or create new folders to get started</p>
-      </div>
-
-      <!-- MOSAIC / GRID VIEW (Explorer / Dolphin / Filestash Aesthetic - Responsively Auto-Filling) -->
-      <div v-if="panel.viewMode === 'grid'" class="space-y-6">
-        <!-- 1. FOLDERS SECTION -->
-        <div v-if="displayedFolders.length > 0 || (panel.path !== '/' && panel.path !== '')">
-          <div class="flex items-center justify-between mb-3 px-0.5">
-            <div class="flex items-center space-x-2">
-              <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">Folders</span>
-              <span class="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-mono font-bold text-[10px]">
-                {{ displayedFolders.length }}
-              </span>
+            <div class="w-16 h-16 rounded-3xl bg-gray-50 dark:bg-slate-900 border border-dashed border-gray-200 dark:border-slate-800 flex items-center justify-center text-2xl text-gray-300 dark:text-slate-600 mb-3 shadow-inner">
+              📂
             </div>
+            <p class="font-bold text-sm text-gray-700 dark:text-slate-300">This folder is empty</p>
+            <p class="text-xs text-gray-400 dark:text-slate-500 mt-1 max-w-xs">
+              Drag & drop files here or click <strong class="text-blue-600 dark:text-blue-400 font-semibold">+ New</strong> to get started.
+            </p>
           </div>
 
-          <div class="grid gap-3 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">
-            <!-- Parent Folder Navigation Card (..) -->
-            <div
-              v-if="panel.path !== '/' && panel.path !== ''"
-              @click="workspaceStore.navigateUp(panelId)"
-              @dblclick="workspaceStore.navigateUp(panelId)"
-              class="border border-dashed border-gray-300/80 dark:border-slate-700/80 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-200 select-none shadow-xs group bg-gray-50/60 dark:bg-slate-900/40 hover:bg-blue-50/40 dark:hover:bg-blue-950/30 hover:-translate-y-0.5 active:scale-[0.98] min-h-[124px] sm:min-h-[132px]"
-              title="Go to parent directory (..)"
-            >
-              <div class="flex-1 flex items-center justify-center w-full py-1">
-                <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-200 ring-1 ring-blue-500/20">
-                  <FbIcon name="arrow-up" size="18px" class="group-hover:-translate-y-0.5 transition-transform" />
+          <!-- GRID VIEW (Large, Beautiful, High-Information-Density Cards) -->
+          <div v-else-if="panel.viewMode === 'grid'" class="space-y-6">
+            <!-- Folders Grid Section -->
+            <div v-if="displayedFolders.length > 0 || (panel.path !== '/' && panel.path !== '')" class="space-y-2.5">
+              <div class="flex items-center justify-between text-[11px] font-bold text-gray-400 dark:text-slate-500 tracking-wider uppercase px-1">
+                <span>Folders</span>
+                <span>{{ displayedFolders.length }}</span>
+              </div>
+
+              <div class="grid gap-3 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">
+                <!-- Parent Folder Navigation Card (..) -->
+                <div
+                  v-if="panel.path !== '/' && panel.path !== ''"
+                  @click="workspaceStore.navigateUp(panelId)"
+                  @dblclick="workspaceStore.navigateUp(panelId)"
+                  class="border border-dashed border-gray-300/80 dark:border-slate-700/80 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group bg-gray-50/60 dark:bg-slate-900/40 hover:bg-blue-50/40 dark:hover:bg-blue-950/30 hover:-translate-y-0.5 active:scale-[0.98] min-h-[124px] sm:min-h-[132px]"
+                  title="Go to parent directory (..)"
+                >
+                  <div class="flex-1 flex items-center justify-center w-full py-1">
+                    <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-standard ease-spring ring-1 ring-blue-500/20">
+                      <FbIcon name="arrow-up" size="18px" class="group-hover:-translate-y-0.5 transition-transform" />
+                    </div>
+                  </div>
+                  <span class="font-bold text-xs truncate text-gray-700 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 w-full block">.. Parent</span>
+                </div>
+
+                <!-- Modern Azure Folder Card matching Filestash / Dolphin -->
+                <div
+                  v-for="folder in displayedFolders"
+                  :key="folder.path"
+                  data-entry-item="true"
+                  :data-entry-path="folder.path"
+                  draggable="true"
+                  @dragstart="handleDragStart($event, folder)"
+                  @touchstart.passive="handleTouchStart($event, folder)"
+                  @touchend="handleTouchEnd"
+                  @touchmove="handleTouchMove"
+                  @touchcancel="handleTouchEnd"
+                  @click="handleEntryClick($event, folder)"
+                  @dblclick="handleEntryDoubleClick(folder)"
+                  @contextmenu="openContextMenu($event, folder)"
+                  @dragover.stop.prevent="handleFolderDragOver($event, folder)"
+                  @dragleave.stop="handleFolderDragLeave(folder)"
+                  @drop.stop.prevent="handleDrop($event, folder)"
+                  :class="[
+                    'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
+                    isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
+                    workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
+                    hoveredFolderDrop === folder.path
+                      ? 'ring-2 ring-blue-500 scale-[1.04] bg-blue-100/70 dark:bg-blue-900/60 border-blue-500 shadow-lg'
+                      : (panel.selectedEntries.includes(folder.path)
+                        ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
+                        : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1')
+                  ]"
+                >
+                  <!-- Large Prominent Sky-Blue / Azure Folder Icon -->
+                  <div class="flex-1 flex items-center justify-center w-full py-1">
+                    <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 sm:w-13 sm:h-13 drop-shadow-xs group-hover:scale-110 transition-transform duration-standard ease-spring">
+                      <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-500 dark:fill-sky-600" />
+                      <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-400 dark:fill-sky-400" />
+                    </svg>
+                  </div>
+
+                  <!-- Centered Folder Name Label (2-line wrap) -->
+                  <div class="w-full px-0.5 mt-1 text-center">
+                    <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition line-clamp-2 break-all leading-tight block" :title="folder.name">
+                      {{ folder.name }}
+                    </span>
+                    <span v-if="isItemHidden(folder)" class="inline-block mt-0.5 text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono">
+                      dot
+                    </span>
+                  </div>
                 </div>
               </div>
-              <span class="font-bold text-xs truncate text-gray-700 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 w-full block">.. Parent</span>
             </div>
-
-            <!-- Modern Azure Folder Card matching Filestash / Dolphin -->
-            <div
-              v-for="folder in displayedFolders"
-              :key="folder.path"
-              data-entry-item="true"
-              :data-entry-path="folder.path"
-              draggable="true"
-              @dragstart="handleDragStart($event, folder)"
-              @touchstart.passive="handleTouchStart($event, folder)"
-              @touchend="handleTouchEnd"
-              @touchmove="handleTouchMove"
-              @touchcancel="handleTouchEnd"
-              @click="handleEntryClick($event, folder)"
-              @dblclick="handleEntryDoubleClick(folder)"
-              @contextmenu="openContextMenu($event, folder)"
-              @dragover.stop.prevent="handleFolderDragOver($event, folder)"
-              @dragleave.stop="handleFolderDragLeave(folder)"
-              @drop.stop.prevent="handleDrop($event, folder)"
-              :class="[
-                'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-all duration-200 select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
-                isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
-                workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
-                hoveredFolderDrop === folder.path
-                  ? 'ring-2 ring-blue-500 scale-[1.04] bg-blue-100/70 dark:bg-blue-900/60 border-blue-500 shadow-lg'
-                  : (panel.selectedEntries.includes(folder.path)
-                    ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
-                    : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1')
-              ]"
-            >
-              <!-- Large Prominent Sky-Blue / Azure Folder Icon -->
-              <div class="flex-1 flex items-center justify-center w-full py-1">
-                <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 sm:w-13 sm:h-13 drop-shadow-xs group-hover:scale-110 transition-transform duration-200">
-                  <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-500 dark:fill-sky-600" />
-                  <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-400 dark:fill-sky-400" />
-                </svg>
-              </div>
-
-              <!-- Centered Folder Name Label (2-line wrap) -->
-              <div class="w-full px-0.5 mt-1 text-center">
-                <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition line-clamp-2 break-all leading-tight block" :title="folder.name">
-                  {{ folder.name }}
-                </span>
-                <span v-if="isItemHidden(folder)" class="inline-block mt-0.5 text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono">
-                  dot
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
 
         <!-- 2. FILES SECTION -->
         <div v-if="displayedFiles.length > 0">
@@ -352,7 +391,7 @@
               @dblclick="handleEntryDoubleClick(file)"
               @contextmenu="openContextMenu($event, file)"
               :class="[
-                'border rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[136px] sm:min-h-[148px]',
+                'border rounded-2xl overflow-hidden cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[136px] sm:min-h-[148px]',
                 isItemHidden(file) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
                 workspaceStore.isCutItem(panel.connectionId, file.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                 panel.selectedEntries.includes(file.path)
@@ -416,7 +455,7 @@
 
                   <!-- Sleek Document Illustration -->
                   <div
-                    class="w-10 h-13 sm:w-11 sm:h-14 rounded-lg relative flex flex-col items-center justify-between py-1.5 px-1 shadow-xs border group-hover:scale-110 group-hover:shadow-md transition-all duration-200 bg-white/90 dark:bg-slate-900/90"
+                    class="w-10 h-13 sm:w-11 sm:h-14 rounded-lg relative flex flex-col items-center justify-between py-1.5 px-1 shadow-xs border group-hover:scale-110 group-hover:shadow-md transition-[transform,box-shadow] duration-standard ease-spring bg-white/90 dark:bg-slate-900/90"
                     :class="getFileTypeMeta(file).badgeBorder"
                   >
                     <!-- Folded dog-ear corner -->
@@ -607,8 +646,9 @@
   </Transition>
 </div>
 
-    <!-- Floating Contextual Selection Action Bar -->
+    <!-- Floating Contextual Selection Action Bar (Dual Pane Mode) -->
     <FilePanelSelectionBar
+      v-if="workspaceStore.isDualPane"
       :selected-count="panel.selectedEntries.length"
       :selected-size="selectedTotalSize"
       :single-selected="panel.selectedEntries.length === 1"
@@ -669,6 +709,9 @@ const navTransitionName = computed(() => getNavTransitionName(panel.value.naviga
 const isActive = computed(() => workspaceStore.activePanelId === props.panelId);
 const isDragOver = ref(false);
 
+const isPanelMoreOpen = ref(false);
+const panelMoreRef = ref<HTMLElement | null>(null);
+
 const isAddressBar = ref(false);
 const addressInput = ref('');
 const addressInputRef = ref<HTMLInputElement | null>(null);
@@ -677,6 +720,16 @@ const currentConnName = computed(() => {
   const c = connStore.connections.find((x) => x.id === panel.value.connectionId);
   return c ? c.name : panel.value.connectionId;
 });
+
+async function copyPanelPath() {
+  const p = panel.value.path || '/';
+  try {
+    await navigator.clipboard.writeText(p);
+    uiStore.showToast(`Path copied: ${p}`, 'info');
+  } catch {
+    uiStore.showToast('Failed to copy path', 'error');
+  }
+}
 
 async function openAddressBar() {
   addressInput.value = panel.value.path;
@@ -1547,11 +1600,20 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 }
 
+function handleOutsideClick(e: MouseEvent) {
+  const target = e.target as Node;
+  if (isPanelMoreOpen.value && panelMoreRef.value && !panelMoreRef.value.contains(target)) {
+    isPanelMoreOpen.value = false;
+  }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener('click', handleOutsideClick);
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
+  window.removeEventListener('click', handleOutsideClick);
 });
 </script>

@@ -196,7 +196,7 @@
             <!-- Header Bar (Clicking anywhere collapses/minimizes) -->
             <div
               @click="toggleCollapse"
-              class="p-3.5 bg-gray-50/90 dark:bg-slate-900/90 border-b border-gray-200/80 dark:border-slate-800/80 flex items-center justify-between cursor-pointer hover:bg-gray-100/90 dark:hover:bg-slate-800/60 active:scale-[0.99] transition-all group select-none"
+              class="p-3.5 bg-gray-50/90 dark:bg-slate-900/90 border-b border-gray-200/80 dark:border-slate-800/80 flex items-center justify-between cursor-pointer hover:bg-gray-100/90 dark:hover:bg-slate-800/60 active:scale-[0.99] transition-[background-color,transform] duration-standard ease-spring group select-none"
               title="Click header to collapse / minimize"
             >
               <!-- Left: Title & Active Status -->

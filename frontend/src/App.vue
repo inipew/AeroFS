@@ -13,6 +13,7 @@
         @open-shares-dialog="isSharesDialogOpen = true"
         @open-trash-dialog="isTrashDialogOpen = true"
         @open-starred-dialog="isStarredDialogOpen = true"
+        @open-archive-dialog="handleOpenArchive"
         @recent-view="handleRecentView"
       />
 
@@ -269,7 +270,7 @@
               v-for="toast in uiStore.toasts"
               :key="toast.id"
               :class="[
-                'pointer-events-auto flex items-center space-x-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border text-xs font-semibold ring-1 ring-black/5 dark:ring-white/10 transition-all duration-200',
+                'pointer-events-auto flex items-center space-x-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border text-xs font-semibold ring-1 ring-black/5 dark:ring-white/10 transition-[opacity,transform,background-color,border-color] duration-standard ease-spring',
                 toast.type === 'success' ? 'bg-emerald-50/95 dark:bg-emerald-950/90 border-emerald-200 dark:border-emerald-800/80 text-emerald-900 dark:text-emerald-200' : '',
                 toast.type === 'error' ? 'bg-rose-50/95 dark:bg-rose-950/90 border-rose-200 dark:border-rose-800/80 text-rose-900 dark:text-rose-200' : '',
                 toast.type === 'warning' ? 'bg-amber-50/95 dark:bg-amber-950/90 border-amber-200 dark:border-amber-800/80 text-amber-900 dark:text-amber-200' : '',
