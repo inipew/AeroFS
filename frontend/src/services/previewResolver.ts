@@ -117,11 +117,13 @@ export class PreviewResolver {
         kind,
         canPreview: true,
         open: async () => {
-          // Safety guard: Maximum editable file size guard (Plan 20)
+          // Dynamic safety guard: Maximum editable file size guard (P1 #18)
           const size = entry.size || 0;
-          if (size > 50 * 1024 * 1024) {
+          const maxEditable = uiStore.maxEditableSize || 10 * 1024 * 1024;
+
+          if (size > maxEditable) {
             uiStore.showToast(
-              `File is too large to edit in browser (${(size / (1024 * 1024)).toFixed(1)} MB). Downloading directly...`,
+              `File is too large to edit in browser (${(size / (1024 * 1024)).toFixed(1)} MB > ${(maxEditable / (1024 * 1024)).toFixed(1)} MB limit). Downloading directly...`,
               'warning'
             );
             const downloadUrl = getDownloadUrl(connectionId, entry.path);
@@ -129,7 +131,7 @@ export class PreviewResolver {
             return;
           }
 
-          if (size > 10 * 1024 * 1024) {
+          if (size > 5 * 1024 * 1024) {
             const proceed = window.confirm(
               `This file is large (${(size / (1024 * 1024)).toFixed(1)} MB). Opening it in the browser code editor may cause temporary lag. Do you want to continue?`
             );

@@ -23,9 +23,7 @@ pub fn map_opendal_capabilities_for_scheme(cap: opendal::Capability, scheme: &st
             // SFTP supports remote POSIX file permissions
             (true, false, false, false)
         }
-        "ftp" => {
-            (false, false, false, false)
-        }
+        "ftp" => (false, false, false, false),
         _ => (false, false, false, false),
     };
 

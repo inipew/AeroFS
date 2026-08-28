@@ -5,8 +5,8 @@ use utoipa::ToSchema;
 pub struct GeneralSettings {
     pub language: String,
     pub theme: String,
-    pub default_view: String, // "grid" | "list"
-    pub default_sort: String, // "name" | "size" | "modified"
+    pub default_view: String,   // "grid" | "list"
+    pub default_sort: String,   // "name" | "size" | "modified"
     pub sort_direction: String, // "asc" | "desc"
     pub show_hidden_default: bool,
     pub confirm_destructive: bool,
@@ -26,6 +26,10 @@ impl Default for GeneralSettings {
     }
 }
 
+fn default_max_editable_size() -> u64 {
+    10 * 1024 * 1024
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FileManagerSettings {
     pub default_layout: String, // "single" | "split"
@@ -33,6 +37,8 @@ pub struct FileManagerSettings {
     pub show_file_size: bool,
     pub show_permissions: bool,
     pub remember_last_directories: bool,
+    #[serde(default = "default_max_editable_size")]
+    pub max_editable_size: u64,
 }
 
 impl Default for FileManagerSettings {
@@ -43,6 +49,7 @@ impl Default for FileManagerSettings {
             show_file_size: true,
             show_permissions: true,
             remember_last_directories: true,
+            max_editable_size: default_max_editable_size(),
         }
     }
 }
@@ -125,14 +132,30 @@ impl Default for AdvancedSettings {
     }
 }
 
-fn default_language() -> String { "en".to_string() }
-fn default_theme() -> String { "dark".to_string() }
-fn default_view() -> String { "grid".to_string() }
-fn default_density() -> String { "comfortable".to_string() }
-fn default_sort() -> String { "name".to_string() }
-fn default_sort_direction() -> String { "asc".to_string() }
-fn default_layout() -> String { "split".to_string() }
-fn default_true() -> bool { true }
+fn default_language() -> String {
+    "en".to_string()
+}
+fn default_theme() -> String {
+    "dark".to_string()
+}
+fn default_view() -> String {
+    "grid".to_string()
+}
+fn default_density() -> String {
+    "comfortable".to_string()
+}
+fn default_sort() -> String {
+    "name".to_string()
+}
+fn default_sort_direction() -> String {
+    "asc".to_string()
+}
+fn default_layout() -> String {
+    "split".to_string()
+}
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct UserPreferences {

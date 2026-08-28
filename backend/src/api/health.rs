@@ -1,10 +1,5 @@
 use crate::state::AppState;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use std::time::Instant;
@@ -38,12 +33,11 @@ pub async fn health_live() -> impl IntoResponse {
 }
 
 /// Readiness probe checking DB, storage directory, and active providers
-pub async fn health_ready(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+pub async fn health_ready(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     // 1. Check Database connection
-    let db_ok = sqlx::query("SELECT 1")
-        .fetch_one(&state.db)
-        .await
-        .is_ok();
+    let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
 
     // 2. Check Storage root
     let storage_ok = state.config.filesystem.default_local_root.exists();

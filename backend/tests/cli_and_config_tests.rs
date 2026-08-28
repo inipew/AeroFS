@@ -48,7 +48,10 @@ url = "sqlite:///tmp/aerofs_test.db?mode=rwc"
     let config = AppConfig::load(Some(&config_path)).unwrap();
     assert_eq!(config.server.host, "0.0.0.0");
     assert_eq!(config.server.port, 9090);
-    assert_eq!(config.filesystem.default_local_root.to_str().unwrap(), "/tmp/aerofs_test_storage");
+    assert_eq!(
+        config.filesystem.default_local_root.to_str().unwrap(),
+        "/tmp/aerofs_test_storage"
+    );
     assert!(config.filesystem.show_hidden_default);
     assert_eq!(config.limits.max_concurrent_transfers, 8);
     assert!(config.security.allow_symlinks_outside_root);
@@ -128,7 +131,13 @@ async fn test_settings_transaction_and_audit() {
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let cookie = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let cookie = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
 
     // 2. Update settings via PUT /api/v1/settings
     let update_req = Request::builder()
@@ -181,7 +190,8 @@ async fn test_settings_transaction_and_audit() {
                         "directory_cache_ttl_secs": 0
                     }
                 }
-            }).to_string(),
+            })
+            .to_string(),
         ))
         .unwrap();
 
@@ -189,12 +199,11 @@ async fn test_settings_transaction_and_audit() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // 3. Verify audit log entry was recorded for SETTINGS_UPDATED
-    let audit_rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, status FROM audit_logs WHERE action = 'SETTINGS_UPDATED'"
-    )
-    .fetch_all(&state.db)
-    .await
-    .unwrap();
+    let audit_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT action, status FROM audit_logs WHERE action = 'SETTINGS_UPDATED'")
+            .fetch_all(&state.db)
+            .await
+            .unwrap();
 
     assert_eq!(audit_rows.len(), 1);
     assert_eq!(audit_rows[0].0, "SETTINGS_UPDATED");
@@ -228,9 +237,11 @@ url = "sqlite://{}?mode=rwc"
     let cli = backend::cli::Cli {
         config: Some(config_path.clone()),
         json: true,
-        command: Some(backend::cli::Commands::Config(backend::cli::ConfigCommand {
-            action: backend::cli::ConfigAction::Validate,
-        })),
+        command: Some(backend::cli::Commands::Config(
+            backend::cli::ConfigCommand {
+                action: backend::cli::ConfigAction::Validate,
+            },
+        )),
     };
     assert!(backend::cli::run_cli(cli).await.is_ok());
 
@@ -298,7 +309,13 @@ async fn test_user_preferences_api() {
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let cookie = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let cookie = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
 
     // 2. GET /api/v1/user/preferences -> returns defaults
     let req = Request::builder()
@@ -331,7 +348,8 @@ async fn test_user_preferences_api() {
                 "show_file_size": true,
                 "show_permissions": true,
                 "remember_last_directories": false
-            }).to_string(),
+            })
+            .to_string(),
         ))
         .unwrap();
 
@@ -348,7 +366,9 @@ async fn test_user_preferences_api() {
 
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(val["theme"], "light");
     assert_eq!(val["default_view"], "list");

@@ -568,107 +568,37 @@
       </div>
     </div>
 
-    <!-- Floating Contextual Selection Action Bar (Zero Layout Shift!) -->
-    <Transition
-      enter-active-class="transition duration-200 ease-out"
-      enter-from-class="opacity-0 translate-y-3 scale-95"
-      enter-to-class="opacity-100 translate-y-0 scale-100"
-      leave-active-class="transition duration-150 ease-in"
-      leave-from-class="opacity-100 translate-y-0 scale-100"
-      leave-to-class="opacity-0 translate-y-3 scale-95"
-    >
-      <div
-        v-if="panel.selectedEntries.length > 0"
-        class="absolute bottom-11 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-40 bg-white/95 dark:bg-[#0d1424]/95 backdrop-blur-md border border-blue-500/30 dark:border-blue-500/40 rounded-2xl shadow-2xl px-3.5 py-2 flex items-center justify-between sm:justify-center gap-3 text-xs font-semibold text-gray-800 dark:text-slate-100 select-none pointer-events-auto"
-      >
-        <div class="flex items-center space-x-2 shrink-0">
-          <span class="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
-          <span class="font-bold text-blue-600 dark:text-blue-400">{{ panel.selectedEntries.length }} selected</span>
-          <span v-if="selectedTotalSize > 0" class="text-[11px] font-mono text-gray-500 dark:text-slate-400 font-normal">({{ formatBytes(selectedTotalSize) }})</span>
-        </div>
-
-        <div class="h-4 w-px bg-gray-200 dark:bg-slate-700 hidden sm:block"></div>
-
-        <div class="flex items-center space-x-1 sm:space-x-1.5 shrink-0">
-          <button
-            @click.stop="handleBatchCompress"
-            class="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-blue-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border border-gray-200 dark:border-slate-700 flex items-center space-x-1 transition cursor-pointer text-xs"
-            title="Compress selected items"
-          >
-            <FbIcon name="archive" size="13px" />
-            <span class="hidden sm:inline">Compress</span>
-          </button>
-
-          <button
-            v-if="panel.selectedEntries.length === 1"
-            @click.stop="handleSingleRename"
-            class="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-blue-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border border-gray-200 dark:border-slate-700 flex items-center space-x-1 transition cursor-pointer text-xs"
-            title="Rename item"
-          >
-            <FbIcon name="rename" size="13px" />
-            <span class="hidden sm:inline">Rename</span>
-          </button>
-
-          <button
-            @click.stop="handleBatchDelete"
-            class="px-2.5 py-1.5 rounded-xl bg-red-50 dark:bg-red-950/50 hover:bg-red-100 dark:hover:bg-red-900/60 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/60 flex items-center space-x-1 transition cursor-pointer text-xs"
-            title="Delete selected items"
-          >
-            <FbIcon name="delete" size="13px" />
-            <span class="hidden sm:inline">Delete</span>
-          </button>
-
-          <button
-            @click.stop="panel.selectedEntries = []"
-            class="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer text-xs font-bold"
-            title="Clear Selection (Esc)"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-    </Transition>
+    <!-- Floating Contextual Selection Action Bar -->
+    <FilePanelSelectionBar
+      :selected-count="panel.selectedEntries.length"
+      :selected-size="selectedTotalSize"
+      :single-selected="panel.selectedEntries.length === 1"
+      @compress="handleBatchCompress"
+      @rename="handleSingleRename"
+      @delete="handleBatchDelete"
+      @clear="panel.selectedEntries = []"
+    />
 
     <!-- Information-Dense Panel Status Bar -->
-    <div class="h-8 border-t border-gray-200/80 dark:border-slate-800/80 px-4 flex items-center justify-between text-[11px] font-medium text-gray-500 dark:text-slate-400 bg-gray-50/70 dark:bg-slate-900/50 shrink-0 select-none">
-      <div class="flex items-center space-x-2 truncate">
-        <span>{{ displayedEntries.length }} items</span>
-        <span class="text-gray-300 dark:text-slate-700">•</span>
-        <span v-if="panel.selectedEntries.length > 0" class="text-blue-600 dark:text-blue-400 font-semibold">
-          {{ panel.selectedEntries.length }} selected
-          <span v-if="selectedTotalSize > 0" class="font-mono">({{ formatBytes(selectedTotalSize) }})</span>
-        </span>
-        <span v-else class="text-gray-400 dark:text-slate-500 font-mono text-[10px]">
-          {{ totalFolderSize > 0 ? formatBytes(totalFolderSize) : '' }}
-        </span>
-      </div>
-
-      <!-- Connection Status & Capabilities Pill -->
-      <div class="flex items-center space-x-2.5 shrink-0 text-[10px] font-mono">
-        <span class="hidden sm:inline capitalize">{{ panel.viewMode }}</span>
-        <span class="hidden sm:inline text-gray-300 dark:text-slate-700">•</span>
-        <div class="flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 shadow-2xs">
-          <span
-            :class="[
-              'w-1.5 h-1.5 rounded-full',
-              panel.stale
-                ? 'bg-amber-500 animate-pulse'
-                : (panel.error ? 'bg-red-500' : 'bg-emerald-500')
-            ]"
-          ></span>
-          <span :class="panel.stale ? 'text-amber-600 dark:text-amber-400 font-semibold' : (panel.error ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400')">
-            {{ panel.stale ? 'Cached' : (panel.error ? 'Error' : currentConnName) }}
-          </span>
-          <span v-if="connStore.isReadOnly(panel.connectionId)" class="text-amber-500 text-[10px]" title="Read-Only">🔒</span>
-        </div>
-      </div>
-    </div>
+    <FilePanelStatusBar
+      :displayed-count="displayedEntries.length"
+      :selected-count="panel.selectedEntries.length"
+      :selected-size="selectedTotalSize"
+      :total-folder-size="totalFolderSize"
+      :view-mode="panel.viewMode"
+      :stale="panel.stale"
+      :error="!!panel.error"
+      :current-conn-name="currentConnName"
+      :is-read-only="connStore.isReadOnly(panel.connectionId)"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
+import FilePanelSelectionBar from './FilePanelSelectionBar.vue';
+import FilePanelStatusBar from './FilePanelStatusBar.vue';
 import type { IconName } from '../../utils/icons';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useConnectionStore } from '../../stores/connectionStore';

@@ -17,6 +17,7 @@ pub struct AuditLogEntry {
     pub created_at: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn record_audit_log(
     db: &DbPool,
     user_id: Option<&str>,

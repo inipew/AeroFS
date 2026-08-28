@@ -43,7 +43,11 @@ pub fn map_opendal_metadata(
     let mime_type = if is_dir {
         None
     } else {
-        Some(mime_guess::from_path(&name).first_or_octet_stream().to_string())
+        Some(
+            mime_guess::from_path(&name)
+                .first_or_octet_stream()
+                .to_string(),
+        )
     };
 
     FileMetadata {
@@ -63,10 +67,7 @@ pub fn map_opendal_metadata(
 }
 
 /// Map OpenDAL Entry to AeroFS FileEntry
-pub fn map_opendal_entry(
-    entry: &opendal::Entry,
-    parent_vfs: &VfsPath,
-) -> Option<FileEntry> {
+pub fn map_opendal_entry(entry: &opendal::Entry, parent_vfs: &VfsPath) -> Option<FileEntry> {
     let entry_path_clean = entry.path().trim_matches('/');
     let parent_path_clean = parent_vfs.path.trim_matches('/');
 
@@ -87,23 +88,26 @@ pub fn map_opendal_entry(
         FileKind::File
     };
 
-    let child_vfs = parent_vfs.join(raw_name);
+    let child_vfs = parent_vfs.join(raw_name).ok()?;
     let size = if is_dir {
         None
     } else {
         Some(entry.metadata().content_length())
     };
 
-    let modified_at: Option<DateTime<Utc>> =
-        entry.metadata().last_modified().map(|dt| {
-            let st: SystemTime = dt.into();
-            DateTime::<Utc>::from(st)
-        });
+    let modified_at: Option<DateTime<Utc>> = entry.metadata().last_modified().map(|dt| {
+        let st: SystemTime = dt.into();
+        DateTime::<Utc>::from(st)
+    });
 
     let mime_type = if is_dir {
         None
     } else {
-        Some(mime_guess::from_path(raw_name).first_or_octet_stream().to_string())
+        Some(
+            mime_guess::from_path(raw_name)
+                .first_or_octet_stream()
+                .to_string(),
+        )
     };
 
     Some(FileEntry {

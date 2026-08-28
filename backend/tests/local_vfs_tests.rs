@@ -17,21 +17,23 @@ async fn test_local_vfs_full_workflow() {
     assert_eq!(entries.len(), 0);
 
     // 2. Create nested directories
-    let src_dir = VfsPath::new("test_conn", "/src/components");
+    let src_dir = VfsPath::new("test_conn", "/src/components").unwrap();
     vfs.create_dir(&src_dir).await.unwrap();
 
     // 3. Write file stream
-    let file_path = VfsPath::new("test_conn", "/src/components/Button.vue");
+    let file_path = VfsPath::new("test_conn", "/src/components/Button.vue").unwrap();
     let content = b"<template><button>Click me</button></template>".to_vec();
     let cursor = std::io::Cursor::new(content.clone());
-    vfs.write_stream(&file_path, Box::new(cursor)).await.unwrap();
+    vfs.write_stream(&file_path, Box::new(cursor))
+        .await
+        .unwrap();
 
     // 4. Verify file metadata & stat
     let meta = vfs.stat(&file_path).await.unwrap();
     assert_eq!(meta.name, "Button.vue");
     assert_eq!(meta.size, content.len() as u64);
     assert_eq!(meta.kind, FileKind::File);
-    assert_eq!(meta.is_readonly, false);
+    assert!(!meta.is_readonly);
     assert!(!meta.etag.is_empty());
 
     // 5. Read back stream
@@ -43,18 +45,20 @@ async fn test_local_vfs_full_workflow() {
     // 6. Overwrite file
     let new_content = b"<template><button class='primary'>Updated</button></template>".to_vec();
     let cursor2 = std::io::Cursor::new(new_content.clone());
-    vfs.write_stream(&file_path, Box::new(cursor2)).await.unwrap();
+    vfs.write_stream(&file_path, Box::new(cursor2))
+        .await
+        .unwrap();
 
     let meta2 = vfs.stat(&file_path).await.unwrap();
     assert_eq!(meta2.size, new_content.len() as u64);
 
     // 7. Copy file
-    let copied_btn = VfsPath::new("test_conn", "/src/components/ButtonCopy.vue");
+    let copied_btn = VfsPath::new("test_conn", "/src/components/ButtonCopy.vue").unwrap();
     vfs.copy(&file_path, &copied_btn).await.unwrap();
     assert!(vfs.stat(&copied_btn).await.is_ok());
 
     // 8. Rename / Move
-    let moved_btn = VfsPath::new("test_conn", "/src/components/CustomButton.vue");
+    let moved_btn = VfsPath::new("test_conn", "/src/components/CustomButton.vue").unwrap();
     vfs.rename(&copied_btn, &moved_btn).await.unwrap();
     assert!(vfs.stat(&copied_btn).await.is_err());
     assert!(vfs.stat(&moved_btn).await.is_ok());
@@ -72,9 +76,11 @@ async fn test_real_unix_permissions_and_chmod() {
     let vfs = OpenDalFileSystem::new_local("local", op, temp.path());
 
     // 1. Create a file
-    let file_path = VfsPath::new("local", "/sensitive.key");
+    let file_path = VfsPath::new("local", "/sensitive.key").unwrap();
     let content = b"SECRET_PRIVATE_KEY_DATA".to_vec();
-    vfs.write_stream(&file_path, Box::new(std::io::Cursor::new(content))).await.unwrap();
+    vfs.write_stream(&file_path, Box::new(std::io::Cursor::new(content)))
+        .await
+        .unwrap();
 
     // 2. Set permissions to 0600
     vfs.set_permissions(&file_path, "0600").await.unwrap();
@@ -88,7 +94,10 @@ async fn test_real_unix_permissions_and_chmod() {
         // 4. Directory list must also return exact mode "0600"
         let root_path = VfsPath::root("local");
         let entries = vfs.list(&root_path).await.unwrap();
-        let key_entry = entries.iter().find(|e| e.name == "sensitive.key").expect("Entry must exist");
+        let key_entry = entries
+            .iter()
+            .find(|e| e.name == "sensitive.key")
+            .expect("Entry must exist");
         assert_eq!(key_entry.permissions, Some("0600".to_string()));
 
         // 5. Change permissions to 0750

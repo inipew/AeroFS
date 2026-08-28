@@ -21,7 +21,11 @@ async fn setup_app() -> (axum::Router, String, tempfile::TempDir, AppState) {
 
     // Create a dummy source file
     let source_file = storage_dir.join("source.txt");
-    std::fs::write(&source_file, b"Hello World from Background Transfer Engine!").unwrap();
+    std::fs::write(
+        &source_file,
+        b"Hello World from Background Transfer Engine!",
+    )
+    .unwrap();
 
     let mut config = AppConfig::default();
     config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
@@ -128,7 +132,11 @@ async fn test_transfer_cancellation_state_machine() {
         .unwrap();
 
     // 2. Immediately cancel the job
-    let cancelled = state.transfer_manager.cancel_job(&job_id, None, true).await.unwrap();
+    let cancelled = state
+        .transfer_manager
+        .cancel_job(&job_id, None, true)
+        .await
+        .unwrap();
     assert!(cancelled);
 
     // Give background worker time to settle
@@ -186,7 +194,10 @@ async fn test_transfer_safe_move_semantics() {
     tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
 
     // Verify source is deleted and destination exists
-    assert!(!move_src.exists(), "Source file should be safely deleted after move");
+    assert!(
+        !move_src.exists(),
+        "Source file should be safely deleted after move"
+    );
     assert!(move_dst.exists(), "Destination file must exist after move");
     let content = std::fs::read(&move_dst).unwrap();
     assert_eq!(content, b"Move Me Transactionally!");
@@ -214,13 +225,12 @@ async fn test_transfer_sqlite_durability() {
     tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
 
     // 2. Query SQLite directly to verify durability
-    let row: (String, String, String) = sqlx::query_as(
-        "SELECT id, status, name FROM transfer_jobs WHERE id = ?"
-    )
-    .bind(&job_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap();
+    let row: (String, String, String) =
+        sqlx::query_as("SELECT id, status, name FROM transfer_jobs WHERE id = ?")
+            .bind(&job_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
 
     assert_eq!(row.0, job_id);
     assert_eq!(row.1, "completed");
@@ -264,11 +274,20 @@ async fn test_transfer_recursive_directory_copy() {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     let dst_dir = storage_dir.join("backup_folder");
-    assert!(dst_dir.is_dir(), "Destination must be a directory, not a 0-byte file!");
+    assert!(
+        dst_dir.is_dir(),
+        "Destination must be a directory, not a 0-byte file!"
+    );
     assert!(dst_dir.join("file1.txt").is_file());
-    assert_eq!(std::fs::read(dst_dir.join("file1.txt")).unwrap(), b"file 1 content");
+    assert_eq!(
+        std::fs::read(dst_dir.join("file1.txt")).unwrap(),
+        b"file 1 content"
+    );
     assert!(dst_dir.join("sub_folder").join("nested.txt").is_file());
-    assert_eq!(std::fs::read(dst_dir.join("sub_folder").join("nested.txt")).unwrap(), b"nested file content");
+    assert_eq!(
+        std::fs::read(dst_dir.join("sub_folder").join("nested.txt")).unwrap(),
+        b"nested file content"
+    );
 }
 
 #[tokio::test]
@@ -311,7 +330,10 @@ async fn test_transfer_persistent_clear_and_dismiss() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let jobs: Vec<TransferJob> = serde_json::from_slice(&body).unwrap();
-    assert!(!jobs.is_empty(), "Transfers list must contain completed job");
+    assert!(
+        !jobs.is_empty(),
+        "Transfers list must contain completed job"
+    );
     let job_id = &jobs[0].id;
 
     // 3. Clear finished transfers via persistent endpoint
@@ -337,15 +359,22 @@ async fn test_transfer_persistent_clear_and_dismiss() {
     assert_eq!(resp2.status(), StatusCode::OK);
     let body2 = to_bytes(resp2.into_body(), usize::MAX).await.unwrap();
     let jobs2: Vec<TransferJob> = serde_json::from_slice(&body2).unwrap();
-    assert!(jobs2.is_empty(), "Cleared jobs must not appear in list_transfers after clear-finished");
+    assert!(
+        jobs2.is_empty(),
+        "Cleared jobs must not appear in list_transfers after clear-finished"
+    );
 
     // 5. Verify SQLite has dismissed_at set
-    let row: (Option<String>,) = sqlx::query_as("SELECT dismissed_at FROM transfer_jobs WHERE id = ?")
-        .bind(job_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
-    assert!(row.0.is_some(), "dismissed_at must be populated in SQLite database");
+    let row: (Option<String>,) =
+        sqlx::query_as("SELECT dismissed_at FROM transfer_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert!(
+        row.0.is_some(),
+        "dismissed_at must be populated in SQLite database"
+    );
 }
 
 #[tokio::test]
@@ -357,7 +386,7 @@ async fn test_transfer_user_ownership_authorization() {
     let bob_id = "user_bob_123";
     sqlx::query(
         "INSERT INTO users (id, username, password_hash, is_admin, created_at, updated_at)
-         VALUES (?, 'bob', ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+         VALUES (?, 'bob', ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     )
     .bind(bob_id)
     .bind(hashed_pw)
@@ -434,5 +463,37 @@ async fn test_transfer_user_ownership_authorization() {
     let list_resp = app.clone().oneshot(bob_list_req).await.unwrap();
     let body = to_bytes(list_resp.into_body(), usize::MAX).await.unwrap();
     let bob_jobs: Vec<TransferJob> = serde_json::from_slice(&body).unwrap();
-    assert!(bob_jobs.iter().all(|j| j.id != admin_job_id), "Admin job must not be visible to user Bob");
+    assert!(
+        bob_jobs.iter().all(|j| j.id != admin_job_id),
+        "Admin job must not be visible to user Bob"
+    );
+}
+
+#[tokio::test]
+async fn test_transfer_dynamic_limits_update() {
+    let (_app, _cookie, _temp, state) = setup_app().await;
+
+    // Verify initial update limits does not panic and sets values
+    state.transfer_manager.update_limits(8, 5);
+
+    // Submit a copy transfer job and verify execution succeeds under updated limits
+    let job_id = state
+        .transfer_manager
+        .submit_job(
+            None,
+            "Dynamic Limits Job".into(),
+            backend::transfer::TransferType::Copy,
+            "local".into(),
+            "/source.txt".into(),
+            "local".into(),
+            "/dyn_dest.txt".into(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+
+    let jobs = state.transfer_manager.list_jobs(None, true, true).await;
+    let job = jobs.iter().find(|j| j.id == job_id).unwrap();
+    assert_eq!(job.status, TransferStatus::Completed);
 }

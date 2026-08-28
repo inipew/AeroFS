@@ -28,11 +28,14 @@ pub async fn search_recursive(
     let mut total_scanned = 0;
     let mut queue: VecDeque<(VfsPath, usize)> = VecDeque::new();
 
-    let root_vfs = VfsPath::new(connection_id, start_path);
+    let root_vfs = VfsPath::new(connection_id, start_path)?;
     queue.push_back((root_vfs, 0));
 
     let regex_matcher = if is_regex {
-        Some(Regex::new(query).map_err(|e| VfsError::InvalidPath(format!("Invalid regex: {}", e)))?)
+        Some(
+            Regex::new(query)
+                .map_err(|e| VfsError::InvalidPath(format!("Invalid regex: {}", e)))?,
+        )
     } else {
         None
     };
@@ -76,8 +79,9 @@ pub async fn search_recursive(
 
             // If directory, enqueue child search
             if entry.kind == FileKind::Directory && depth < max_depth {
-                let child_vfs = VfsPath::new(connection_id, &entry.path);
-                queue.push_back((child_vfs, depth + 1));
+                if let Ok(child_vfs) = VfsPath::new(connection_id, &entry.path) {
+                    queue.push_back((child_vfs, depth + 1));
+                }
             }
         }
 

@@ -162,11 +162,21 @@ async fn test_embedded_static_assets_and_spa_fallback() {
 
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let content_type = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(content_type.contains("text/html"));
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let body_str = String::from_utf8_lossy(&body);
-    assert!(body_str.contains("<!DOCTYPE html>") || body_str.contains("<html") || body_str.contains("AeroFS") || body_str.contains("id=\"app\""));
+    assert!(
+        body_str.contains("<!DOCTYPE html>")
+            || body_str.contains("<html")
+            || body_str.contains("AeroFS")
+            || body_str.contains("id=\"app\"")
+    );
 
     // 2. Test SPA fallback route "/browse/some/deep/folder" -> returns index.html with 200 OK
     let req = Request::builder()
@@ -177,7 +187,12 @@ async fn test_embedded_static_assets_and_spa_fallback() {
 
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let content_type = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(content_type.contains("text/html"));
 }
 
@@ -196,7 +211,13 @@ async fn test_editor_save_preserves_destination_permissions() {
         .unwrap();
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
-    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let cookie_header = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
     // 1. Create file
@@ -205,9 +226,7 @@ async fn test_editor_save_preserves_destination_permissions() {
         .method("POST")
         .header(header::COOKIE, session_cookie)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "path": "/secure.conf" }).to_string(),
-        ))
+        .body(Body::from(json!({ "path": "/secure.conf" }).to_string()))
         .unwrap();
 
     let resp = app.clone().oneshot(create_req).await.unwrap();
@@ -253,7 +272,8 @@ async fn test_editor_save_preserves_destination_permissions() {
                 json!({
                     "path": "/secure.conf",
                     "content": "SECRET_KEY=ABCDEF123456"
-                }).to_string(),
+                })
+                .to_string(),
             ))
             .unwrap();
 
@@ -291,7 +311,13 @@ async fn test_max_editable_size_enforcement() {
         .unwrap();
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
-    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let cookie_header = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
     // Create file
@@ -300,9 +326,7 @@ async fn test_max_editable_size_enforcement() {
         .method("POST")
         .header(header::COOKIE, session_cookie)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "path": "/big.txt" }).to_string(),
-        ))
+        .body(Body::from(json!({ "path": "/big.txt" }).to_string()))
         .unwrap();
 
     let resp = app.clone().oneshot(create_req).await.unwrap();
@@ -319,7 +343,8 @@ async fn test_max_editable_size_enforcement() {
             json!({
                 "path": "/big.txt",
                 "content": huge_content
-            }).to_string(),
+            })
+            .to_string(),
         ))
         .unwrap();
 
@@ -342,7 +367,13 @@ async fn test_idempotency_key_deduplication() {
         .unwrap();
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
-    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let cookie_header = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
     let idempotency_key = "idemp-key-create-dir-12345";
@@ -377,7 +408,12 @@ async fn test_idempotency_key_deduplication() {
     let resp2 = app.clone().oneshot(duplicate_req).await.unwrap();
     assert_eq!(resp2.status(), StatusCode::CREATED);
     assert_eq!(
-        resp2.headers().get("x-cache-idempotency").unwrap().to_str().unwrap(),
+        resp2
+            .headers()
+            .get("x-cache-idempotency")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "HIT"
     );
 }
@@ -429,7 +465,13 @@ async fn test_preview_security_headers_isolation() {
         .unwrap();
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
-    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    let cookie_header = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
     // Create an HTML file
@@ -438,9 +480,7 @@ async fn test_preview_security_headers_isolation() {
         .method("POST")
         .header(header::COOKIE, session_cookie)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "path": "/vector.svg" }).to_string(),
-        ))
+        .body(Body::from(json!({ "path": "/vector.svg" }).to_string()))
         .unwrap();
 
     let resp = app.clone().oneshot(create_req).await.unwrap();
@@ -456,7 +496,8 @@ async fn test_preview_security_headers_isolation() {
             json!({
                 "path": "/vector.svg",
                 "content": "<svg><script>alert(1)</script></svg>"
-            }).to_string(),
+            })
+            .to_string(),
         ))
         .unwrap();
 
@@ -474,12 +515,19 @@ async fn test_preview_security_headers_isolation() {
     let resp = app.clone().oneshot(get_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
-        resp.headers().get("content-security-policy").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "default-src 'none'; sandbox"
     );
     assert_eq!(
-        resp.headers().get("x-content-type-options").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("x-content-type-options")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "nosniff"
     );
 }
-

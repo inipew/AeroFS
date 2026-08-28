@@ -93,13 +93,12 @@ pub async fn list_files(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
     let raw_path = query.path.unwrap_or_else(|| "/".to_string());
-    let vfs_path = VfsPath::new(&connection_id, raw_path);
+    let vfs_path = VfsPath::new(&connection_id, raw_path)?;
 
     let mut entries = provider.list(&vfs_path).await?;
 
@@ -130,8 +129,8 @@ pub async fn list_files(
                 "size" => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
                 "date" => a.modified_at.cmp(&b.modified_at),
                 "type" => {
-                    let ext_a = a.name.split('.').last().unwrap_or("");
-                    let ext_b = b.name.split('.').last().unwrap_or("");
+                    let ext_a = a.name.split('.').next_back().unwrap_or("");
+                    let ext_b = b.name.split('.').next_back().unwrap_or("");
                     ext_a.to_lowercase().cmp(&ext_b.to_lowercase())
                 }
                 _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
@@ -168,12 +167,11 @@ pub async fn stat_file(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let vfs_path = VfsPath::new(&connection_id, query.path);
+    let vfs_path = VfsPath::new(&connection_id, query.path)?;
     let meta = provider.stat(&vfs_path).await?;
 
     Ok(Json(meta))
@@ -196,12 +194,11 @@ pub async fn get_file_content(
     };
     check_permission(&state.db, &user, &connection_id, action).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let vfs_path = VfsPath::new(&connection_id, query.path);
+    let vfs_path = VfsPath::new(&connection_id, query.path)?;
     let meta = provider.stat(&vfs_path).await?;
 
     if meta.kind != FileKind::File {
@@ -277,7 +274,10 @@ pub async fn get_file_content(
     }
 
     // Handle ETag conditional caching: 304 Not Modified
-    if let Some(if_none_match) = req_headers.get(header::IF_NONE_MATCH).and_then(|h| h.to_str().ok()) {
+    if let Some(if_none_match) = req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|h| h.to_str().ok())
+    {
         let clean_client = if_none_match.trim().trim_matches('"');
         let clean_server = meta.etag.trim().trim_matches('"');
         if clean_client == clean_server || if_none_match == "*" {
@@ -306,7 +306,10 @@ pub async fn get_file_content(
                 } else {
                     // Bounded range: bytes=100-200
                     let s: u64 = parts[0].parse().unwrap_or(0);
-                    let e: u64 = parts[1].parse().unwrap_or(file_size.saturating_sub(1)).min(file_size.saturating_sub(1));
+                    let e: u64 = parts[1]
+                        .parse()
+                        .unwrap_or(file_size.saturating_sub(1))
+                        .min(file_size.saturating_sub(1));
                     (s, e)
                 };
 
@@ -320,7 +323,9 @@ pub async fn get_file_content(
                     resp_headers.insert(CONTENT_LENGTH, chunk_len.to_string().parse().unwrap());
                     resp_headers.insert(
                         header::CONTENT_RANGE,
-                        format!("bytes {}-{}/{}", start, end, file_size).parse().unwrap(),
+                        format!("bytes {}-{}/{}", start, end, file_size)
+                            .parse()
+                            .unwrap(),
                     );
                     return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body));
                 } else {
@@ -331,7 +336,11 @@ pub async fn get_file_content(
                         header::CONTENT_RANGE,
                         format!("bytes */{}", file_size).parse().unwrap(),
                     );
-                    return Ok((StatusCode::RANGE_NOT_SATISFIABLE, unsat_headers, Body::empty()));
+                    return Ok((
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        unsat_headers,
+                        Body::empty(),
+                    ));
                 }
             }
         }
@@ -355,15 +364,21 @@ pub async fn update_file_content(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let vfs_path = VfsPath::new(&connection_id, &payload.path);
+    let vfs_path = VfsPath::new(&connection_id, &payload.path)?;
 
-    // Limit check: enforce max_editable_size
-    let max_editable_bytes = state.config.limits.max_editable_size;
+    // Limit check: enforce max_editable_size (dynamic check)
+    let max_editable_bytes =
+        if let Some(custom) = state.get_system_setting("max_editable_size").await {
+            custom
+                .parse()
+                .unwrap_or(state.config.limits.max_editable_size)
+        } else {
+            state.config.limits.max_editable_size
+        };
     if payload.content.len() as u64 > max_editable_bytes {
         return Err(AppError::PayloadTooLarge(format!(
             "File content length ({} bytes) exceeds maximum editable size of {} bytes",
@@ -388,32 +403,42 @@ pub async fn update_file_content(
         }
     }
 
-    // Destination permission preservation: capture existing permissions before atomic overwrite
-    let existing_perms = provider.stat(&vfs_path).await.ok().and_then(|m| m.permissions);
+    // Destination permission preservation: capture existing permissions or inherit from parent
+    let target_perms = crate::domain::resolve_destination_permissions(
+        &provider,
+        &vfs_path,
+        false,
+        crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+    )
+    .await;
 
     // Atomic write safety: write to temporary path first then rename to prevent corrupt target on disconnect
     let bytes = payload.content.into_bytes();
-    let tmp_vfs = VfsPath::new(&connection_id, format!("{}.aerofs.tmp", vfs_path.path));
+    let tmp_vfs = VfsPath::new(&connection_id, format!("{}.aerofs.tmp", vfs_path.path))?;
     let cursor = Cursor::new(bytes.clone());
 
-    if provider.write_stream(&tmp_vfs, Box::new(cursor)).await.is_ok() {
-        if let Some(ref perms) = existing_perms {
+    if provider
+        .write_stream(&tmp_vfs, Box::new(cursor))
+        .await
+        .is_ok()
+    {
+        if let Some(ref perms) = target_perms {
             let _ = provider.set_permissions(&tmp_vfs, perms).await;
         }
         if provider.rename(&tmp_vfs, &vfs_path).await.is_err() {
             let fallback = Cursor::new(bytes);
             provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-            if let Some(ref perms) = existing_perms {
+            if let Some(ref perms) = target_perms {
                 let _ = provider.set_permissions(&vfs_path, perms).await;
             }
             let _ = provider.delete(&tmp_vfs).await;
-        } else if let Some(ref perms) = existing_perms {
+        } else if let Some(ref perms) = target_perms {
             let _ = provider.set_permissions(&vfs_path, perms).await;
         }
     } else {
         let fallback = Cursor::new(bytes);
         provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-        if let Some(ref perms) = existing_perms {
+        if let Some(ref perms) = target_perms {
             let _ = provider.set_permissions(&vfs_path, perms).await;
         }
     }
@@ -457,13 +482,23 @@ pub async fn create_file(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let vfs_path = VfsPath::new(&connection_id, payload.path);
+    let vfs_path = VfsPath::new(&connection_id, payload.path)?;
     provider.create_file(&vfs_path).await?;
+
+    if let Some(perms) = crate::domain::resolve_destination_permissions(
+        &provider,
+        &vfs_path,
+        false,
+        crate::domain::PermissionInheritanceMode::InheritParent,
+    )
+    .await
+    {
+        let _ = provider.set_permissions(&vfs_path, &perms).await;
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -483,13 +518,23 @@ pub async fn create_directory(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let vfs_path = VfsPath::new(&connection_id, payload.path);
+    let vfs_path = VfsPath::new(&connection_id, payload.path)?;
     provider.create_dir(&vfs_path).await?;
+
+    if let Some(perms) = crate::domain::resolve_destination_permissions(
+        &provider,
+        &vfs_path,
+        true,
+        crate::domain::PermissionInheritanceMode::InheritParent,
+    )
+    .await
+    {
+        let _ = provider.set_permissions(&vfs_path, &perms).await;
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -523,10 +568,9 @@ pub async fn delete_files(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Delete).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
     let mut tasks = tokio::task::JoinSet::new();
@@ -537,7 +581,10 @@ pub async fn delete_files(
         let sem = semaphore.clone();
         tasks.spawn(async move {
             let _permit = sem.acquire().await;
-            let vfs_path = VfsPath::new(&conn_id, &p);
+            let vfs_path = match VfsPath::new(&conn_id, &p) {
+                Ok(v) => v,
+                Err(e) => return (p, Err(e)),
+            };
             let res = provider.delete(&vfs_path).await;
             (p, res)
         });
@@ -566,7 +613,11 @@ pub async fn delete_files(
     let message = if success {
         format!("Deleted {} item(s)", succeeded.len())
     } else {
-        format!("Deleted {} item(s), {} failed", succeeded.len(), failed.len())
+        format!(
+            "Deleted {} item(s), {} failed",
+            succeeded.len(),
+            failed.len()
+        )
     };
 
     Ok(Json(DeleteResponse {
@@ -586,13 +637,12 @@ pub async fn rename_entry(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let from_vfs = VfsPath::new(&connection_id, &payload.from);
-    let to_vfs = VfsPath::new(&connection_id, &payload.to);
+    let from_vfs = VfsPath::new(&connection_id, &payload.from)?;
+    let to_vfs = VfsPath::new(&connection_id, &payload.to)?;
 
     provider.rename(&from_vfs, &to_vfs).await?;
 
@@ -623,13 +673,12 @@ pub async fn copy_entry(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let from_vfs = VfsPath::new(&connection_id, &payload.from);
-    let to_vfs = VfsPath::new(&connection_id, &payload.to);
+    let from_vfs = VfsPath::new(&connection_id, &payload.from)?;
+    let to_vfs = VfsPath::new(&connection_id, &payload.to)?;
 
     provider.copy(&from_vfs, &to_vfs).await?;
 
@@ -659,10 +708,9 @@ pub async fn upload_file(
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Upload).await?;
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
     let mut dest_dir = "/".to_string();
     let mut uploaded_files = Vec::new();
@@ -684,17 +732,23 @@ pub async fn upload_file(
             let target_path = VfsPath::new(
                 &connection_id,
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
-            );
-            let part_path = VfsPath::new(
-                &connection_id,
-                format!("{}.aerofs.part", target_path.path),
-            );
+            )?;
+            let part_path =
+                VfsPath::new(&connection_id, format!("{}.aerofs.part", target_path.path))?;
 
-            let existing_perms = provider.stat(&target_path).await.ok().and_then(|m| m.permissions);
+            let target_perms = crate::domain::resolve_destination_permissions(
+                &provider,
+                &target_path,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await;
 
             // Free-space preflight: check host disk capacity for local storage
             if connection_id == "local" {
-                if let Some(free_bytes) = get_available_disk_space(&state.config.filesystem.default_local_root) {
+                if let Some(free_bytes) =
+                    get_available_disk_space(&state.config.filesystem.default_local_root)
+                {
                     if free_bytes < 10 * 1024 * 1024 {
                         return Err(AppError::InsufficientStorage(format!(
                             "Local filesystem storage full: only {} MB free",
@@ -710,7 +764,9 @@ pub async fn upload_file(
                 let provider = provider.clone();
                 let part_path = part_path.clone();
                 async move {
-                    provider.write_stream(&part_path, Box::new(duplex_reader)).await
+                    provider
+                        .write_stream(&part_path, Box::new(duplex_reader))
+                        .await
                 }
             });
 
@@ -734,7 +790,10 @@ pub async fn upload_file(
                     break;
                 }
                 if let Err(e) = duplex_writer.write_all(&chunk).await {
-                    stream_err = Some(AppError::Internal(anyhow::anyhow!("Failed writing upload chunk: {}", e)));
+                    stream_err = Some(AppError::Internal(anyhow::anyhow!(
+                        "Failed writing upload chunk: {}",
+                        e
+                    )));
                     break;
                 }
             }
@@ -746,17 +805,17 @@ pub async fn upload_file(
                 return Err(err);
             }
 
-            let write_res = write_handle
-                .await
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e)))?;
+            let write_res = write_handle.await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e))
+            })?;
 
             if let Err(e) = write_res {
                 let _ = provider.delete(&part_path).await;
                 return Err(AppError::from(e));
             }
 
-            // If target already existed, apply its permissions to .part before promoting
-            if let Some(ref perms) = existing_perms {
+            // If target already existed or parent perms found, apply to .part before promoting
+            if let Some(ref perms) = target_perms {
                 let _ = provider.set_permissions(&part_path, perms).await;
             }
 
@@ -767,13 +826,14 @@ pub async fn upload_file(
                     let _ = provider.delete(&part_path).await;
                     return Err(AppError::Internal(anyhow::anyhow!(
                         "Failed finalizing uploaded file: rename error ({}), copy error ({})",
-                        rename_err, copy_err
+                        rename_err,
+                        copy_err
                     )));
                 }
                 let _ = provider.delete(&part_path).await;
             }
 
-            if let Some(ref perms) = existing_perms {
+            if let Some(ref perms) = target_perms {
                 let _ = provider.set_permissions(&target_path, perms).await;
             }
 
@@ -808,12 +868,11 @@ pub async fn chmod_file(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
-    let vfs_path = VfsPath::new(&connection_id, &payload.path);
+    let vfs_path = VfsPath::new(&connection_id, &payload.path)?;
 
     let formatted_mode = format!("{:04o}", payload.mode);
     provider.set_permissions(&vfs_path, &formatted_mode).await?;
@@ -849,7 +908,9 @@ pub async fn chmod_file(
 
     #[cfg(not(unix))]
     {
-        return Err(AppError::BadRequest("CHMOD is only supported on Unix systems".into()));
+        return Err(AppError::BadRequest(
+            "CHMOD is only supported on Unix systems".into(),
+        ));
     }
 
     crate::auth::record_audit_log(
@@ -860,7 +921,10 @@ pub async fn chmod_file(
         Some(&vfs_path.path),
         "SUCCESS",
         None,
-        Some(&format!("Changed permissions to {:o} on {}", payload.mode, vfs_path.path)),
+        Some(&format!(
+            "Changed permissions to {:o} on {}",
+            payload.mode, vfs_path.path
+        )),
     )
     .await;
 
@@ -926,8 +990,8 @@ pub async fn get_storage_info(
             if let Ok(c_path) = std::ffi::CString::new(root.to_string_lossy().as_bytes()) {
                 if unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) } == 0 {
                     let stat = unsafe { stat.assume_init() };
-                    let total = (stat.f_blocks as u64) * (stat.f_frsize as u64);
-                    let free = (stat.f_bavail as u64) * (stat.f_frsize as u64);
+                    let total = stat.f_blocks * stat.f_frsize;
+                    let free = stat.f_bavail * stat.f_frsize;
                     let used = total.saturating_sub(free);
                     let pct = if total > 0 {
                         ((used as f64 / total as f64) * 100.0) as u8
@@ -964,13 +1028,12 @@ pub async fn get_storage_info(
     }
 
     // For Remote / FTP connections
-    let row: Option<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
-        "SELECT name, provider, host, port FROM connections WHERE id = ?"
-    )
-    .bind(&connection_id)
-    .fetch_optional(&state.db)
-    .await
-    .unwrap_or(None);
+    let row: Option<(String, String, Option<String>, Option<i64>)> =
+        sqlx::query_as("SELECT name, provider, host, port FROM connections WHERE id = ?")
+            .bind(&connection_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
 
     if let Some((name, provider, host, port)) = row {
         let port_str = port.map(|p| p.to_string()).unwrap_or_else(|| "21".into());
@@ -1001,7 +1064,10 @@ pub async fn get_storage_info(
 
 fn format_bytes_str(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 * 1024 {
-        format!("{:.1} TiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0))
+        format!(
+            "{:.1} TiB",
+            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
+        )
     } else if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {

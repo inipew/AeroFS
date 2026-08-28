@@ -153,14 +153,19 @@ impl FileSystem for OpenDalFileSystem {
         if path.is_root() {
             let real_meta = match self.operator.stat("/").await {
                 Ok(m) => Some(m),
-                Err(e) if e.kind() == ErrorKind::NotFound || e.kind() == ErrorKind::Unsupported => None,
+                Err(e) if e.kind() == ErrorKind::NotFound || e.kind() == ErrorKind::Unsupported => {
+                    None
+                }
                 Err(e) => return Err(map_opendal_error(e, "Failed to stat root directory")),
             };
             let size = real_meta.as_ref().map(|m| m.content_length()).unwrap_or(0);
-            let modified_at = real_meta.as_ref().and_then(|m| m.last_modified()).map(|dt| {
-                let st: std::time::SystemTime = dt.into();
-                chrono::DateTime::<chrono::Utc>::from(st)
-            });
+            let modified_at = real_meta
+                .as_ref()
+                .and_then(|m| m.last_modified())
+                .map(|dt| {
+                    let st: std::time::SystemTime = dt.into();
+                    chrono::DateTime::<chrono::Utc>::from(st)
+                });
 
             let mut permissions = None;
             #[cfg(unix)]
@@ -217,8 +222,9 @@ impl FileSystem for OpenDalFileSystem {
             let mode = if clean_perms.is_empty() {
                 0o000
             } else {
-                u32::from_str_radix(clean_perms, 8)
-                    .map_err(|e| VfsError::InvalidPath(format!("Invalid octal mode '{}': {}", permissions, e)))?
+                u32::from_str_radix(clean_perms, 8).map_err(|e| {
+                    VfsError::InvalidPath(format!("Invalid octal mode '{}': {}", permissions, e))
+                })?
             };
             let abs_path = root.join(path.path.trim_start_matches('/'));
             std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(mode))
@@ -234,27 +240,33 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn read_stream(&self, path: &VfsPath) -> Result<AsyncReadBox, VfsError> {
         let op_path = self.to_operator_path(path)?;
-        let reader = self
-            .operator
-            .reader(&op_path)
-            .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to open reader for '{}'", path.path)))?;
+        let reader = self.operator.reader(&op_path).await.map_err(|e| {
+            map_opendal_error(e, &format!("Failed to open reader for '{}'", path.path))
+        })?;
 
         // P0 #4: Stream error propagation using tokio_util StreamReader
         let stream = reader
             .into_bytes_stream(..)
             .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to open bytes stream for '{}'", path.path)))?
-            .map(|res| {
-                res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            });
+            .map_err(|e| {
+                map_opendal_error(
+                    e,
+                    &format!("Failed to open bytes stream for '{}'", path.path),
+                )
+            })?
+            .map(|res| res.map_err(|e| std::io::Error::other(e.to_string())));
 
         let async_reader = tokio_util::io::StreamReader::new(stream);
         Ok(Box::new(async_reader))
     }
 
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path, offset = %offset, length = %length))]
-    async fn read_range(&self, path: &VfsPath, offset: u64, length: u64) -> Result<AsyncReadBox, VfsError> {
+    async fn read_range(
+        &self,
+        path: &VfsPath,
+        offset: u64,
+        length: u64,
+    ) -> Result<AsyncReadBox, VfsError> {
         let op_path = self.to_operator_path(path)?;
         if length == 0 {
             return Ok(Box::new(std::io::Cursor::new(Vec::new())));
@@ -272,19 +284,23 @@ impl FileSystem for OpenDalFileSystem {
         }
 
         let end = offset.saturating_add(length).min(file_size);
-        let reader = self
-            .operator
-            .reader(&op_path)
-            .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to open range reader for '{}'", path.path)))?;
+        let reader = self.operator.reader(&op_path).await.map_err(|e| {
+            map_opendal_error(
+                e,
+                &format!("Failed to open range reader for '{}'", path.path),
+            )
+        })?;
 
         let stream = reader
             .into_bytes_stream(offset..end)
             .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to open bytes range stream for '{}'", path.path)))?
-            .map(|res| {
-                res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            });
+            .map_err(|e| {
+                map_opendal_error(
+                    e,
+                    &format!("Failed to open bytes range stream for '{}'", path.path),
+                )
+            })?
+            .map(|res| res.map_err(|e| std::io::Error::other(e.to_string())));
 
         let async_reader = tokio_util::io::StreamReader::new(stream);
         Ok(Box::new(async_reader))
@@ -293,11 +309,9 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self, input), fields(conn = %self.connection_id, path = %path.path))]
     async fn write_stream(&self, path: &VfsPath, mut input: AsyncReadBox) -> Result<(), VfsError> {
         let op_path = self.to_operator_path(path)?;
-        let mut writer = self
-            .operator
-            .writer(&op_path)
-            .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to open writer for '{}'", path.path)))?;
+        let mut writer = self.operator.writer(&op_path).await.map_err(|e| {
+            map_opendal_error(e, &format!("Failed to open writer for '{}'", path.path))
+        })?;
 
         // P2 #2: Zero-copy BytesMut buffer optimization
         let mut buf = BytesMut::with_capacity(64 * 1024);
@@ -312,16 +326,14 @@ impl FileSystem for OpenDalFileSystem {
                 break;
             }
             buf.truncate(n);
-            writer
-                .write(buf.split().freeze())
-                .await
-                .map_err(|e| map_opendal_error(e, &format!("Write chunk failed for '{}'", path.path)))?;
+            writer.write(buf.split().freeze()).await.map_err(|e| {
+                map_opendal_error(e, &format!("Write chunk failed for '{}'", path.path))
+            })?;
         }
 
-        writer
-            .close()
-            .await
-            .map_err(|e| map_opendal_error(e, &format!("Failed to finalize write for '{}'", path.path)))?;
+        writer.close().await.map_err(|e| {
+            map_opendal_error(e, &format!("Failed to finalize write for '{}'", path.path))
+        })?;
 
         Ok(())
     }
@@ -365,10 +377,12 @@ impl FileSystem for OpenDalFileSystem {
                 if let Ok(entries) = self.list(path).await {
                     if !entries.is_empty() {
                         use futures::StreamExt;
-                        let stream = futures::stream::iter(entries.into_iter().map(|entry| {
-                            let child_vfs = VfsPath::new(&self.connection_id, &entry.path);
-                            async move { Box::pin(self.delete(&child_vfs)).await }
-                        }));
+                        let stream =
+                            futures::stream::iter(entries.into_iter().filter_map(|entry| {
+                                let child_vfs =
+                                    VfsPath::new(&self.connection_id, &entry.path).ok()?;
+                                Some(async move { Box::pin(self.delete(&child_vfs)).await })
+                            }));
                         let mut buffered = stream.buffer_unordered(16);
                         while let Some(res) = buffered.next().await {
                             res?;
@@ -383,7 +397,10 @@ impl FileSystem for OpenDalFileSystem {
                     }
                 }
 
-                Err(map_opendal_error(e, &format!("Failed to delete '{}'", path.path)))
+                Err(map_opendal_error(
+                    e,
+                    &format!("Failed to delete '{}'", path.path),
+                ))
             }
         }
     }
@@ -411,14 +428,20 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, from = %from.path, to = %to.path))]
     async fn copy(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError> {
         let meta = self.stat(from).await?;
+        let existing_dst_perms = self.stat(to).await.ok().and_then(|m| m.permissions);
+
         if meta.kind == FileKind::Directory {
             self.create_dir(to).await?;
             let entries = self.list(from).await?;
             for entry in entries {
                 let child_name = entry.name;
-                let child_from = VfsPath::new(&from.connection_id, format!("{}/{}", from.path.trim_end_matches('/'), child_name));
-                let child_to = VfsPath::new(&to.connection_id, format!("{}/{}", to.path.trim_end_matches('/'), child_name));
+                let child_from = from.join(&child_name)?;
+                let child_to = to.join(&child_name)?;
                 Box::pin(self.copy(&child_from, &child_to)).await?;
+            }
+
+            if let Some(ref perms) = meta.permissions {
+                let _ = self.set_permissions(to, perms).await;
             }
             return Ok(());
         }
@@ -428,16 +451,24 @@ impl FileSystem for OpenDalFileSystem {
 
         // P0 #5: Selective copy fallback
         match self.operator.copy(&from_path, &to_path).await {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             Err(e) if e.kind() == ErrorKind::Unsupported => {
                 let stream = self.read_stream(from).await?;
                 self.write_stream(to, stream).await?;
-                Ok(())
             }
-            Err(e) => Err(map_opendal_error(
-                e,
-                &format!("Failed to copy '{}' to '{}'", from.path, to.path),
-            )),
+            Err(e) => {
+                return Err(map_opendal_error(
+                    e,
+                    &format!("Failed to copy '{}' to '{}'", from.path, to.path),
+                ));
+            }
         }
+
+        // Apply permission inheritance / preservation
+        if let Some(ref perms) = existing_dst_perms.or(meta.permissions) {
+            let _ = self.set_permissions(to, perms).await;
+        }
+
+        Ok(())
     }
 }

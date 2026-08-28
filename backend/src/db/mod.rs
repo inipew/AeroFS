@@ -84,9 +84,12 @@ pub async fn backup_db(pool: &DbPool, target_path: &Path) -> anyhow::Result<()> 
         std::fs::create_dir_all(parent)?;
     }
     let target_str = target_path.to_string_lossy();
-    sqlx::query(&format!("VACUUM INTO '{}';", target_str.replace('\'', "''")))
-        .execute(pool)
-        .await?;
+    sqlx::query(&format!(
+        "VACUUM INTO '{}';",
+        target_str.replace('\'', "''")
+    ))
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -101,18 +104,25 @@ async fn seed_default_admin(pool: &DbPool) -> anyhow::Result<()> {
         let default_password = match std::env::var("AEROFS_ADMIN_PASSWORD") {
             Ok(p) => p,
             Err(_) => {
-                if std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into()) == "development"
+                if std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into())
+                    == "development"
                     || cfg!(test)
                 {
                     "admin12345".to_string()
                 } else {
-                    let random_pass = format!("aerofs_{}", &Uuid::new_v4().to_string().replace('-', "")[..16]);
+                    let random_pass = format!(
+                        "aerofs_{}",
+                        &Uuid::new_v4().to_string().replace('-', "")[..16]
+                    );
                     eprintln!("============================================================");
                     eprintln!(" AeroFS First Boot Admin Password Generated:");
                     eprintln!(" Username: admin");
                     eprintln!(" Password: {}", random_pass);
                     eprintln!("============================================================");
-                    tracing::warn!("Generated random bootstrap admin credentials: {}", random_pass);
+                    tracing::warn!(
+                        "Generated random bootstrap admin credentials: {}",
+                        random_pass
+                    );
                     random_pass
                 }
             }

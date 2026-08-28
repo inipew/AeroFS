@@ -81,13 +81,12 @@ impl AppState {
     }
 
     pub async fn get_system_setting(&self, key: &str) -> Option<String> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT value FROM system_settings WHERE key = ?",
-        )
-        .bind(key)
-        .fetch_optional(&self.db)
-        .await
-        .unwrap_or(None);
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM system_settings WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
 
         row.map(|r| r.0)
     }
@@ -108,18 +107,21 @@ impl AppState {
     }
 
     pub async fn get_user_preferences(&self, user_id: &str) -> Option<String> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT preferences_json FROM user_preferences WHERE user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.db)
-        .await
-        .unwrap_or(None);
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT preferences_json FROM user_preferences WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
 
         row.map(|r| r.0)
     }
 
-    pub async fn set_user_preferences(&self, user_id: &str, preferences_json: &str) -> anyhow::Result<()> {
+    pub async fn set_user_preferences(
+        &self,
+        user_id: &str,
+        preferences_json: &str,
+    ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO user_preferences (user_id, preferences_json, updated_at) VALUES (?, ?, ?)
@@ -134,7 +136,11 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn update_local_root(&self, new_root: PathBuf, allow_symlinks: bool) -> anyhow::Result<()> {
+    pub async fn update_local_root(
+        &self,
+        new_root: PathBuf,
+        allow_symlinks: bool,
+    ) -> anyhow::Result<()> {
         // Ensure root directory exists
         tokio::fs::create_dir_all(&new_root).await?;
 
@@ -146,9 +152,16 @@ impl AppState {
 
         // Persist to database
         self.set_system_setting("local_root", &root_str).await?;
-        self.set_system_setting("allow_symlinks", if allow_symlinks { "true" } else { "false" }).await?;
+        self.set_system_setting(
+            "allow_symlinks",
+            if allow_symlinks { "true" } else { "false" },
+        )
+        .await?;
 
-        tracing::info!("Updated and persisted Local Storage root path to: {:?}", new_root);
+        tracing::info!(
+            "Updated and persisted Local Storage root path to: {:?}",
+            new_root
+        );
         Ok(())
     }
 
@@ -162,13 +175,22 @@ impl AppState {
         };
 
         if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
-            tracing::error!("Failed to create local root directory {:?}: {}", local_root, e);
-            self.set_connection_error("local", &format!("Failed to create local directory: {}", e)).await;
+            tracing::error!(
+                "Failed to create local root directory {:?}: {}",
+                local_root,
+                e
+            );
+            self.set_connection_error("local", &format!("Failed to create local directory: {}", e))
+                .await;
         } else {
             let root_str = local_root.to_string_lossy().to_string();
             match build_fs_operator(&root_str) {
                 Ok(op) => {
-                    let local_fs = Arc::new(OpenDalFileSystem::new_local("local", op, local_root.clone()));
+                    let local_fs = Arc::new(OpenDalFileSystem::new_local(
+                        "local",
+                        op,
+                        local_root.clone(),
+                    ));
                     self.register_provider("local".to_string(), local_fs).await;
                     tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
                 }
@@ -180,7 +202,7 @@ impl AppState {
         }
 
         // 2. Query database for other enabled connections
-        let rows: Vec<(
+        type EnabledConnectionRow = (
             String,
             String,
             String,
@@ -188,7 +210,9 @@ impl AppState {
             Option<i64>,
             Option<String>,
             String,
-        )> = sqlx::query_as(
+        );
+
+        let rows: Vec<EnabledConnectionRow> = sqlx::query_as(
             "SELECT id, name, provider, host, port, username, base_path FROM connections WHERE enabled = 1",
         )
         .fetch_all(&self.db)
@@ -260,7 +284,11 @@ impl AppState {
                     )
                 }
                 other => {
-                    tracing::warn!("Unsupported provider type '{}' for connection '{}'", other, id);
+                    tracing::warn!(
+                        "Unsupported provider type '{}' for connection '{}'",
+                        other,
+                        id
+                    );
                     continue;
                 }
             };
@@ -269,11 +297,22 @@ impl AppState {
                 Ok(op) => {
                     let fs = Arc::new(OpenDalFileSystem::new(&id, op));
                     self.register_provider(id.clone(), fs).await;
-                    tracing::info!("Storage connection '{}' ('{}', {}) initialized successfully", id, name, provider_type);
+                    tracing::info!(
+                        "Storage connection '{}' ('{}', {}) initialized successfully",
+                        id,
+                        name,
+                        provider_type
+                    );
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    tracing::error!("Failed to initialize storage connection '{}' ('{}', {}): {}", id, name, provider_type, err_msg);
+                    tracing::error!(
+                        "Failed to initialize storage connection '{}' ('{}', {}): {}",
+                        id,
+                        name,
+                        provider_type,
+                        err_msg
+                    );
                     self.set_connection_error(&id, &err_msg).await;
                 }
             }

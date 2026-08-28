@@ -29,10 +29,9 @@ pub async fn search_files(
 ) -> Result<impl IntoResponse, AppError> {
     check_permission(&state.db, &user, &connection_id, PermissionAction::Read).await?;
 
-    let provider = state
-        .get_provider(&connection_id)
-        .await
-        .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", connection_id)))?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
 
     let start_path = params.path.unwrap_or_else(|| "/".to_string());
     let is_regex = params.regex.unwrap_or(false);

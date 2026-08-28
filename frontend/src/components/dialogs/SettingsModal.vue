@@ -468,6 +468,11 @@ async function fetchAdminSettings() {
   try {
     const resp = await apiClient.get('/settings');
     const data = resp.data;
+    if (data.max_editable_size) {
+      uiStore.setMaxEditableSize(data.max_editable_size);
+    } else if (data.settings?.file_manager?.max_editable_size) {
+      uiStore.setMaxEditableSize(data.settings.file_manager.max_editable_size);
+    }
     if (data.settings) {
       adminForm.value = {
         transfers: { ...adminForm.value.transfers, ...data.settings.transfers },

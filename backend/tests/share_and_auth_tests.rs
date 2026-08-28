@@ -88,7 +88,10 @@ async fn test_share_password_verification_and_protection() {
 
     // 3. Try accessing with WRONG password -> 401 Unauthorized
     let public_req_wrong_pwd = Request::builder()
-        .uri(format!("/api/v1/shares/public/{}?password=wrongpassword", token))
+        .uri(format!(
+            "/api/v1/shares/public/{}?password=wrongpassword",
+            token
+        ))
         .method("GET")
         .body(Body::empty())
         .unwrap();
@@ -98,7 +101,10 @@ async fn test_share_password_verification_and_protection() {
 
     // 4. Try accessing with CORRECT password -> 200 OK + file content
     let public_req_correct_pwd = Request::builder()
-        .uri(format!("/api/v1/shares/public/{}?password=mypassword123", token))
+        .uri(format!(
+            "/api/v1/shares/public/{}?password=mypassword123",
+            token
+        ))
         .method("GET")
         .body(Body::empty())
         .unwrap();

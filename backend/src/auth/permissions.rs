@@ -35,13 +35,12 @@ pub async fn check_permission(
 ) -> Result<(), AppError> {
     // 1. Centralized connection read_only policy enforcement
     if action.is_mutating() && connection_id != "local" {
-        let conn_row: Option<(i64,)> = sqlx::query_as(
-            "SELECT read_only FROM connections WHERE id = ?",
-        )
-        .bind(connection_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error checking connection status: {}", e))?;
+        let conn_row: Option<(i64,)> =
+            sqlx::query_as("SELECT read_only FROM connections WHERE id = ?")
+                .bind(connection_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| anyhow::anyhow!("Database error checking connection status: {}", e))?;
 
         if let Some((read_only,)) = conn_row {
             if read_only != 0 {

@@ -22,13 +22,15 @@ pub async fn list_audit_logs(
     Query(query): Query<AuditLogQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     if !user.is_admin {
-        return Err(AppError::Forbidden("Only administrators can view audit logs".into()));
+        return Err(AppError::Forbidden(
+            "Only administrators can view audit logs".into(),
+        ));
     }
 
     let limit = query.limit.unwrap_or(100).min(500);
     let offset = query.offset.unwrap_or(0);
 
-    let rows: Vec<(
+    type AuditLogDbRow = (
         String,
         Option<String>,
         String,
@@ -38,7 +40,9 @@ pub async fn list_audit_logs(
         Option<String>,
         Option<String>,
         String,
-    )> = sqlx::query_as(
+    );
+
+    let rows: Vec<AuditLogDbRow> = sqlx::query_as(
         "SELECT id, user_id, action, connection_id, path, status, ip_address, details, created_at 
          FROM audit_logs 
          ORDER BY created_at DESC 
@@ -51,7 +55,8 @@ pub async fn list_audit_logs(
     .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
     let mut logs = Vec::new();
-    for (id, user_id, action, connection_id, path, status, ip_address, details, created_at) in rows {
+    for (id, user_id, action, connection_id, path, status, ip_address, details, created_at) in rows
+    {
         logs.push(AuditLogEntry {
             id,
             user_id,

@@ -53,6 +53,18 @@ export const useUiStore = defineStore('ui', () => {
   });
 
   const toasts = ref<ToastMessage[]>([]);
+  const maxEditableSize = ref<number>(
+    (typeof localStorage !== 'undefined' && Number(localStorage.getItem('fb:limits:max_editable_size'))) || 10 * 1024 * 1024
+  );
+
+  function setMaxEditableSize(bytes: number) {
+    if (bytes > 0) {
+      maxEditableSize.value = bytes;
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('fb:limits:max_editable_size', String(bytes));
+      }
+    }
+  }
 
   function showToast(message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') {
     const id = Math.random().toString(36).substring(2, 9);
@@ -211,6 +223,8 @@ export const useUiStore = defineStore('ui', () => {
     mediaViewerFile,
     mediaViewerList,
     mediaViewerConnectionId,
+    maxEditableSize,
+    setMaxEditableSize,
     contextMenu,
     toasts,
     showToast,

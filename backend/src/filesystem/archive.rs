@@ -4,12 +4,14 @@ use crate::vfs::FileSystem;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
+use utoipa::ToSchema;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
@@ -35,12 +37,17 @@ impl ArchiveFormat {
 /// Validate archive entry path against Zip Slip, Directory Traversal, NUL bytes, Absolute paths, and Windows Prefixes
 pub fn validate_archive_entry_path(raw_name: &str) -> Result<String, SecurityError> {
     if raw_name.contains('\0') {
-        return Err(SecurityError::PathTraversal("NUL byte detected in archive entry path".into()));
+        return Err(SecurityError::PathTraversal(
+            "NUL byte detected in archive entry path".into(),
+        ));
     }
 
     let path_obj = Path::new(raw_name);
     if path_obj.is_absolute() {
-        return Err(SecurityError::PathTraversal(format!("Absolute path in archive rejected: {}", raw_name)));
+        return Err(SecurityError::PathTraversal(format!(
+            "Absolute path in archive rejected: {}",
+            raw_name
+        )));
     }
 
     for comp in path_obj.components() {
@@ -115,6 +122,15 @@ async fn stream_async_to_sync_writer<W: std::io::Write>(
     Ok(total)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveOverwriteMode {
+    #[default]
+    Overwrite,
+    Skip,
+    KeepBoth,
+}
+
 /// Compress selected files into a ZIP archive via streaming
 pub async fn compress_zip(
     provider: &Arc<dyn FileSystem>,
@@ -131,17 +147,21 @@ pub async fn compress_zip(
         let file = std::fs::File::create(&temp_path)
             .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
         let mut zip = ZipWriter::new(file);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         for rel in relative_paths {
             let full_vfs = if base_dir == "/" {
-                VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))
+                VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
             } else {
                 VfsPath::new(
                     connection_id,
-                    format!("{}/{}", base_dir.trim_end_matches('/'), rel.trim_start_matches('/')),
-                )
+                    format!(
+                        "{}/{}",
+                        base_dir.trim_end_matches('/'),
+                        rel.trim_start_matches('/')
+                    ),
+                )?
             };
 
             let meta = provider.stat(&full_vfs).await?;
@@ -170,12 +190,13 @@ pub async fn compress_zip(
     Ok(())
 }
 
-/// Extract a ZIP archive with streaming decompression and strict Zip Slip protection
+/// Extract a ZIP archive with streaming decompression, overwrite collision handling, and strict Zip Slip protection
 pub async fn extract_zip(
     provider: &Arc<dyn FileSystem>,
     archive_path: &VfsPath,
     target_dir: &str,
-) -> Result<usize, VfsError> {
+    overwrite_mode: ArchiveOverwriteMode,
+) -> Result<(usize, usize), VfsError> {
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed to create temp extract file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
@@ -239,8 +260,9 @@ pub async fn extract_zip(
                     .map_err(|e| VfsError::IoError(format!("Failed creating dir: {}", e)))?;
             } else {
                 if let Some(parent) = dest_on_disk.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| VfsError::IoError(format!("Failed creating parent dir: {}", e)))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        VfsError::IoError(format!("Failed creating parent dir: {}", e))
+                    })?;
                 }
 
                 total_uncompressed_bytes += zip_entry.size();
@@ -251,10 +273,12 @@ pub async fn extract_zip(
                     .into());
                 }
 
-                let mut out_file = std::fs::File::create(&dest_on_disk)
-                    .map_err(|e| VfsError::IoError(format!("Failed creating output file: {}", e)))?;
-                std::io::copy(&mut zip_entry, &mut out_file)
-                    .map_err(|e| VfsError::IoError(format!("Failed decompressing {}: {}", safe_name, e)))?;
+                let mut out_file = std::fs::File::create(&dest_on_disk).map_err(|e| {
+                    VfsError::IoError(format!("Failed creating output file: {}", e))
+                })?;
+                std::io::copy(&mut zip_entry, &mut out_file).map_err(|e| {
+                    VfsError::IoError(format!("Failed decompressing {}: {}", safe_name, e))
+                })?;
             }
 
             list.push(ExtractedItem {
@@ -270,6 +294,7 @@ pub async fn extract_zip(
 
     // 3. Stream extracted items to provider VFS
     let mut extracted_count = 0;
+    let mut skipped_count = 0;
     for item in items {
         let full_dest_path = if target_dir == "/" {
             format!("/{}", item.rel_path.trim_start_matches('/'))
@@ -280,25 +305,81 @@ pub async fn extract_zip(
                 item.rel_path.trim_start_matches('/')
             )
         };
-        let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path);
+        let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path)?;
 
         if item.is_dir {
             let _ = provider.create_dir(&dest_vfs).await;
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                provider,
+                &dest_vfs,
+                true,
+                crate::domain::PermissionInheritanceMode::InheritParent,
+            )
+            .await
+            {
+                let _ = provider.set_permissions(&dest_vfs, &perms).await;
+            }
         } else {
-            if let Some(parent) = dest_vfs.parent() {
+            let exists = provider.stat(&dest_vfs).await.is_ok();
+            let final_dest_vfs = if exists {
+                match overwrite_mode {
+                    ArchiveOverwriteMode::Skip => {
+                        skipped_count += 1;
+                        continue;
+                    }
+                    ArchiveOverwriteMode::Overwrite => dest_vfs,
+                    ArchiveOverwriteMode::KeepBoth => {
+                        let mut counter = 1;
+                        let (stem, ext) = if let Some(idx) = dest_vfs.path.rfind('.') {
+                            (&dest_vfs.path[..idx], &dest_vfs.path[idx..])
+                        } else {
+                            (dest_vfs.path.as_str(), "")
+                        };
+                        let mut candidate = format!("{} ({}){}", stem, counter, ext);
+                        while let Ok(cand_vfs) =
+                            VfsPath::new(&archive_path.connection_id, &candidate)
+                        {
+                            if provider.stat(&cand_vfs).await.is_err() {
+                                break;
+                            }
+                            counter += 1;
+                            candidate = format!("{} ({}){}", stem, counter, ext);
+                        }
+                        VfsPath::new(&archive_path.connection_id, candidate)?
+                    }
+                }
+            } else {
+                dest_vfs
+            };
+
+            if let Some(parent) = final_dest_vfs.parent() {
                 let _ = provider.create_dir(&parent).await;
             }
             let disk_file = staging_root.join(&item.rel_path);
             let async_reader = tokio::fs::File::open(&disk_file)
                 .await
                 .map_err(|e| VfsError::IoError(format!("Failed reading staged file: {}", e)))?;
-            provider.write_stream(&dest_vfs, Box::new(async_reader)).await?;
+            provider
+                .write_stream(&final_dest_vfs, Box::new(async_reader))
+                .await?;
+
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                provider,
+                &final_dest_vfs,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await
+            {
+                let _ = provider.set_permissions(&final_dest_vfs, &perms).await;
+            }
+
             extracted_count += 1;
         }
     }
 
     let _ = tokio::fs::remove_file(&temp_path).await;
-    Ok(extracted_count)
+    Ok((extracted_count, skipped_count))
 }
 
 /// Compress selected files into a TAR.GZ archive via streaming
@@ -321,12 +402,16 @@ pub async fn compress_targz(
 
         for rel in relative_paths {
             let full_vfs = if base_dir == "/" {
-                VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))
+                VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
             } else {
                 VfsPath::new(
                     connection_id,
-                    format!("{}/{}", base_dir.trim_end_matches('/'), rel.trim_start_matches('/')),
-                )
+                    format!(
+                        "{}/{}",
+                        base_dir.trim_end_matches('/'),
+                        rel.trim_start_matches('/')
+                    ),
+                )?
             };
 
             let meta = provider.stat(&full_vfs).await?;
@@ -343,7 +428,11 @@ pub async fn compress_targz(
                 header.set_cksum();
 
                 tar_builder
-                    .append_data(&mut header, rel.trim_start_matches('/'), Cursor::new(content))
+                    .append_data(
+                        &mut header,
+                        rel.trim_start_matches('/'),
+                        Cursor::new(content),
+                    )
                     .map_err(|e| VfsError::IoError(format!("Tar append error: {}", e)))?;
             }
         }
@@ -367,12 +456,13 @@ pub async fn compress_targz(
     Ok(())
 }
 
-/// Extract a TAR.GZ archive with streaming decompression
+/// Extract a TAR.GZ archive with streaming decompression, overwrite collision handling, and strict security checks
 pub async fn extract_targz(
     provider: &Arc<dyn FileSystem>,
     archive_path: &VfsPath,
     target_dir: &str,
-) -> Result<usize, VfsError> {
+    overwrite_mode: ArchiveOverwriteMode,
+) -> Result<(usize, usize), VfsError> {
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed to create temp extract file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
@@ -425,12 +515,17 @@ pub async fn extract_targz(
                 .into());
             }
 
-            let mut entry = entry_res
-                .map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
+            let mut entry =
+                entry_res.map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
 
             let entry_type = entry.header().entry_type();
             // Block special devices, fifos, block devices, symlinks pointing outside
-            if entry_type.is_symlink() || entry_type.is_hard_link() || entry_type.is_fifo() || entry_type.is_character_special() || entry_type.is_block_special() {
+            if entry_type.is_symlink()
+                || entry_type.is_hard_link()
+                || entry_type.is_fifo()
+                || entry_type.is_character_special()
+                || entry_type.is_block_special()
+            {
                 continue; // Skip dangerous special nodes
             }
 
@@ -450,15 +545,17 @@ pub async fn extract_targz(
                     .map_err(|e| VfsError::IoError(format!("Failed creating dir: {}", e)))?;
             } else {
                 if let Some(parent) = dest_on_disk.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| VfsError::IoError(format!("Failed creating parent dir: {}", e)))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        VfsError::IoError(format!("Failed creating parent dir: {}", e))
+                    })?;
                 }
 
-                let mut out_file = std::fs::File::create(&dest_on_disk)
-                    .map_err(|e| VfsError::IoError(format!("Failed creating output file: {}", e)))?;
+                let mut out_file = std::fs::File::create(&dest_on_disk).map_err(|e| {
+                    VfsError::IoError(format!("Failed creating output file: {}", e))
+                })?;
                 let copied = std::io::copy(&mut entry, &mut out_file)
                     .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
-                
+
                 total_uncompressed_bytes += copied;
                 if total_uncompressed_bytes > MAX_UNCOMPRESSED_BYTES {
                     return Err(SecurityError::PathTraversal(
@@ -481,6 +578,7 @@ pub async fn extract_targz(
 
     // 3. Stream extracted items to provider VFS
     let mut extracted_count = 0;
+    let mut skipped_count = 0;
     for item in items {
         let full_dest_path = if target_dir == "/" {
             format!("/{}", item.rel_path.trim_start_matches('/'))
@@ -492,12 +590,54 @@ pub async fn extract_targz(
             )
         };
 
-        let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path);
+        let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path)?;
 
         if item.is_dir {
             let _ = provider.create_dir(&dest_vfs).await;
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                provider,
+                &dest_vfs,
+                true,
+                crate::domain::PermissionInheritanceMode::InheritParent,
+            )
+            .await
+            {
+                let _ = provider.set_permissions(&dest_vfs, &perms).await;
+            }
         } else {
-            if let Some(parent) = dest_vfs.parent() {
+            let exists = provider.stat(&dest_vfs).await.is_ok();
+            let final_dest_vfs = if exists {
+                match overwrite_mode {
+                    ArchiveOverwriteMode::Skip => {
+                        skipped_count += 1;
+                        continue;
+                    }
+                    ArchiveOverwriteMode::Overwrite => dest_vfs,
+                    ArchiveOverwriteMode::KeepBoth => {
+                        let mut counter = 1;
+                        let (stem, ext) = if let Some(idx) = dest_vfs.path.rfind('.') {
+                            (&dest_vfs.path[..idx], &dest_vfs.path[idx..])
+                        } else {
+                            (dest_vfs.path.as_str(), "")
+                        };
+                        let mut candidate = format!("{} ({}){}", stem, counter, ext);
+                        while let Ok(cand_vfs) =
+                            VfsPath::new(&archive_path.connection_id, &candidate)
+                        {
+                            if provider.stat(&cand_vfs).await.is_err() {
+                                break;
+                            }
+                            counter += 1;
+                            candidate = format!("{} ({}){}", stem, counter, ext);
+                        }
+                        VfsPath::new(&archive_path.connection_id, candidate)?
+                    }
+                }
+            } else {
+                dest_vfs
+            };
+
+            if let Some(parent) = final_dest_vfs.parent() {
                 let _ = provider.create_dir(&parent).await;
             }
 
@@ -505,13 +645,27 @@ pub async fn extract_targz(
             let async_reader = tokio::fs::File::open(&disk_file)
                 .await
                 .map_err(|e| VfsError::IoError(format!("Failed reading staged file: {}", e)))?;
-            provider.write_stream(&dest_vfs, Box::new(async_reader)).await?;
+            provider
+                .write_stream(&final_dest_vfs, Box::new(async_reader))
+                .await?;
+
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                provider,
+                &final_dest_vfs,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await
+            {
+                let _ = provider.set_permissions(&final_dest_vfs, &perms).await;
+            }
+
             extracted_count += 1;
         }
     }
 
     let _ = tokio::fs::remove_file(&temp_path).await;
-    Ok(extracted_count)
+    Ok((extracted_count, skipped_count))
 }
 
 /// Helper function to filter all indexed archive entries for a specific subpath in O(1) memory
@@ -577,14 +731,16 @@ fn filter_entries_by_subpath(
                 format!("{}/{}", clean_subpath, dir_name)
             };
 
-            directories.entry(dir_name.clone()).or_insert_with(|| VirtualArchiveEntry {
-                name: dir_name,
-                path: full_dir_path,
-                kind: "directory".into(),
-                size: 0,
-                compressed_size: None,
-                modified_at: None,
-            });
+            directories
+                .entry(dir_name.clone())
+                .or_insert_with(|| VirtualArchiveEntry {
+                    name: dir_name,
+                    path: full_dir_path,
+                    kind: "directory".into(),
+                    size: 0,
+                    compressed_size: None,
+                    modified_at: None,
+                });
         }
     }
 
@@ -628,71 +784,91 @@ pub async fn list_virtual_archive_entries(
     }
 
     let temp_path_clone = temp_path.clone();
-    let all_entries = tokio::task::spawn_blocking(move || -> Result<Vec<VirtualArchiveEntry>, VfsError> {
-        let mut entries = Vec::new();
-        match format {
-            ArchiveFormat::Zip => {
-                let file = std::fs::File::open(&temp_path_clone)
-                    .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
-                let mut zip = ZipArchive::new(file)
-                    .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
+    let all_entries =
+        tokio::task::spawn_blocking(move || -> Result<Vec<VirtualArchiveEntry>, VfsError> {
+            let mut entries = Vec::new();
+            match format {
+                ArchiveFormat::Zip => {
+                    let file = std::fs::File::open(&temp_path_clone)
+                        .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
+                    let mut zip = ZipArchive::new(file)
+                        .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
 
-                for i in 0..zip.len() {
-                    let file = zip.by_index(i)
-                        .map_err(|e| VfsError::IoError(format!("Failed reading zip index {}: {}", i, e)))?;
+                    for i in 0..zip.len() {
+                        let file = zip.by_index(i).map_err(|e| {
+                            VfsError::IoError(format!("Failed reading zip index {}: {}", i, e))
+                        })?;
 
-                    let raw_name = file.name().to_string();
-                    if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
-                        let is_dir = file.is_dir() || raw_name.ends_with('/');
-                        entries.push(VirtualArchiveEntry {
-                            name: safe_name.split('/').last().unwrap_or(&safe_name).to_string(),
-                            path: safe_name,
-                            kind: if is_dir { "directory".into() } else { "file".into() },
-                            size: file.size(),
-                            compressed_size: Some(file.compressed_size()),
-                            modified_at: None,
-                        });
+                        let raw_name = file.name().to_string();
+                        if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
+                            let is_dir = file.is_dir() || raw_name.ends_with('/');
+                            entries.push(VirtualArchiveEntry {
+                                name: safe_name
+                                    .split('/')
+                                    .next_back()
+                                    .unwrap_or(&safe_name)
+                                    .to_string(),
+                                path: safe_name,
+                                kind: if is_dir {
+                                    "directory".into()
+                                } else {
+                                    "file".into()
+                                },
+                                size: file.size(),
+                                compressed_size: Some(file.compressed_size()),
+                                modified_at: None,
+                            });
+                        }
+                    }
+                }
+                ArchiveFormat::TarGz => {
+                    let file = std::fs::File::open(&temp_path_clone)
+                        .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
+                    let gz_decoder = GzDecoder::new(file);
+                    let mut archive = tar::Archive::new(gz_decoder);
+
+                    let tar_entries = archive
+                        .entries()
+                        .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
+
+                    for entry_res in tar_entries {
+                        let entry = entry_res.map_err(|e| {
+                            VfsError::IoError(format!("Tar entry read error: {}", e))
+                        })?;
+
+                        let path_buf = entry
+                            .path()
+                            .map_err(|e| VfsError::IoError(format!("Invalid path in tar: {}", e)))?
+                            .to_path_buf();
+
+                        let raw_name = path_buf.to_string_lossy().to_string();
+                        if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
+                            let is_dir =
+                                entry.header().entry_type().is_dir() || raw_name.ends_with('/');
+                            entries.push(VirtualArchiveEntry {
+                                name: safe_name
+                                    .split('/')
+                                    .next_back()
+                                    .unwrap_or(&safe_name)
+                                    .to_string(),
+                                path: safe_name,
+                                kind: if is_dir {
+                                    "directory".into()
+                                } else {
+                                    "file".into()
+                                },
+                                size: entry.size(),
+                                compressed_size: None,
+                                modified_at: None,
+                            });
+                        }
                     }
                 }
             }
-            ArchiveFormat::TarGz => {
-                let file = std::fs::File::open(&temp_path_clone)
-                    .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
-                let gz_decoder = GzDecoder::new(file);
-                let mut archive = tar::Archive::new(gz_decoder);
-
-                let tar_entries = archive
-                    .entries()
-                    .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
-
-                for entry_res in tar_entries {
-                    let entry = entry_res
-                        .map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
-
-                    let path_buf = entry
-                        .path()
-                        .map_err(|e| VfsError::IoError(format!("Invalid path in tar: {}", e)))?
-                        .to_path_buf();
-
-                    let raw_name = path_buf.to_string_lossy().to_string();
-                    if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
-                        let is_dir = entry.header().entry_type().is_dir() || raw_name.ends_with('/');
-                        entries.push(VirtualArchiveEntry {
-                            name: safe_name.split('/').last().unwrap_or(&safe_name).to_string(),
-                            path: safe_name,
-                            kind: if is_dir { "directory".into() } else { "file".into() },
-                            size: entry.size(),
-                            compressed_size: None,
-                            modified_at: None,
-                        });
-                    }
-                }
-            }
-        }
-        Ok(entries)
-    })
-    .await
-    .map_err(|e| VfsError::IoError(format!("Blocking index task panicked: {}", e)))??;
+            Ok(entries)
+        })
+        .await
+        .map_err(|e| VfsError::IoError(format!("Blocking index task panicked: {}", e)))??;
 
     let _ = tokio::fs::remove_file(&temp_path).await;
 
@@ -737,7 +913,11 @@ pub async fn read_virtual_archive_entry(
     }
 
     let target_clean = entry_path.trim_matches('/').to_string();
-    let file_name = target_clean.split('/').last().unwrap_or("file").to_string();
+    let file_name = target_clean
+        .split('/')
+        .next_back()
+        .unwrap_or("file")
+        .to_string();
     let temp_path_clone = temp_path.clone();
     let target_clean_clone = target_clean.clone();
 
@@ -752,8 +932,9 @@ pub async fn read_virtual_archive_entry(
                     .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
 
                 for i in 0..zip.len() {
-                    let mut file = zip.by_index(i)
-                        .map_err(|e| VfsError::IoError(format!("Failed reading zip entry: {}", e)))?;
+                    let mut file = zip.by_index(i).map_err(|e| {
+                        VfsError::IoError(format!("Failed reading zip entry: {}", e))
+                    })?;
 
                     let raw_name = file.name().to_string();
                     if let Ok(safe_name) = validate_archive_entry_path(&raw_name) {
@@ -764,8 +945,9 @@ pub async fn read_virtual_archive_entry(
                                 ));
                             }
                             let mut buf = Vec::with_capacity(file.size() as usize);
-                            file.read_to_end(&mut buf)
-                                .map_err(|e| VfsError::IoError(format!("Failed reading zip content: {}", e)))?;
+                            file.read_to_end(&mut buf).map_err(|e| {
+                                VfsError::IoError(format!("Failed reading zip content: {}", e))
+                            })?;
                             return Ok(buf);
                         }
                     }
@@ -799,8 +981,9 @@ pub async fn read_virtual_archive_entry(
                                 ));
                             }
                             let mut buf = Vec::with_capacity(entry.size() as usize);
-                            entry.read_to_end(&mut buf)
-                                .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
+                            entry.read_to_end(&mut buf).map_err(|e| {
+                                VfsError::IoError(format!("Failed reading tar content: {}", e))
+                            })?;
                             return Ok(buf);
                         }
                     }
@@ -808,7 +991,10 @@ pub async fn read_virtual_archive_entry(
             }
         }
 
-        Err(VfsError::NotFound(format!("Entry '{}' not found in archive", target_clean_clone)))
+        Err(VfsError::NotFound(format!(
+            "Entry '{}' not found in archive",
+            target_clean_clone
+        )))
     })
     .await
     .map_err(|e| VfsError::IoError(format!("Blocking read task panicked: {}", e)))??;
@@ -817,13 +1003,14 @@ pub async fn read_virtual_archive_entry(
     Ok((file_name, content))
 }
 
-/// Extract selected entries from an archive into target_dir with streaming disk staging
+/// Extract selected entries from an archive into target_dir with streaming disk staging, overwrite collision handling, and permission inheritance
 pub async fn extract_selected_archive_entries(
     provider: &Arc<dyn FileSystem>,
     archive_path: &VfsPath,
     target_dir: &str,
     selected_entries: &[String],
-) -> Result<usize, VfsError> {
+    overwrite_mode: ArchiveOverwriteMode,
+) -> Result<(usize, usize), VfsError> {
     let format = ArchiveFormat::from_path(&archive_path.path).ok_or_else(|| {
         VfsError::IoError(format!("Unsupported archive format: {}", archive_path.path))
     })?;
@@ -857,118 +1044,184 @@ pub async fn extract_selected_archive_entries(
         is_dir: bool,
     }
 
-    let staged_entries = tokio::task::spawn_blocking(move || -> Result<Vec<StagedEntry>, VfsError> {
-        let mut list = Vec::new();
-        match format {
-            ArchiveFormat::Zip => {
-                let file = std::fs::File::open(&temp_path_clone)
-                    .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
-                let mut zip = ZipArchive::new(file)
-                    .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
+    let staged_entries =
+        tokio::task::spawn_blocking(move || -> Result<Vec<StagedEntry>, VfsError> {
+            let mut list = Vec::new();
+            match format {
+                ArchiveFormat::Zip => {
+                    let file = std::fs::File::open(&temp_path_clone)
+                        .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
+                    let mut zip = ZipArchive::new(file)
+                        .map_err(|e| VfsError::IoError(format!("Invalid zip archive: {}", e)))?;
 
-                for i in 0..zip.len() {
-                    let mut file = zip.by_index(i)
-                        .map_err(|e| VfsError::IoError(format!("Failed reading zip index: {}", e)))?;
+                    for i in 0..zip.len() {
+                        let mut file = zip.by_index(i).map_err(|e| {
+                            VfsError::IoError(format!("Failed reading zip index: {}", e))
+                        })?;
 
-                    let raw_name = file.name().to_string();
-                    let safe_name = validate_archive_entry_path(&raw_name)?;
+                        let raw_name = file.name().to_string();
+                        let safe_name = validate_archive_entry_path(&raw_name)?;
 
-                    let is_selected = selected_set.contains(&safe_name)
-                        || selected_set.iter().any(|prefix| safe_name.starts_with(&format!("{}/", prefix)));
+                        let is_selected = selected_set.contains(&safe_name)
+                            || selected_set
+                                .iter()
+                                .any(|prefix| safe_name.starts_with(&format!("{}/", prefix)));
 
-                    if !is_selected {
-                        continue;
-                    }
-
-                    let is_dir = file.is_dir() || raw_name.ends_with('/');
-                    let dest_path = staging_clone.join(&safe_name);
-
-                    if is_dir {
-                        std::fs::create_dir_all(&dest_path)
-                            .map_err(|e| VfsError::IoError(format!("Failed creating dir: {}", e)))?;
-                    } else {
-                        if let Some(parent) = dest_path.parent() {
-                            std::fs::create_dir_all(parent)
-                                .map_err(|e| VfsError::IoError(format!("Failed creating parent dir: {}", e)))?;
+                        if !is_selected {
+                            continue;
                         }
-                        let mut out_file = std::fs::File::create(&dest_path)
-                            .map_err(|e| VfsError::IoError(format!("Failed creating output file: {}", e)))?;
-                        std::io::copy(&mut file, &mut out_file)
-                            .map_err(|e| VfsError::IoError(format!("Failed decompressing {}: {}", safe_name, e)))?;
-                    }
 
-                    list.push(StagedEntry { safe_name, is_dir });
+                        let is_dir = file.is_dir() || raw_name.ends_with('/');
+                        let dest_path = staging_clone.join(&safe_name);
+
+                        if is_dir {
+                            std::fs::create_dir_all(&dest_path).map_err(|e| {
+                                VfsError::IoError(format!("Failed creating dir: {}", e))
+                            })?;
+                        } else {
+                            if let Some(parent) = dest_path.parent() {
+                                std::fs::create_dir_all(parent).map_err(|e| {
+                                    VfsError::IoError(format!("Failed creating parent dir: {}", e))
+                                })?;
+                            }
+                            let mut out_file = std::fs::File::create(&dest_path).map_err(|e| {
+                                VfsError::IoError(format!("Failed creating output file: {}", e))
+                            })?;
+                            std::io::copy(&mut file, &mut out_file).map_err(|e| {
+                                VfsError::IoError(format!(
+                                    "Failed decompressing {}: {}",
+                                    safe_name, e
+                                ))
+                            })?;
+                        }
+
+                        list.push(StagedEntry { safe_name, is_dir });
+                    }
+                }
+                ArchiveFormat::TarGz => {
+                    let file = std::fs::File::open(&temp_path_clone)
+                        .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
+                    let gz_decoder = GzDecoder::new(file);
+                    let mut archive = tar::Archive::new(gz_decoder);
+
+                    let entries = archive
+                        .entries()
+                        .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
+
+                    for entry_res in entries {
+                        let mut entry = entry_res.map_err(|e| {
+                            VfsError::IoError(format!("Tar entry read error: {}", e))
+                        })?;
+
+                        let path_buf = entry
+                            .path()
+                            .map_err(|e| VfsError::IoError(format!("Invalid path in tar: {}", e)))?
+                            .to_path_buf();
+
+                        let raw_name = path_buf.to_string_lossy().to_string();
+                        let safe_name = validate_archive_entry_path(&raw_name)?;
+
+                        let is_selected = selected_set.contains(&safe_name)
+                            || selected_set
+                                .iter()
+                                .any(|prefix| safe_name.starts_with(&format!("{}/", prefix)));
+
+                        if !is_selected {
+                            continue;
+                        }
+
+                        let is_dir =
+                            entry.header().entry_type().is_dir() || raw_name.ends_with('/');
+                        let dest_path = staging_clone.join(&safe_name);
+
+                        if is_dir {
+                            std::fs::create_dir_all(&dest_path).map_err(|e| {
+                                VfsError::IoError(format!("Failed creating dir: {}", e))
+                            })?;
+                        } else {
+                            if let Some(parent) = dest_path.parent() {
+                                std::fs::create_dir_all(parent).map_err(|e| {
+                                    VfsError::IoError(format!("Failed creating parent dir: {}", e))
+                                })?;
+                            }
+                            let mut out_file = std::fs::File::create(&dest_path).map_err(|e| {
+                                VfsError::IoError(format!("Failed creating output file: {}", e))
+                            })?;
+                            std::io::copy(&mut entry, &mut out_file).map_err(|e| {
+                                VfsError::IoError(format!("Failed reading tar content: {}", e))
+                            })?;
+                        }
+
+                        list.push(StagedEntry { safe_name, is_dir });
+                    }
                 }
             }
-            ArchiveFormat::TarGz => {
-                let file = std::fs::File::open(&temp_path_clone)
-                    .map_err(|e| VfsError::IoError(format!("Failed opening archive: {}", e)))?;
-                let gz_decoder = GzDecoder::new(file);
-                let mut archive = tar::Archive::new(gz_decoder);
-
-                let entries = archive
-                    .entries()
-                    .map_err(|e| VfsError::IoError(format!("Invalid tar archive: {}", e)))?;
-
-                for entry_res in entries {
-                    let mut entry = entry_res
-                        .map_err(|e| VfsError::IoError(format!("Tar entry read error: {}", e)))?;
-
-                    let path_buf = entry
-                        .path()
-                        .map_err(|e| VfsError::IoError(format!("Invalid path in tar: {}", e)))?
-                        .to_path_buf();
-
-                    let raw_name = path_buf.to_string_lossy().to_string();
-                    let safe_name = validate_archive_entry_path(&raw_name)?;
-
-                    let is_selected = selected_set.contains(&safe_name)
-                        || selected_set.iter().any(|prefix| safe_name.starts_with(&format!("{}/", prefix)));
-
-                    if !is_selected {
-                        continue;
-                    }
-
-                    let is_dir = entry.header().entry_type().is_dir() || raw_name.ends_with('/');
-                    let dest_path = staging_clone.join(&safe_name);
-
-                    if is_dir {
-                        std::fs::create_dir_all(&dest_path)
-                            .map_err(|e| VfsError::IoError(format!("Failed creating dir: {}", e)))?;
-                    } else {
-                        if let Some(parent) = dest_path.parent() {
-                            std::fs::create_dir_all(parent)
-                                .map_err(|e| VfsError::IoError(format!("Failed creating parent dir: {}", e)))?;
-                        }
-                        let mut out_file = std::fs::File::create(&dest_path)
-                            .map_err(|e| VfsError::IoError(format!("Failed creating output file: {}", e)))?;
-                        std::io::copy(&mut entry, &mut out_file)
-                            .map_err(|e| VfsError::IoError(format!("Failed reading tar content: {}", e)))?;
-                    }
-
-                    list.push(StagedEntry { safe_name, is_dir });
-                }
-            }
-        }
-        Ok(list)
-    })
-    .await
-    .map_err(|e| VfsError::IoError(format!("Blocking extract selected panicked: {}", e)))??;
+            Ok(list)
+        })
+        .await
+        .map_err(|e| VfsError::IoError(format!("Blocking extract selected panicked: {}", e)))??;
 
     let mut extracted_count = 0;
+    let mut skipped_count = 0;
     for entry in staged_entries {
         let full_dest_path = if target_dir == "/" {
             format!("/{}", entry.safe_name.trim_start_matches('/'))
         } else {
-            format!("{}/{}", target_dir.trim_end_matches('/'), entry.safe_name.trim_start_matches('/'))
+            format!(
+                "{}/{}",
+                target_dir.trim_end_matches('/'),
+                entry.safe_name.trim_start_matches('/')
+            )
         };
 
-        let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path);
+        let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path)?;
 
         if entry.is_dir {
             let _ = provider.create_dir(&dest_vfs).await;
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                provider,
+                &dest_vfs,
+                true,
+                crate::domain::PermissionInheritanceMode::InheritParent,
+            )
+            .await
+            {
+                let _ = provider.set_permissions(&dest_vfs, &perms).await;
+            }
         } else {
-            if let Some(parent) = dest_vfs.parent() {
+            let exists = provider.stat(&dest_vfs).await.is_ok();
+            let final_dest_vfs = if exists {
+                match overwrite_mode {
+                    ArchiveOverwriteMode::Skip => {
+                        skipped_count += 1;
+                        continue;
+                    }
+                    ArchiveOverwriteMode::Overwrite => dest_vfs,
+                    ArchiveOverwriteMode::KeepBoth => {
+                        let mut counter = 1;
+                        let (stem, ext) = if let Some(idx) = dest_vfs.path.rfind('.') {
+                            (&dest_vfs.path[..idx], &dest_vfs.path[idx..])
+                        } else {
+                            (dest_vfs.path.as_str(), "")
+                        };
+                        let mut candidate = format!("{} ({}){}", stem, counter, ext);
+                        while let Ok(cand_vfs) =
+                            VfsPath::new(&archive_path.connection_id, &candidate)
+                        {
+                            if provider.stat(&cand_vfs).await.is_err() {
+                                break;
+                            }
+                            counter += 1;
+                            candidate = format!("{} ({}){}", stem, counter, ext);
+                        }
+                        VfsPath::new(&archive_path.connection_id, candidate)?
+                    }
+                }
+            } else {
+                dest_vfs
+            };
+
+            if let Some(parent) = final_dest_vfs.parent() {
                 let _ = provider.create_dir(&parent).await;
             }
 
@@ -976,11 +1229,25 @@ pub async fn extract_selected_archive_entries(
             let async_reader = tokio::fs::File::open(&disk_file)
                 .await
                 .map_err(|e| VfsError::IoError(format!("Failed opening staged file: {}", e)))?;
-            provider.write_stream(&dest_vfs, Box::new(async_reader)).await?;
+            provider
+                .write_stream(&final_dest_vfs, Box::new(async_reader))
+                .await?;
+
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                provider,
+                &final_dest_vfs,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await
+            {
+                let _ = provider.set_permissions(&final_dest_vfs, &perms).await;
+            }
+
             extracted_count += 1;
         }
     }
 
     let _ = tokio::fs::remove_file(&temp_path).await;
-    Ok(extracted_count)
+    Ok((extracted_count, skipped_count))
 }

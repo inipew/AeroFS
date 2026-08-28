@@ -23,13 +23,15 @@ impl SafePath {
     ) -> Result<Self, SecurityError> {
         // 1. Check for null byte injection
         if input_path.contains('\0') {
-            return Err(SecurityError::InvalidPath("Null byte detected in path".into()));
+            return Err(SecurityError::InvalidPath(
+                "Null byte detected in path".into(),
+            ));
         }
 
         // 2. Ensure sandbox root exists or canonicalize it
-        let canonical_root = root_dir.canonicalize().map_err(|e| {
-            SecurityError::AccessDenied(format!("Sandbox root unavailable: {}", e))
-        })?;
+        let canonical_root = root_dir
+            .canonicalize()
+            .map_err(|e| SecurityError::AccessDenied(format!("Sandbox root unavailable: {}", e)))?;
 
         // 3. Normalize relative path components lexically
         let mut clean_rel = PathBuf::new();
@@ -48,7 +50,9 @@ impl SafePath {
                     }
                 }
                 Component::Prefix(_) => {
-                    return Err(SecurityError::InvalidPath("Windows prefix not allowed".into()));
+                    return Err(SecurityError::InvalidPath(
+                        "Windows prefix not allowed".into(),
+                    ));
                 }
             }
         }

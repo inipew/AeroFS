@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,6 +33,7 @@ impl TransferType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "move" => TransferType::Move,
@@ -40,6 +41,14 @@ impl TransferType {
             "sync" => TransferType::Sync,
             _ => TransferType::Copy,
         }
+    }
+}
+
+impl std::str::FromStr for TransferType {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(TransferType::from_str(s))
     }
 }
 
@@ -66,6 +75,7 @@ impl TransferStatus {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "running" => TransferStatus::Running,
@@ -75,6 +85,14 @@ impl TransferStatus {
             "failed" => TransferStatus::Failed,
             _ => TransferStatus::Queued,
         }
+    }
+}
+
+impl std::str::FromStr for TransferStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(TransferStatus::from_str(s))
     }
 }
 
@@ -133,6 +151,9 @@ pub struct TransferManager {
     event_tx: broadcast::Sender<EventEnvelope>,
     sequence_counter: Arc<AtomicU64>,
     db: DbPool,
+    max_concurrent_workers: Arc<AtomicUsize>,
+    max_retry_attempts: Arc<AtomicUsize>,
+    worker_notify: Arc<tokio::sync::Notify>,
 }
 
 impl TransferManager {
@@ -144,9 +165,12 @@ impl TransferManager {
         let (queue_tx, queue_rx) = mpsc::channel::<String>(200);
         let (event_tx, _) = broadcast::channel::<EventEnvelope>(400);
 
-        let jobs: Arc<RwLock<HashMap<String, TransferJob>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let jobs: Arc<RwLock<HashMap<String, TransferJob>>> = Arc::new(RwLock::new(HashMap::new()));
         let sequence_counter = Arc::new(AtomicU64::new(1));
+        let max_concurrent_workers_arc =
+            Arc::new(AtomicUsize::new(max_concurrent_workers.clamp(1, 64)));
+        let max_retry_attempts_arc = Arc::new(AtomicUsize::new(3));
+        let worker_notify = Arc::new(tokio::sync::Notify::new());
 
         let jobs_clone = Arc::clone(&jobs);
         let event_tx_clone = event_tx.clone();
@@ -178,29 +202,35 @@ impl TransferManager {
             }
         });
 
-        // 2. Multi-Worker Concurrent Transfer Scheduler (Dynamic bounded pool)
+        // 2. Multi-Worker Concurrent Transfer Scheduler (Dynamic bounded dispatcher)
         let queue_rx_shared = Arc::new(Mutex::new(queue_rx));
-        let pool_size = max_concurrent_workers.clamp(1, 16);
+        let active_workers = Arc::new(AtomicUsize::new(0));
+        let max_workers_clone = Arc::clone(&max_concurrent_workers_arc);
+        let retries_clone = Arc::clone(&max_retry_attempts_arc);
+        let worker_notify_clone = Arc::clone(&worker_notify);
 
-        for _ in 0..pool_size {
-            let rx_worker = Arc::clone(&queue_rx_shared);
-            let jobs_worker = Arc::clone(&jobs_clone);
-            let providers_worker = Arc::clone(&providers);
-            let event_tx_worker = event_tx_clone.clone();
-            let seq_worker = Arc::clone(&sequence_counter_clone);
-            let db_worker = db_clone.clone();
+        tokio::spawn(async move {
+            let mut rx = queue_rx_shared.lock().await;
+            while let Some(job_id) = rx.recv().await {
+                // Wait until active_workers < max_concurrent
+                while active_workers.load(Ordering::SeqCst)
+                    >= max_workers_clone.load(Ordering::SeqCst)
+                {
+                    worker_notify_clone.notified().await;
+                }
 
-            tokio::spawn(async move {
-                loop {
-                    let job_id = {
-                        let mut rx = rx_worker.lock().await;
-                        rx.recv().await
-                    };
+                active_workers.fetch_add(1, Ordering::SeqCst);
 
-                    let Some(job_id) = job_id else {
-                        break;
-                    };
+                let jobs_worker = Arc::clone(&jobs_clone);
+                let providers_worker = Arc::clone(&providers);
+                let event_tx_worker = event_tx_clone.clone();
+                let seq_worker = Arc::clone(&sequence_counter_clone);
+                let db_worker = db_clone.clone();
+                let active_workers_task = Arc::clone(&active_workers);
+                let notify_task = Arc::clone(&worker_notify_clone);
+                let retries_task = Arc::clone(&retries_clone);
 
+                tokio::spawn(async move {
                     let job_opt = {
                         let map = jobs_worker.read().await;
                         map.get(&job_id).cloned()
@@ -208,48 +238,10 @@ impl TransferManager {
 
                     if let Some(mut job) = job_opt {
                         // Skip cancelled or already finished jobs
-                        if job.status == TransferStatus::Cancelled
-                            || job.status == TransferStatus::CancellationRequested
+                        if job.status != TransferStatus::Cancelled
+                            && job.status != TransferStatus::CancellationRequested
                         {
-                            continue;
-                        }
-
-                        job.status = TransferStatus::Running;
-                        job.updated_at = Utc::now();
-                        {
-                            let mut map = jobs_worker.write().await;
-                            map.insert(job.id.clone(), job.clone());
-                        }
-                        let _ = Self::save_job_to_db(&db_worker, &job).await;
-                        Self::send_enveloped_event(
-                            &event_tx_worker,
-                            &seq_worker,
-                            WsEvent::TransferProgress(job.clone()),
-                        );
-
-                        // Execute robust bounded-stream transfer with retry
-                        let result = Self::execute_job_with_retry(
-                            &mut job,
-                            &providers_worker,
-                            &jobs_worker,
-                            &event_tx_worker,
-                            &seq_worker,
-                            &db_worker,
-                        )
-                        .await;
-
-                        // Re-read fresh status in case user requested cancellation during transfer
-                        let current_status = {
-                            let map = jobs_worker.read().await;
-                            map.get(&job.id).map(|j| j.status).unwrap_or(job.status)
-                        };
-
-                        if current_status == TransferStatus::Cancelled
-                            || current_status == TransferStatus::CancellationRequested
-                        {
-                            job.status = TransferStatus::Cancelled;
-                            job.speed_bytes_per_sec = 0;
-                            job.eta_seconds = None;
+                            job.status = TransferStatus::Running;
                             job.updated_at = Utc::now();
                             {
                                 let mut map = jobs_worker.write().await;
@@ -259,31 +251,31 @@ impl TransferManager {
                             Self::send_enveloped_event(
                                 &event_tx_worker,
                                 &seq_worker,
-                                WsEvent::TransferFailed(job),
+                                WsEvent::TransferProgress(job.clone()),
                             );
-                            continue;
-                        }
 
-                        match result {
-                            Ok(()) => {
-                                job.status = TransferStatus::Completed;
-                                job.speed_bytes_per_sec = 0;
-                                job.eta_seconds = Some(0);
-                                job.updated_at = Utc::now();
-                                {
-                                    let mut map = jobs_worker.write().await;
-                                    map.insert(job.id.clone(), job.clone());
-                                }
-                                let _ = Self::save_job_to_db(&db_worker, &job).await;
-                                Self::send_enveloped_event(
-                                    &event_tx_worker,
-                                    &seq_worker,
-                                    WsEvent::TransferCompleted(job),
-                                );
-                            }
-                            Err(e) => {
-                                job.status = TransferStatus::Failed;
-                                job.error_message = Some(e.to_string());
+                            // Execute robust bounded-stream transfer with retry
+                            let result = Self::execute_job_with_retry(
+                                &mut job,
+                                &providers_worker,
+                                &jobs_worker,
+                                &event_tx_worker,
+                                &seq_worker,
+                                &db_worker,
+                                &retries_task,
+                            )
+                            .await;
+
+                            // Re-read fresh status in case user requested cancellation during transfer
+                            let current_status = {
+                                let map = jobs_worker.read().await;
+                                map.get(&job.id).map(|j| j.status).unwrap_or(job.status)
+                            };
+
+                            if current_status == TransferStatus::Cancelled
+                                || current_status == TransferStatus::CancellationRequested
+                            {
+                                job.status = TransferStatus::Cancelled;
                                 job.speed_bytes_per_sec = 0;
                                 job.eta_seconds = None;
                                 job.updated_at = Utc::now();
@@ -297,12 +289,51 @@ impl TransferManager {
                                     &seq_worker,
                                     WsEvent::TransferFailed(job),
                                 );
+                            } else {
+                                match result {
+                                    Ok(()) => {
+                                        job.status = TransferStatus::Completed;
+                                        job.speed_bytes_per_sec = 0;
+                                        job.eta_seconds = Some(0);
+                                        job.updated_at = Utc::now();
+                                        {
+                                            let mut map = jobs_worker.write().await;
+                                            map.insert(job.id.clone(), job.clone());
+                                        }
+                                        let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                        Self::send_enveloped_event(
+                                            &event_tx_worker,
+                                            &seq_worker,
+                                            WsEvent::TransferCompleted(job),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        job.status = TransferStatus::Failed;
+                                        job.error_message = Some(e.to_string());
+                                        job.speed_bytes_per_sec = 0;
+                                        job.eta_seconds = None;
+                                        job.updated_at = Utc::now();
+                                        {
+                                            let mut map = jobs_worker.write().await;
+                                            map.insert(job.id.clone(), job.clone());
+                                        }
+                                        let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                        Self::send_enveloped_event(
+                                            &event_tx_worker,
+                                            &seq_worker,
+                                            WsEvent::TransferFailed(job),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            });
-        }
+
+                    active_workers_task.fetch_sub(1, Ordering::SeqCst);
+                    notify_task.notify_waiters();
+                });
+            }
+        });
 
         Self {
             jobs,
@@ -310,7 +341,19 @@ impl TransferManager {
             event_tx,
             sequence_counter,
             db,
+            max_concurrent_workers: max_concurrent_workers_arc,
+            max_retry_attempts: max_retry_attempts_arc,
+            worker_notify,
         }
+    }
+
+    /// Dynamically update transfer concurrency worker limit and max retry count without restart (P1 #16 & #17)
+    pub fn update_limits(&self, max_concurrent: usize, max_retries: usize) {
+        self.max_concurrent_workers
+            .store(max_concurrent.clamp(1, 64), Ordering::SeqCst);
+        self.max_retry_attempts
+            .store(max_retries.clamp(1, 10), Ordering::SeqCst);
+        self.worker_notify.notify_waiters();
     }
 
     fn send_enveloped_event(
@@ -335,6 +378,7 @@ impl TransferManager {
         Self::send_enveloped_event(&self.event_tx, &self.sequence_counter, event);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit_job(
         &self,
         user_id: Option<String>,
@@ -393,7 +437,12 @@ impl TransferManager {
         Ok(id)
     }
 
-    pub async fn list_jobs(&self, user_id: Option<&str>, is_admin: bool, include_dismissed: bool) -> Vec<TransferJob> {
+    pub async fn list_jobs(
+        &self,
+        user_id: Option<&str>,
+        is_admin: bool,
+        include_dismissed: bool,
+    ) -> Vec<TransferJob> {
         if include_dismissed {
             if let Ok(all_db_jobs) = Self::load_jobs_from_db(&self.db).await {
                 let mut list: Vec<TransferJob> = all_db_jobs
@@ -409,7 +458,7 @@ impl TransferManager {
                         }
                     })
                     .collect();
-                list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
                 return list;
             }
         }
@@ -431,18 +480,27 @@ impl TransferManager {
             })
             .cloned()
             .collect();
-        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         list
     }
 
-    pub async fn cancel_job(&self, id: &str, user_id: Option<&str>, is_admin: bool) -> Result<bool, String> {
+    pub async fn cancel_job(
+        &self,
+        id: &str,
+        user_id: Option<&str>,
+        is_admin: bool,
+    ) -> Result<bool, String> {
         let updated_job = {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
                 if !is_admin {
                     match (&job.user_id, user_id) {
                         (Some(owner), Some(uid)) if owner == uid => {}
-                        _ => return Err("Permission denied: cannot cancel another user's transfer".into()),
+                        _ => {
+                            return Err(
+                                "Permission denied: cannot cancel another user's transfer".into()
+                            )
+                        }
                     }
                 }
                 if job.status == TransferStatus::Queued
@@ -473,14 +531,23 @@ impl TransferManager {
         }
     }
 
-    pub async fn dismiss_job(&self, id: &str, user_id: Option<&str>, is_admin: bool) -> Result<bool, String> {
+    pub async fn dismiss_job(
+        &self,
+        id: &str,
+        user_id: Option<&str>,
+        is_admin: bool,
+    ) -> Result<bool, String> {
         let updated_job = {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
                 if !is_admin {
                     match (&job.user_id, user_id) {
                         (Some(owner), Some(uid)) if owner == uid => {}
-                        _ => return Err("Permission denied: cannot dismiss another user's transfer".into()),
+                        _ => {
+                            return Err(
+                                "Permission denied: cannot dismiss another user's transfer".into()
+                            )
+                        }
                     }
                 }
                 job.dismissed_at = Some(Utc::now());
@@ -528,21 +595,31 @@ impl TransferManager {
         }
     }
 
-    pub async fn clear_finished_jobs(&self, user_id: Option<&str>, is_admin: bool) -> Result<usize, String> {
+    /// Clear all finished (completed/failed/cancelled) transfers from memory and DB for current user
+    pub async fn clear_finished_jobs(
+        &self,
+        user_id: Option<&str>,
+        is_admin: bool,
+    ) -> Result<usize, String> {
         let now = Utc::now();
+        let now_str = now.to_rfc3339();
         let mut count = 0;
         let mut jobs_to_persist = Vec::new();
-        let mut ids_to_evict = Vec::new();
 
         {
             let mut map = self.jobs.write().await;
+            let mut ids_to_evict = Vec::new();
+
             for (id, job) in map.iter_mut() {
-                if job.dismissed_at.is_none()
-                    && (job.status == TransferStatus::Completed
-                        || job.status == TransferStatus::Failed
-                        || job.status == TransferStatus::Cancelled)
-                {
-                    let is_owner = if is_admin {
+                if job.dismissed_at.is_some() {
+                    continue;
+                }
+                let is_finished = matches!(
+                    job.status,
+                    TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
+                );
+                if is_finished {
+                    let can_clear = if is_admin {
                         true
                     } else {
                         match (&job.user_id, user_id) {
@@ -551,7 +628,7 @@ impl TransferManager {
                         }
                     };
 
-                    if is_owner {
+                    if can_clear {
                         job.dismissed_at = Some(now);
                         job.updated_at = now;
                         jobs_to_persist.push(job.clone());
@@ -560,6 +637,7 @@ impl TransferManager {
                     }
                 }
             }
+
             // Evict dismissed jobs from RAM
             for id in ids_to_evict {
                 map.remove(&id);
@@ -575,16 +653,16 @@ impl TransferManager {
             let _ = sqlx::query(
                 "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND status IN ('completed', 'failed', 'cancelled')",
             )
-            .bind(&now)
-            .bind(&now)
+            .bind(&now_str)
+            .bind(&now_str)
             .execute(&self.db)
             .await;
         } else if let Some(uid) = user_id {
             let _ = sqlx::query(
                 "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND user_id = ? AND status IN ('completed', 'failed', 'cancelled')",
             )
-            .bind(&now)
-            .bind(&now)
+            .bind(&now_str)
+            .bind(&now_str)
             .bind(uid)
             .execute(&self.db)
             .await;
@@ -593,7 +671,7 @@ impl TransferManager {
         Ok(count)
     }
 
-    /// Execute transfer with exponential backoff retry for transient network hiccups
+    /// Execute transfer with exponential backoff retry for transient network hiccups (Dynamic retries P1 #17)
     async fn execute_job_with_retry(
         job: &mut TransferJob,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
@@ -601,12 +679,13 @@ impl TransferManager {
         event_tx: &broadcast::Sender<EventEnvelope>,
         seq_counter: &Arc<AtomicU64>,
         db: &DbPool,
+        max_retries: &Arc<AtomicUsize>,
     ) -> anyhow::Result<()> {
-        let max_attempts = 3;
         let mut attempt = 0;
 
         loop {
             attempt += 1;
+            let max_attempts = max_retries.load(Ordering::Relaxed).max(1);
             match Self::execute_job(job, providers, jobs_map, event_tx, seq_counter, db).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -661,20 +740,25 @@ impl TransferManager {
     ) -> anyhow::Result<()> {
         let src_fs = {
             let p = providers.read().await;
-            p.get(&job.source_connection_id)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Source connection '{}' not found", job.source_connection_id))?
+            p.get(&job.source_connection_id).cloned().ok_or_else(|| {
+                anyhow::anyhow!("Source connection '{}' not found", job.source_connection_id)
+            })?
         };
 
         let dst_fs = {
             let p = providers.read().await;
             p.get(&job.destination_connection_id)
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Destination connection '{}' not found", job.destination_connection_id))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Destination connection '{}' not found",
+                        job.destination_connection_id
+                    )
+                })?
         };
 
-        let src_vfs = VfsPath::new(&job.source_connection_id, &job.source_path);
-        let dst_vfs = VfsPath::new(&job.destination_connection_id, &job.destination_path);
+        let src_vfs = VfsPath::new(&job.source_connection_id, &job.source_path)?;
+        let dst_vfs = VfsPath::new(&job.destination_connection_id, &job.destination_path)?;
 
         // 1. Get source metadata
         let meta = src_fs
@@ -683,7 +767,9 @@ impl TransferManager {
             .map_err(|e| anyhow::anyhow!("Stat source failed: {}", e))?;
 
         // FAST-PATH: Native atomic rename for same-connection Move (preserves inode, permissions, timestamps, instant)
-        if job.transfer_type == TransferType::Move && job.source_connection_id == job.destination_connection_id {
+        if job.transfer_type == TransferType::Move
+            && job.source_connection_id == job.destination_connection_id
+        {
             match src_fs.rename(&src_vfs, &dst_vfs).await {
                 Ok(_) => {
                     job.transferred_bytes = meta.size;
@@ -718,10 +804,16 @@ impl TransferManager {
                 let current_vfs = if current_rel.is_empty() {
                     base_vfs.clone()
                 } else {
-                    VfsPath::new(conn_id, format!("{}/{}", base_vfs.path.trim_end_matches('/'), current_rel))
+                    VfsPath::new(
+                        conn_id,
+                        format!("{}/{}", base_vfs.path.trim_end_matches('/'), current_rel),
+                    )?
                 };
 
-                let entries = fs.list(&current_vfs).await.map_err(|e| anyhow::anyhow!("List failed: {}", e))?;
+                let entries = fs
+                    .list(&current_vfs)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("List failed: {}", e))?;
                 for entry in entries {
                     let child_rel = if current_rel.is_empty() {
                         entry.name.clone()
@@ -735,7 +827,8 @@ impl TransferManager {
                             is_dir: true,
                             size: 0,
                         });
-                        Box::pin(scan_dir_recursive(fs, conn_id, base_vfs, &child_rel, items)).await?;
+                        Box::pin(scan_dir_recursive(fs, conn_id, base_vfs, &child_rel, items))
+                            .await?;
                     } else {
                         items.push(ItemToTransfer {
                             rel_path: child_rel,
@@ -748,19 +841,46 @@ impl TransferManager {
             }
 
             let mut items = Vec::new();
-            scan_dir_recursive(&src_fs, &job.source_connection_id, &src_vfs, "", &mut items).await?;
+            scan_dir_recursive(&src_fs, &job.source_connection_id, &src_vfs, "", &mut items)
+                .await?;
 
             let total_bytes: u64 = items.iter().map(|i| i.size).sum();
             job.total_bytes = total_bytes;
             job.transferred_bytes = 0;
 
             // 1. Create root destination directory
-            dst_fs.create_dir(&dst_vfs).await.map_err(|e| anyhow::anyhow!("Failed creating destination dir: {}", e))?;
+            dst_fs
+                .create_dir(&dst_vfs)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed creating destination dir: {}", e))?;
+            if let Some(perms) = crate::domain::resolve_destination_permissions(
+                &dst_fs,
+                &dst_vfs,
+                true,
+                crate::domain::PermissionInheritanceMode::InheritParent,
+            )
+            .await
+            {
+                let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
+            }
 
             // 2. Create all subdirectories first
             for item in items.iter().filter(|i| i.is_dir) {
-                let dst_dir_vfs = VfsPath::new(&job.destination_connection_id, format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path));
+                let dst_dir_vfs = VfsPath::new(
+                    &job.destination_connection_id,
+                    format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path),
+                )?;
                 let _ = dst_fs.create_dir(&dst_dir_vfs).await;
+                if let Some(perms) = crate::domain::resolve_destination_permissions(
+                    &dst_fs,
+                    &dst_dir_vfs,
+                    true,
+                    crate::domain::PermissionInheritanceMode::InheritParent,
+                )
+                .await
+                {
+                    let _ = dst_fs.set_permissions(&dst_dir_vfs, &perms).await;
+                }
             }
 
             // 3. Stream each file
@@ -780,10 +900,19 @@ impl TransferManager {
                     }
                 }
 
-                let src_file_vfs = VfsPath::new(&job.source_connection_id, format!("{}/{}", src_vfs.path.trim_end_matches('/'), item.rel_path));
-                let dst_file_vfs = VfsPath::new(&job.destination_connection_id, format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path));
+                let src_file_vfs = VfsPath::new(
+                    &job.source_connection_id,
+                    format!("{}/{}", src_vfs.path.trim_end_matches('/'), item.rel_path),
+                )?;
+                let dst_file_vfs = VfsPath::new(
+                    &job.destination_connection_id,
+                    format!("{}/{}", dst_vfs.path.trim_end_matches('/'), item.rel_path),
+                )?;
 
-                let mut reader = src_fs.read_stream(&src_file_vfs).await.map_err(|e| anyhow::anyhow!("Read failed: {}", e))?;
+                let mut reader = src_fs
+                    .read_stream(&src_file_vfs)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Read failed: {}", e))?;
                 let (mut pipe_writer, pipe_reader) = tokio::io::duplex(64 * 1024);
 
                 let job_id = job.id.clone();
@@ -846,14 +975,24 @@ impl TransferManager {
                     Ok::<u64, anyhow::Error>(file_transferred)
                 });
 
-                let existing_dst_perms = dst_fs.stat(&dst_file_vfs).await.ok().and_then(|m| m.permissions);
-                let write_res = dst_fs.write_stream(&dst_file_vfs, Box::new(pipe_reader)).await;
-                let pump_res = pump_handle.await.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?;
+                let write_res = dst_fs
+                    .write_stream(&dst_file_vfs, Box::new(pipe_reader))
+                    .await;
+                let pump_res = pump_handle
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Pump panic: {}", e))?;
                 let file_bytes = pump_res?;
                 write_res.map_err(|e| anyhow::anyhow!("Write failed: {}", e))?;
 
-                if let Some(ref perms) = existing_dst_perms {
-                    let _ = dst_fs.set_permissions(&dst_file_vfs, perms).await;
+                if let Some(perms) = crate::domain::resolve_destination_permissions(
+                    &dst_fs,
+                    &dst_file_vfs,
+                    false,
+                    crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+                )
+                .await
+                {
+                    let _ = dst_fs.set_permissions(&dst_file_vfs, &perms).await;
                 }
 
                 transferred_so_far += file_bytes;
@@ -862,7 +1001,10 @@ impl TransferManager {
             job.transferred_bytes = transferred_so_far;
 
             if job.transfer_type == TransferType::Move {
-                src_fs.delete(&src_vfs).await.map_err(|e| anyhow::anyhow!("Move cleanup failed: {}", e))?;
+                src_fs
+                    .delete(&src_vfs)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Move cleanup failed: {}", e))?;
             }
 
             return Ok(());
@@ -974,11 +1116,8 @@ impl TransferManager {
         let part_vfs = VfsPath::new(
             &job.destination_connection_id,
             format!("{}.aerofs-part-{}", dst_vfs.path, job.id),
-        );
-        let existing_dst_perms = dst_fs.stat(&dst_vfs).await.ok().and_then(|m| m.permissions);
-        let write_res = dst_fs
-            .write_stream(&part_vfs, Box::new(pipe_reader))
-            .await;
+        )?;
+        let write_res = dst_fs.write_stream(&part_vfs, Box::new(pipe_reader)).await;
 
         let pump_res = pump_handle
             .await
@@ -995,8 +1134,15 @@ impl TransferManager {
             tracing::warn!("Rename promotion fallback for {}: {}", dst_vfs.path, e);
         }
 
-        if let Some(ref perms) = existing_dst_perms {
-            let _ = dst_fs.set_permissions(&dst_vfs, perms).await;
+        if let Some(perms) = crate::domain::resolve_destination_permissions(
+            &dst_fs,
+            &dst_vfs,
+            false,
+            crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+        )
+        .await
+        {
+            let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
         }
 
         job.transferred_bytes = transferred_bytes;
@@ -1064,7 +1210,11 @@ impl TransferManager {
             let created_at_str: String = r.get("created_at");
             let updated_at_str: String = r.get("updated_at");
 
-            let dismissed_at = dismissed_at_str.and_then(|d| DateTime::parse_from_rfc3339(&d).ok().map(|dt| dt.with_timezone(&Utc)));
+            let dismissed_at = dismissed_at_str.and_then(|d| {
+                DateTime::parse_from_rfc3339(&d)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
+            });
             let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());

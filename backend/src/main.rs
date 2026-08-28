@@ -1,24 +1,9 @@
-mod api;
-mod auth;
-mod cli;
-mod config;
-mod db;
-mod domain;
-mod errors;
-mod filesystem;
-mod middleware;
-mod router;
-mod state;
-mod static_files;
-mod transfer;
-mod vfs;
-
-use router::create_router;
+use backend::cli::{Cli, Commands};
+use backend::config::AppConfig;
+use backend::create_router;
+use backend::db::init_db;
+use backend::state::AppState;
 use clap::Parser;
-use cli::{Cli, Commands};
-use config::AppConfig;
-use db::init_db;
-use state::AppState;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -58,7 +43,9 @@ async fn main() -> anyhow::Result<()> {
         let flock_res = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
         if flock_res != 0 {
             let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EWOULDBLOCK) || err.raw_os_error() == Some(libc::EAGAIN) {
+            if err.raw_os_error() == Some(libc::EWOULDBLOCK)
+                || err.raw_os_error() == Some(libc::EAGAIN)
+            {
                 eprintln!(
                     "❌ AeroFS daemon is already running (exclusive lock held at: {}). Exiting.",
                     lock_path.display()
@@ -88,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let ip_addr: std::net::IpAddr = config.server.host.parse().unwrap_or_else(|_| {
-        tracing::warn!("Invalid host '{}', defaulting to 127.0.0.1", config.server.host);
+        tracing::warn!(
+            "Invalid host '{}', defaulting to 127.0.0.1",
+            config.server.host
+        );
         std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
     });
     let addr = SocketAddr::from((ip_addr, config.server.port));
@@ -111,7 +101,10 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Initialize SQLite pool with WAL mode, foreign keys, and run migrations
     let db = init_db(&config.database.url).await?;
-    tracing::info!("Database initialized successfully at {}", config.database.url);
+    tracing::info!(
+        "Database initialized successfully at {}",
+        config.database.url
+    );
 
     let state = AppState::new_with_db(config, db).await;
 

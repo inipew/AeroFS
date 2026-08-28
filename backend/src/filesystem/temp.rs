@@ -8,6 +8,12 @@ pub struct TempFileManager {
     temp_root: PathBuf,
 }
 
+impl Default for TempFileManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TempFileManager {
     pub fn new() -> Self {
         let temp_root = std::env::temp_dir().join("aerofs_temp");
@@ -40,7 +46,9 @@ impl TempFileManager {
 
     /// Allocate and create a dedicated temporary directory
     pub async fn create_temp_dir(&self, prefix: &str) -> anyhow::Result<PathBuf> {
-        let dir_path = self.temp_root.join(format!("{}_{}", prefix, Uuid::new_v4()));
+        let dir_path = self
+            .temp_root
+            .join(format!("{}_{}", prefix, Uuid::new_v4()));
         fs::create_dir_all(&dir_path).await?;
         Ok(dir_path)
     }
@@ -89,7 +97,10 @@ impl TempFileManager {
                 match manager.cleanup_stale(max_age).await {
                     Ok(count) => {
                         if count > 0 {
-                            tracing::info!("TempFileManager cleaned up {} stale temporary files", count);
+                            tracing::info!(
+                                "TempFileManager cleaned up {} stale temporary files",
+                                count
+                            );
                         }
                     }
                     Err(e) => {

@@ -41,24 +41,26 @@ pub struct TestConnectionResponse {
     pub message: String,
 }
 
+type ConnectionDbRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    String,
+    i64,
+    i64,
+    String,
+    String,
+);
+
 /// List all available connections from database (scoped to user's permissions)
 pub async fn list_connections(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-        String,
-        i64,
-        i64,
-        String,
-        String,
-    )> = if user.is_admin {
+    let rows: Vec<ConnectionDbRow> = if user.is_admin {
         sqlx::query_as(
             "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at 
              FROM connections ORDER BY name ASC",
@@ -204,7 +206,9 @@ pub async fn create_connection(
         ProviderKind::Sftp => {
             let host = payload.host.clone().unwrap_or_else(|| "127.0.0.1".into());
             let port = payload.port.unwrap_or(22);
-            let auth = payload.secret.as_ref().map(|s| SftpAuth::Password { password: s.clone() });
+            let auth = payload.secret.as_ref().map(|s| SftpAuth::Password {
+                password: s.clone(),
+            });
             let op = crate::vfs::opendal::build_sftp_operator(
                 &host,
                 port,
@@ -216,7 +220,10 @@ pub async fn create_connection(
             Arc::new(crate::vfs::opendal::OpenDalFileSystem::new(id.clone(), op))
         }
         ProviderKind::S3 => {
-            let bucket = payload.host.clone().unwrap_or_else(|| "default-bucket".into());
+            let bucket = payload
+                .host
+                .clone()
+                .unwrap_or_else(|| "default-bucket".into());
             let op = crate::vfs::opendal::build_s3_operator(
                 &bucket,
                 None,
@@ -379,19 +386,7 @@ pub async fn get_connection(
         .await
         .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", id)))?;
 
-    let row: Option<(
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-        String,
-        i64,
-        i64,
-        String,
-        String,
-    )> = sqlx::query_as(
+    let row: Option<ConnectionDbRow> = sqlx::query_as(
         "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at 
          FROM connections WHERE id = ?",
     )

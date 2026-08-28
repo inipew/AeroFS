@@ -153,10 +153,10 @@ impl AppConfig {
 
         // 2. If a TOML file was found, parse and overlay
         if let Some(path) = toml_file_to_load {
-            let content = fs::read_to_string(&path)
-                .map_err(|e| ConfigError::Io(path.clone(), e))?;
-            let toml_config: AppConfig = toml::from_str(&content)
-                .map_err(|e| ConfigError::Toml(path.clone(), e))?;
+            let content =
+                fs::read_to_string(&path).map_err(|e| ConfigError::Io(path.clone(), e))?;
+            let toml_config: AppConfig =
+                toml::from_str(&content).map_err(|e| ConfigError::Toml(path.clone(), e))?;
             config = toml_config;
             tracing::info!("Loaded configuration from: {}", path.display());
         }
@@ -183,7 +183,10 @@ impl AppConfig {
             self.server.port = port;
         }
 
-        if let Ok(root) = env::var("AEROFS_ROOT_PATH").or_else(|_| env::var("WFM_ROOT_PATH")).or_else(|_| env::var("WFM_LOCAL_ROOT")) {
+        if let Ok(root) = env::var("AEROFS_ROOT_PATH")
+            .or_else(|_| env::var("WFM_ROOT_PATH"))
+            .or_else(|_| env::var("WFM_LOCAL_ROOT"))
+        {
             self.filesystem.default_local_root = PathBuf::from(root);
         }
 
@@ -199,69 +202,112 @@ impl AppConfig {
             self.filesystem.read_only_default = ro == "1" || ro.to_lowercase() == "true";
         }
 
-        if let Ok(db_url) = env::var("AEROFS_DATABASE_URL").or_else(|_| env::var("WFM_DATABASE_URL")) {
+        if let Ok(db_url) =
+            env::var("AEROFS_DATABASE_URL").or_else(|_| env::var("WFM_DATABASE_URL"))
+        {
             self.database.url = db_url;
         }
 
-        if let Ok(symlinks) = env::var("AEROFS_ALLOW_SYMLINKS").or_else(|_| env::var("WFM_ALLOW_SYMLINKS")) {
-            self.security.allow_symlinks_outside_root = symlinks == "1" || symlinks.to_lowercase() == "true";
+        if let Ok(symlinks) =
+            env::var("AEROFS_ALLOW_SYMLINKS").or_else(|_| env::var("WFM_ALLOW_SYMLINKS"))
+        {
+            self.security.allow_symlinks_outside_root =
+                symlinks == "1" || symlinks.to_lowercase() == "true";
         }
 
         if let Ok(private_net) = env::var("AEROFS_ALLOW_PRIVATE_NETWORKS") {
-            self.security.allow_private_network_connections = private_net == "1" || private_net.to_lowercase() == "true";
+            self.security.allow_private_network_connections =
+                private_net == "1" || private_net.to_lowercase() == "true";
         }
 
-        if let Ok(secret) = env::var("AEROFS_SESSION_SECRET").or_else(|_| env::var("WFM_SESSION_SECRET")) {
+        if let Ok(secret) =
+            env::var("AEROFS_SESSION_SECRET").or_else(|_| env::var("WFM_SESSION_SECRET"))
+        {
             self.security.session_secret = secret;
         }
 
         if let Ok(ttl_str) = env::var("AEROFS_SESSION_TTL") {
             let ttl = ttl_str.parse::<u64>().map_err(|_| {
-                ConfigError::Validation(format!("Invalid integer for AEROFS_SESSION_TTL: '{}'", ttl_str))
+                ConfigError::Validation(format!(
+                    "Invalid integer for AEROFS_SESSION_TTL: '{}'",
+                    ttl_str
+                ))
             })?;
             self.security.session_ttl_secs = ttl;
         }
 
-        if let Ok(max_upload_mb_str) = env::var("AEROFS_MAX_UPLOAD_MB").or_else(|_| env::var("WFM_MAX_UPLOAD_MB")) {
+        if let Ok(max_upload_mb_str) =
+            env::var("AEROFS_MAX_UPLOAD_MB").or_else(|_| env::var("WFM_MAX_UPLOAD_MB"))
+        {
             let mb = max_upload_mb_str.parse::<u64>().map_err(|_| {
-                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_UPLOAD_MB: '{}'", max_upload_mb_str))
+                ConfigError::Validation(format!(
+                    "Invalid integer for AEROFS_MAX_UPLOAD_MB: '{}'",
+                    max_upload_mb_str
+                ))
             })?;
-            let bytes = mb.checked_mul(1024).and_then(|v| v.checked_mul(1024)).ok_or_else(|| {
-                ConfigError::Validation("AEROFS_MAX_UPLOAD_MB value causes integer overflow".to_string())
-            })?;
+            let bytes = mb
+                .checked_mul(1024)
+                .and_then(|v| v.checked_mul(1024))
+                .ok_or_else(|| {
+                    ConfigError::Validation(
+                        "AEROFS_MAX_UPLOAD_MB value causes integer overflow".to_string(),
+                    )
+                })?;
             self.limits.max_upload_size = bytes;
         }
 
         if let Ok(max_edit_mb_str) = env::var("AEROFS_MAX_EDITABLE_MB") {
             let mb = max_edit_mb_str.parse::<u64>().map_err(|_| {
-                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_EDITABLE_MB: '{}'", max_edit_mb_str))
+                ConfigError::Validation(format!(
+                    "Invalid integer for AEROFS_MAX_EDITABLE_MB: '{}'",
+                    max_edit_mb_str
+                ))
             })?;
-            let bytes = mb.checked_mul(1024).and_then(|v| v.checked_mul(1024)).ok_or_else(|| {
-                ConfigError::Validation("AEROFS_MAX_EDITABLE_MB value causes integer overflow".to_string())
-            })?;
+            let bytes = mb
+                .checked_mul(1024)
+                .and_then(|v| v.checked_mul(1024))
+                .ok_or_else(|| {
+                    ConfigError::Validation(
+                        "AEROFS_MAX_EDITABLE_MB value causes integer overflow".to_string(),
+                    )
+                })?;
             self.limits.max_editable_size = bytes;
         }
 
         if let Ok(max_prev_mb_str) = env::var("AEROFS_MAX_PREVIEW_MB") {
             let mb = max_prev_mb_str.parse::<u64>().map_err(|_| {
-                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_PREVIEW_MB: '{}'", max_prev_mb_str))
+                ConfigError::Validation(format!(
+                    "Invalid integer for AEROFS_MAX_PREVIEW_MB: '{}'",
+                    max_prev_mb_str
+                ))
             })?;
-            let bytes = mb.checked_mul(1024).and_then(|v| v.checked_mul(1024)).ok_or_else(|| {
-                ConfigError::Validation("AEROFS_MAX_PREVIEW_MB value causes integer overflow".to_string())
-            })?;
+            let bytes = mb
+                .checked_mul(1024)
+                .and_then(|v| v.checked_mul(1024))
+                .ok_or_else(|| {
+                    ConfigError::Validation(
+                        "AEROFS_MAX_PREVIEW_MB value causes integer overflow".to_string(),
+                    )
+                })?;
             self.limits.max_preview_size = bytes;
         }
 
         if let Ok(max_entries_str) = env::var("AEROFS_MAX_DIR_ENTRIES") {
             let entries = max_entries_str.parse::<usize>().map_err(|_| {
-                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_DIR_ENTRIES: '{}'", max_entries_str))
+                ConfigError::Validation(format!(
+                    "Invalid integer for AEROFS_MAX_DIR_ENTRIES: '{}'",
+                    max_entries_str
+                ))
             })?;
             self.limits.max_directory_entries = entries;
         }
 
         if let Ok(max_transfers_str) = env::var("AEROFS_MAX_TRANSFERS") {
             let n = max_transfers_str.parse::<usize>().map_err(|_| {
-                ConfigError::Validation(format!("Invalid integer for AEROFS_MAX_TRANSFERS: '{}'", max_transfers_str))
+                ConfigError::Validation(format!(
+                    "Invalid integer for AEROFS_MAX_TRANSFERS: '{}'",
+                    max_transfers_str
+                ))
             })?;
             self.limits.max_concurrent_transfers = n;
         }
@@ -276,15 +322,21 @@ impl AppConfig {
         }
 
         if self.database.url.is_empty() {
-            return Err(ConfigError::Validation("Database URL cannot be empty".into()));
+            return Err(ConfigError::Validation(
+                "Database URL cannot be empty".into(),
+            ));
         }
 
         if self.limits.max_upload_size == 0 {
-            return Err(ConfigError::Validation("Max upload size must be greater than 0".into()));
+            return Err(ConfigError::Validation(
+                "Max upload size must be greater than 0".into(),
+            ));
         }
 
         if self.limits.max_concurrent_transfers == 0 {
-            return Err(ConfigError::Validation("Max concurrent transfers must be at least 1".into()));
+            return Err(ConfigError::Validation(
+                "Max concurrent transfers must be at least 1".into(),
+            ));
         }
 
         // Production environment check
@@ -314,7 +366,8 @@ impl AppConfig {
         if !sanitized.security.session_secret.is_empty() {
             sanitized.security.session_secret = "********".to_string();
         }
-        toml::to_string_pretty(&sanitized).unwrap_or_else(|_| "# Error serializing config".to_string())
+        toml::to_string_pretty(&sanitized)
+            .unwrap_or_else(|_| "# Error serializing config".to_string())
     }
 }
 
@@ -325,4 +378,3 @@ fn dirs_config_path() -> PathBuf {
         PathBuf::from("./config.toml")
     }
 }
-

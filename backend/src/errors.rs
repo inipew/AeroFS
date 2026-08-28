@@ -149,34 +149,52 @@ impl IntoResponse for AppError {
                 "SESSION_EXPIRED",
                 self.to_string(),
             ),
-            AppError::Unauthorized(msg) => (
-                StatusCode::UNAUTHORIZED,
-                "UNAUTHORIZED",
-                msg.clone(),
-            ),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone()),
             AppError::Auth(AuthError::Unauthorized(_)) => {
                 (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string())
             }
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
-            AppError::Security(_) => (StatusCode::FORBIDDEN, "SECURITY_VIOLATION", self.to_string()),
+            AppError::Security(_) => (
+                StatusCode::FORBIDDEN,
+                "SECURITY_VIOLATION",
+                self.to_string(),
+            ),
             AppError::Vfs(VfsError::NotFound(_)) | AppError::NotFound(_) => {
                 (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string())
             }
-            AppError::Vfs(VfsError::PermissionDenied(_)) => (
-                StatusCode::FORBIDDEN,
-                "PERMISSION_DENIED",
-                self.to_string(),
-            ),
+            AppError::Vfs(VfsError::PermissionDenied(_)) => {
+                (StatusCode::FORBIDDEN, "PERMISSION_DENIED", self.to_string())
+            }
             AppError::Vfs(VfsError::AlreadyExists(_)) => {
                 (StatusCode::CONFLICT, "ALREADY_EXISTS", self.to_string())
             }
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
-            AppError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, "PAYLOAD_TOO_LARGE", msg.clone()),
-            AppError::InsufficientStorage(msg) => (StatusCode::INSUFFICIENT_STORAGE, "INSUFFICIENT_STORAGE", msg.clone()),
-            AppError::Vfs(VfsError::InsufficientStorage(msg)) => (StatusCode::INSUFFICIENT_STORAGE, "INSUFFICIENT_STORAGE", msg.clone()),
-            AppError::ChecksumMismatch(msg) => (StatusCode::UNPROCESSABLE_ENTITY, "CHECKSUM_MISMATCH", msg.clone()),
-            AppError::Vfs(VfsError::ChecksumMismatch(msg)) => (StatusCode::UNPROCESSABLE_ENTITY, "CHECKSUM_MISMATCH", msg.clone()),
+            AppError::PayloadTooLarge(msg) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "PAYLOAD_TOO_LARGE",
+                msg.clone(),
+            ),
+            AppError::InsufficientStorage(msg) => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "INSUFFICIENT_STORAGE",
+                msg.clone(),
+            ),
+            AppError::Vfs(VfsError::InsufficientStorage(msg)) => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "INSUFFICIENT_STORAGE",
+                msg.clone(),
+            ),
+            AppError::ChecksumMismatch(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CHECKSUM_MISMATCH",
+                msg.clone(),
+            ),
+            AppError::Vfs(VfsError::ChecksumMismatch(msg)) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CHECKSUM_MISMATCH",
+                msg.clone(),
+            ),
             AppError::Vfs(vfs_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "VFS_ERROR",
@@ -185,11 +203,7 @@ impl IntoResponse for AppError {
             AppError::Internal(err) => {
                 let err_msg = format!("Internal error: {:?}", err);
                 tracing::error!("{}", err_msg);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    err_msg,
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", err_msg)
             }
         };
 

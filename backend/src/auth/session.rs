@@ -21,16 +21,14 @@ pub async fn create_session(
     let now = Utc::now();
     let expires_at = now + Duration::seconds(ttl_secs as i64);
 
-    sqlx::query(
-        "INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .bind(expires_at.to_rfc3339())
-    .bind(now.to_rfc3339())
-    .execute(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create session: {}", e))?;
+    sqlx::query("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
+        .bind(&session_id)
+        .bind(user_id)
+        .bind(expires_at.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create session: {}", e))?;
 
     Ok(session_id)
 }

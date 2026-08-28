@@ -40,20 +40,22 @@ pub struct PublicShareQuery {
     pub password: Option<String>,
 }
 
+type ShareDbRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
 /// List shares with strict user ownership filter (Admins can view all)
 pub async fn list_shares(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-    )> = if user.is_admin {
+    let rows: Vec<ShareDbRow> = if user.is_admin {
         sqlx::query_as(
             "SELECT id, connection_id, path, share_token, password_hash, expires_at, created_at
              FROM shares
@@ -77,19 +79,21 @@ pub async fn list_shares(
 
     let shares: Vec<ShareItem> = rows
         .into_iter()
-        .map(|(id, connection_id, path, share_token, pass_hash, expires_at, created_at)| {
-            let share_url = format!("/api/v1/shares/public/{}", share_token);
-            ShareItem {
-                id,
-                connection_id,
-                path,
-                share_token,
-                has_password: pass_hash.is_some(),
-                expires_at,
-                created_at,
-                share_url,
-            }
-        })
+        .map(
+            |(id, connection_id, path, share_token, pass_hash, expires_at, created_at)| {
+                let share_url = format!("/api/v1/shares/public/{}", share_token);
+                ShareItem {
+                    id,
+                    connection_id,
+                    path,
+                    share_token,
+                    has_password: pass_hash.is_some(),
+                    expires_at,
+                    created_at,
+                    share_url,
+                }
+            },
+        )
         .collect();
 
     Ok(Json(shares))
@@ -118,7 +122,7 @@ pub async fn create_share(
             VfsError::ConnectionError(format!("Connection '{}' not found", payload.connection_id))
         })?;
 
-    let vfs_path = VfsPath::new(&payload.connection_id, &payload.path);
+    let vfs_path = VfsPath::new(&payload.connection_id, &payload.path)?;
     provider.stat(&vfs_path).await?;
 
     let id = Uuid::new_v4().to_string();
@@ -217,9 +221,8 @@ pub async fn public_get_share(
     .await
     .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
-    let (connection_id, path, pass_hash, expires_at) = row.ok_or_else(|| {
-        AppError::NotFound("Shared link not found or expired".into())
-    })?;
+    let (connection_id, path, pass_hash, expires_at) =
+        row.ok_or_else(|| AppError::NotFound("Shared link not found or expired".into()))?;
 
     // 1. Check expiration
     if let Some(exp_str) = expires_at {
@@ -259,11 +262,15 @@ pub async fn public_get_share(
         .await
         .ok_or_else(|| AppError::NotFound("Storage connection unavailable".into()))?;
 
-    let vfs_path = VfsPath::new(&connection_id, &path);
+    let vfs_path = VfsPath::new(&connection_id, &path)?;
     let stream = provider.read_stream(&vfs_path).await?;
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(stream));
 
-    let file_name = path.split('/').last().unwrap_or("download").to_string();
+    let file_name = path
+        .split('/')
+        .next_back()
+        .unwrap_or("download")
+        .to_string();
     let mime = mime_guess::from_path(&file_name).first_or_octet_stream();
 
     // 3. Stored XSS / Malicious File Protection:

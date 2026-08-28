@@ -41,21 +41,45 @@ pub struct AuthResponse {
 )]
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let client_key = payload.username.trim().to_lowercase();
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    let user_key = format!("user:{}", payload.username.trim().to_lowercase());
+    let ip_key = format!("ip:{}", client_ip);
+
     let now = Instant::now();
     let window = Duration::from_secs(60);
-    const MAX_FAILED_ATTEMPTS: usize = 5;
+    const MAX_FAILED_PER_USER: usize = 5;
+    const MAX_FAILED_PER_IP: usize = 20;
 
-    // 1. Rate limiting check (5 attempts / 60 seconds)
+    // 1. Rate limiting check (Per-User: 5/60s, Per-IP: 20/60s)
     {
         if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
-            if let Some(timestamps) = map.get_mut(&client_key) {
-                timestamps.retain(|t| now.duration_since(*t) < window);
-                if timestamps.len() >= MAX_FAILED_ATTEMPTS {
+            // Check IP bucket
+            if let Some(ip_attempts) = map.get_mut(&ip_key) {
+                ip_attempts.retain(|t| now.duration_since(*t) < window);
+                if ip_attempts.len() >= MAX_FAILED_PER_IP {
                     return Err(AppError::Forbidden(
-                        "Too many failed login attempts. Please wait 60 seconds before trying again."
+                        "Too many failed login attempts from this network. Please wait 60 seconds before trying again."
+                            .into(),
+                    ));
+                }
+            }
+
+            // Check User bucket
+            if let Some(user_attempts) = map.get_mut(&user_key) {
+                user_attempts.retain(|t| now.duration_since(*t) < window);
+                if user_attempts.len() >= MAX_FAILED_PER_USER {
+                    return Err(AppError::Forbidden(
+                        "Too many failed login attempts for this account. Please wait 60 seconds before trying again."
                             .into(),
                     ));
                 }
@@ -74,35 +98,38 @@ pub async fn login(
     let (user_id, username, password_hash, is_admin) = match row {
         Some(r) => r,
         None => {
-            // Record failed attempt
+            // Record failed attempt in both IP and User buckets
             if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
-                map.entry(client_key).or_default().push(now);
+                map.entry(user_key).or_default().push(now);
+                map.entry(ip_key).or_default().push(now);
             }
             return Err(AppError::Auth(AuthError::InvalidCredentials));
         }
     };
 
     if !verify_password(&payload.password, &password_hash) {
-        // Record failed attempt
+        // Record failed attempt in both IP and User buckets
         if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
-            map.entry(client_key).or_default().push(now);
+            map.entry(user_key).or_default().push(now);
+            map.entry(ip_key).or_default().push(now);
         }
         return Err(AppError::Auth(AuthError::InvalidCredentials));
     }
 
-    // Success -> clear failed attempts history
+    // Success -> clear failed attempts history for this user
     if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
-        map.remove(&client_key);
+        map.remove(&user_key);
     }
 
     let session_id =
         create_session(&state.db, &user_id, state.config.security.session_ttl_secs).await?;
 
-    let secure_flag = if state.config.server.host != "127.0.0.1" && state.config.server.host != "localhost" {
-        "; Secure"
-    } else {
-        ""
-    };
+    let secure_flag =
+        if state.config.server.host != "127.0.0.1" && state.config.server.host != "localhost" {
+            "; Secure"
+        } else {
+            ""
+        };
 
     let cookie_val = format!(
         "session_id={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
@@ -121,9 +148,7 @@ pub async fn login(
     Ok((
         StatusCode::OK,
         headers,
-        Json(AuthResponse {
-            user: user_info,
-        }),
+        Json(AuthResponse { user: user_info }),
     ))
 }
 
@@ -171,8 +196,6 @@ pub async fn logout(
         (status = 401, description = "Unauthorized")
     )
 )]
-pub async fn me(
-    AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<impl IntoResponse, AppError> {
+pub async fn me(AuthenticatedUser(user): AuthenticatedUser) -> Result<impl IntoResponse, AppError> {
     Ok(Json(user))
 }

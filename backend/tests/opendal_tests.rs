@@ -18,7 +18,7 @@ async fn test_opendal_fs_full_crud_workflow() {
     assert_eq!(entries.len(), 0);
 
     // 2. Create nested directory
-    let src_dir = VfsPath::new("test_opendal", "/documents");
+    let src_dir = VfsPath::new("test_opendal", "/documents").unwrap();
     vfs.create_dir(&src_dir).await.unwrap();
 
     let root_entries = vfs.list(&root_path).await.unwrap();
@@ -27,10 +27,12 @@ async fn test_opendal_fs_full_crud_workflow() {
     assert_eq!(root_entries[0].kind, FileKind::Directory);
 
     // 3. Write file stream
-    let file_path = VfsPath::new("test_opendal", "/documents/report.txt");
+    let file_path = VfsPath::new("test_opendal", "/documents/report.txt").unwrap();
     let content = b"AeroFS OpenDAL Architecture Migration Report".to_vec();
     let cursor = std::io::Cursor::new(content.clone());
-    vfs.write_stream(&file_path, Box::new(cursor)).await.unwrap();
+    vfs.write_stream(&file_path, Box::new(cursor))
+        .await
+        .unwrap();
 
     // 4. Stat file and verify metadata
     let meta = vfs.stat(&file_path).await.unwrap();
@@ -46,13 +48,13 @@ async fn test_opendal_fs_full_crud_workflow() {
     assert_eq!(buffer, content);
 
     // 6. Rename / Move
-    let renamed_path = VfsPath::new("test_opendal", "/documents/final_report.txt");
+    let renamed_path = VfsPath::new("test_opendal", "/documents/final_report.txt").unwrap();
     vfs.rename(&file_path, &renamed_path).await.unwrap();
     assert!(vfs.stat(&file_path).await.is_err());
     assert!(vfs.stat(&renamed_path).await.is_ok());
 
     // 7. Copy
-    let copy_path = VfsPath::new("test_opendal", "/documents/final_report_copy.txt");
+    let copy_path = VfsPath::new("test_opendal", "/documents/final_report_copy.txt").unwrap();
     vfs.copy(&renamed_path, &copy_path).await.unwrap();
     assert!(vfs.stat(&copy_path).await.is_ok());
 
@@ -72,6 +74,10 @@ async fn test_opendal_strict_path_traversal_rejection() {
     let op = build_fs_operator(&root_str).unwrap();
     let vfs = OpenDalFileSystem::new("test_conn", op);
 
+    // Verify root is accessible
+    let root_path = VfsPath::root("test_conn");
+    assert!(vfs.stat(&root_path).await.is_ok());
+
     // P0 #1: Traversal paths must be strictly rejected
     let traversal_paths = vec![
         "../../etc/passwd",
@@ -80,16 +86,12 @@ async fn test_opendal_strict_path_traversal_rejection() {
     ];
 
     for tp in traversal_paths {
-        let vfs_path = VfsPath {
-            connection_id: "test_conn".to_string(),
-            path: tp.to_string(),
-        };
-        let res = vfs.stat(&vfs_path).await;
+        let vfs_path_res = VfsPath::new("test_conn", tp);
         assert!(
-            matches!(res, Err(VfsError::InvalidPath(_))),
+            matches!(vfs_path_res, Err(VfsError::InvalidPath(_))),
             "Expected InvalidPath for traversal '{}', got {:?}",
             tp,
-            res
+            vfs_path_res
         );
     }
 }
@@ -121,14 +123,14 @@ async fn test_opendal_honest_capabilities() {
 
     let caps = vfs.capabilities();
     // P0 #3: Honest capabilities
-    assert_eq!(caps.atomic_rename, false);
-    assert_eq!(caps.atomic_write, false);
-    assert_eq!(caps.resume_upload, false);
-    assert_eq!(caps.resume_download, false);
+    assert!(!caps.atomic_rename);
+    assert!(!caps.atomic_write);
+    assert!(!caps.resume_upload);
+    assert!(!caps.resume_download);
 
     // P2 #1: Local provider policy
     #[cfg(unix)]
-    assert_eq!(caps.permissions, true);
+    assert!(caps.permissions);
 }
 
 #[tokio::test]
@@ -138,9 +140,9 @@ async fn test_opendal_s3_capabilities() {
 
     let caps = vfs.capabilities();
     // P2 #1: S3 specific capabilities
-    assert_eq!(caps.checksum, true);
-    assert_eq!(caps.server_side_copy, true);
-    assert_eq!(caps.range_read, true);
+    assert!(caps.checksum);
+    assert!(caps.server_side_copy);
+    assert!(caps.range_read);
 }
 
 #[tokio::test]
@@ -150,10 +152,12 @@ async fn test_opendal_read_range() {
     let op = build_fs_operator(&root_str).unwrap();
     let vfs = OpenDalFileSystem::new("test_conn", op);
 
-    let file_path = VfsPath::new("test_conn", "/sample.bin");
+    let file_path = VfsPath::new("test_conn", "/sample.bin").unwrap();
     let content = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let cursor = std::io::Cursor::new(content.to_vec());
-    vfs.write_stream(&file_path, Box::new(cursor)).await.unwrap();
+    vfs.write_stream(&file_path, Box::new(cursor))
+        .await
+        .unwrap();
 
     // 1. Read slice from offset 10 with length 5 (expecting "ABCDE")
     let mut reader = vfs.read_range(&file_path, 10, 5).await.unwrap();
@@ -167,4 +171,3 @@ async fn test_opendal_read_range() {
     reader2.read_to_end(&mut buf2).await.unwrap();
     assert_eq!(buf2, b"UVWXYZ");
 }
-

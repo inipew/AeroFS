@@ -20,7 +20,12 @@ pub trait FileSystem: Send + Sync + 'static {
     async fn read_stream(&self, path: &VfsPath) -> Result<AsyncReadBox, VfsError>;
 
     /// Open a readable stream for a specific byte range (offset, length)
-    async fn read_range(&self, path: &VfsPath, offset: u64, length: u64) -> Result<AsyncReadBox, VfsError>;
+    async fn read_range(
+        &self,
+        path: &VfsPath,
+        offset: u64,
+        length: u64,
+    ) -> Result<AsyncReadBox, VfsError>;
 
     /// Write from an input stream to a file (atomic if supported)
     async fn write_stream(&self, path: &VfsPath, input: AsyncReadBox) -> Result<(), VfsError>;

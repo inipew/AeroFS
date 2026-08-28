@@ -4,6 +4,7 @@ pub mod file;
 pub mod operation;
 pub mod path;
 pub mod permission;
+pub mod policy;
 pub mod settings;
 
 pub use capabilities::Capabilities;
@@ -12,6 +13,5 @@ pub use file::{DirectoryListing, FileEntry, FileKind, FileMetadata, FileVersion}
 pub use operation::{OperationRecord, OperationStatus};
 pub use path::VfsPath;
 pub use permission::PermissionSet;
+pub use policy::*;
 pub use settings::*;
-
-

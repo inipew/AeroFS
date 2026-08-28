@@ -8,8 +8,9 @@ use std::time::Duration;
 pub fn build_fs_operator(root: &str) -> Result<Operator, VfsError> {
     let mut builder = opendal::services::Fs::default();
     builder = builder.root(root);
-    let op = Operator::new(builder)
-        .map_err(|e| VfsError::ConnectionError(format!("Failed to init Local Fs Operator: {}", e)))?;
+    let op = Operator::new(builder).map_err(|e| {
+        VfsError::ConnectionError(format!("Failed to init Local Fs Operator: {}", e))
+    })?;
     let op = op.layer(LoggingLayer::default());
     Ok(op)
 }

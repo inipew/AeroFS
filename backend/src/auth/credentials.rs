@@ -1,10 +1,10 @@
+use crate::errors::AppError;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::RngCore;
-use crate::errors::AppError;
 
 /// Derives a 32-byte master key from an input secret string (using SHA-256)
 pub fn derive_master_key(secret: &str) -> [u8; 32] {

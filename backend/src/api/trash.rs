@@ -26,20 +26,14 @@ pub struct MoveToTrashRequest {
     pub paths: Vec<String>,
 }
 
+type TrashDbRow = (String, String, String, String, i64, Option<i64>, String);
+
 /// List all items in trash
 pub async fn list_trash(
     State(state): State<AppState>,
     _user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        i64,
-        Option<i64>,
-        String,
-    )> = sqlx::query_as(
+    let rows: Vec<TrashDbRow> = sqlx::query_as(
         "SELECT id, connection_id, original_path, item_name, is_directory, size, deleted_at FROM trash_items ORDER BY deleted_at DESC"
     )
     .fetch_all(&state.db)
@@ -48,8 +42,8 @@ pub async fn list_trash(
 
     let items: Vec<TrashItem> = rows
         .into_iter()
-        .map(|(id, connection_id, original_path, item_name, is_dir, size, deleted_at)| {
-            TrashItem {
+        .map(
+            |(id, connection_id, original_path, item_name, is_dir, size, deleted_at)| TrashItem {
                 id,
                 connection_id,
                 original_path,
@@ -57,8 +51,8 @@ pub async fn list_trash(
                 is_directory: is_dir != 0,
                 size,
                 deleted_at,
-            }
-        })
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -76,20 +70,31 @@ pub async fn move_to_trash(
         .ok_or_else(|| AppError::NotFound("Storage connection not found".into()))?;
 
     let now_str = chrono::Utc::now().to_rfc3339();
-    let trash_dir_vfs = crate::domain::VfsPath::new(&payload.connection_id, "/.trash");
+    let trash_dir_vfs = crate::domain::VfsPath::new(&payload.connection_id, "/.trash")?;
     let _ = provider.create_dir(&trash_dir_vfs).await;
 
     let mut moved_count = 0;
 
     for path_str in &payload.paths {
-        let vfs_path = crate::domain::VfsPath::new(&payload.connection_id, path_str);
+        let vfs_path = match crate::domain::VfsPath::new(&payload.connection_id, path_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         if let Ok(meta) = provider.stat(&vfs_path).await {
             let item_id = uuid::Uuid::new_v4().to_string();
             let trash_filename = format!("/.trash/{}_{}", &item_id[..8], meta.name);
-            let dest_vfs = crate::domain::VfsPath::new(&payload.connection_id, &trash_filename);
+            let dest_vfs =
+                match crate::domain::VfsPath::new(&payload.connection_id, &trash_filename) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
 
             if provider.rename(&vfs_path, &dest_vfs).await.is_ok() {
-                let is_dir = if meta.kind == crate::domain::FileKind::Directory { 1 } else { 0 };
+                let is_dir = if meta.kind == crate::domain::FileKind::Directory {
+                    1
+                } else {
+                    0
+                };
                 let _ = sqlx::query(
                     "INSERT INTO trash_items (id, connection_id, original_path, trash_path, item_name, is_directory, size, deleted_at, deleted_by)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -128,30 +133,28 @@ pub async fn restore_trash_item(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT connection_id, original_path, trash_path FROM trash_items WHERE id = ?"
+        "SELECT connection_id, original_path, trash_path FROM trash_items WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
-    let (connection_id, original_path, trash_path) = row.ok_or_else(|| {
-        AppError::NotFound("Trash item not found".into())
-    })?;
+    let (connection_id, original_path, trash_path) =
+        row.ok_or_else(|| AppError::NotFound("Trash item not found".into()))?;
 
     let provider = state
         .get_provider(&connection_id)
         .await
         .ok_or_else(|| AppError::NotFound("Storage connection not found".into()))?;
 
-    let from_vfs = crate::domain::VfsPath::new(&connection_id, &trash_path);
-    let to_vfs = crate::domain::VfsPath::new(&connection_id, &original_path);
+    let from_vfs = crate::domain::VfsPath::new(&connection_id, &trash_path)?;
+    let to_vfs = crate::domain::VfsPath::new(&connection_id, &original_path)?;
 
     // Move from .trash back to original
-    provider
-        .rename(&from_vfs, &to_vfs)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to restore file from trash: {}", e)))?;
+    provider.rename(&from_vfs, &to_vfs).await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("Failed to restore file from trash: {}", e))
+    })?;
 
     // Remove from trash database only after successful rename
     sqlx::query("DELETE FROM trash_items WHERE id = ?")
@@ -172,20 +175,23 @@ pub async fn delete_trash_item(
     _user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT connection_id, trash_path FROM trash_items WHERE id = ?"
-    )
-    .bind(&id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT connection_id, trash_path FROM trash_items WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
     if let Some((connection_id, trash_path)) = row {
         if let Some(provider) = state.get_provider(&connection_id).await {
-            let vfs_path = crate::domain::VfsPath::new(&connection_id, &trash_path);
-            let _ = provider.delete(&vfs_path).await;
+            if let Ok(vfs_path) = crate::domain::VfsPath::new(&connection_id, &trash_path) {
+                let _ = provider.delete(&vfs_path).await;
+            }
         }
-        let _ = sqlx::query("DELETE FROM trash_items WHERE id = ?").bind(&id).execute(&state.db).await;
+        let _ = sqlx::query("DELETE FROM trash_items WHERE id = ?")
+            .bind(&id)
+            .execute(&state.db)
+            .await;
     }
 
     Ok(Json(serde_json::json!({
@@ -199,17 +205,17 @@ pub async fn empty_trash(
     State(state): State<AppState>,
     _user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT connection_id, trash_path FROM trash_items"
-    )
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT connection_id, trash_path FROM trash_items")
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
 
     for (connection_id, trash_path) in rows {
         if let Some(provider) = state.get_provider(&connection_id).await {
-            let vfs_path = crate::domain::VfsPath::new(&connection_id, &trash_path);
-            let _ = provider.delete(&vfs_path).await;
+            if let Ok(vfs_path) = crate::domain::VfsPath::new(&connection_id, &trash_path) {
+                let _ = provider.delete(&vfs_path).await;
+            }
         }
     }
 

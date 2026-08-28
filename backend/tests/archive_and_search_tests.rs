@@ -124,8 +124,12 @@ async fn test_archive_compress_extract_and_search() {
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let entries_json: Value = serde_json::from_slice(&body).unwrap();
     let entries_arr = entries_json.as_array().unwrap();
-    assert!(entries_arr.iter().any(|e| e["name"] == "documents" && e["kind"] == "directory"));
-    assert!(entries_arr.iter().any(|e| e["name"] == "root.txt" && e["kind"] == "file"));
+    assert!(entries_arr
+        .iter()
+        .any(|e| e["name"] == "documents" && e["kind"] == "directory"));
+    assert!(entries_arr
+        .iter()
+        .any(|e| e["name"] == "root.txt" && e["kind"] == "file"));
 
     // 3c. Virtual Archive Single Entry Read / Stream (plan/17.md)
     let read_req = Request::builder()
@@ -187,12 +191,112 @@ async fn test_archive_compress_extract_and_search() {
     let status = resp.status();
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     if status != StatusCode::OK {
-        eprintln!("Audit log response error: {}", String::from_utf8_lossy(&body));
+        eprintln!(
+            "Audit log response error: {}",
+            String::from_utf8_lossy(&body)
+        );
     }
     assert_eq!(status, StatusCode::OK);
     let logs: Value = serde_json::from_slice(&body).unwrap();
     let logs_arr = logs.as_array().unwrap();
     assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_COMPRESS"));
     assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_EXTRACT"));
-    assert!(logs_arr.iter().any(|l| l["action"] == "ARCHIVE_EXTRACT_SELECTED"));
+    assert!(logs_arr
+        .iter()
+        .any(|l| l["action"] == "ARCHIVE_EXTRACT_SELECTED"));
+}
+
+#[tokio::test]
+async fn test_archive_overwrite_modes() {
+    let (app, cookie, temp) = setup_app().await;
+    let storage_dir = temp.path().join("storage");
+
+    // 1. Create a zip archive containing collision.txt
+    let col_file = storage_dir.join("collision.txt");
+    std::fs::write(&col_file, b"Original Content in Zip").unwrap();
+
+    let compress_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/compress")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "base_path": "/",
+                "relative_paths": ["/collision.txt"],
+                "destination_file": "/collision_test.zip",
+                "format": "zip"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(compress_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // 2. Pre-create target file in /target_dir with different content
+    let target_dir = storage_dir.join("target_dir");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    std::fs::write(
+        target_dir.join("collision.txt"),
+        b"Existing Content in Target",
+    )
+    .unwrap();
+
+    // 3. Test overwrite_mode = "skip"
+    let extract_skip_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/extract")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "archive_path": "/collision_test.zip",
+                "destination_dir": "/target_dir",
+                "format": "zip",
+                "overwrite_mode": "skip"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(extract_skip_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let res_val: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(res_val["skipped_count"], 1);
+    // Content should NOT be overwritten
+    assert_eq!(
+        std::fs::read(target_dir.join("collision.txt")).unwrap(),
+        b"Existing Content in Target"
+    );
+
+    // 4. Test overwrite_mode = "keep_both"
+    let extract_keep_req = Request::builder()
+        .uri("/api/v1/connections/local/archive/extract")
+        .method("POST")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "archive_path": "/collision_test.zip",
+                "destination_dir": "/target_dir",
+                "format": "zip",
+                "overwrite_mode": "keep_both"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(extract_keep_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let res_val: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(res_val["entries_count"], 1);
+    // collision (1).txt should now exist alongside collision.txt
+    assert!(target_dir.join("collision (1).txt").is_file());
+    assert_eq!(
+        std::fs::read(target_dir.join("collision (1).txt")).unwrap(),
+        b"Original Content in Zip"
+    );
 }

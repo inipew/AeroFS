@@ -20,20 +20,13 @@ impl VfsPath {
         })
     }
 
-    /// Construct a VfsPath. Strict validation is performed.
-    /// Traversal attempts are preserved as raw paths so VFS adapters strictly reject them.
-    pub fn new(connection_id: impl Into<String>, path: impl Into<String>) -> Self {
+    /// Strict constructor guaranteeing path normalization and safety invariants
+    pub fn new(
+        connection_id: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<Self, VfsError> {
         let raw_path = path.into();
-        match Self::validate_and_normalize(&raw_path) {
-            Ok(normalized) => Self {
-                connection_id: connection_id.into(),
-                path: normalized,
-            },
-            Err(_) => Self {
-                connection_id: connection_id.into(),
-                path: raw_path,
-            },
-        }
+        Self::parse(connection_id, &raw_path)
     }
 
     /// Root path for a given connection
@@ -120,14 +113,15 @@ impl VfsPath {
         self.path == "/"
     }
 
-    /// Joins a relative path segment to this VfsPath
-    pub fn join(&self, child: &str) -> VfsPath {
-        if self.is_root() {
-            VfsPath::new(&self.connection_id, child)
+    /// Joins a relative path segment to this VfsPath safely
+    pub fn join(&self, child: &str) -> Result<VfsPath, VfsError> {
+        let clean_child = child.trim_start_matches('/');
+        let combined = if self.is_root() {
+            format!("/{}", clean_child)
         } else {
-            let combined = format!("{}/{}", self.path, child.trim_start_matches('/'));
-            VfsPath::new(&self.connection_id, combined)
-        }
+            format!("{}/{}", self.path.trim_end_matches('/'), clean_child)
+        };
+        Self::parse(&self.connection_id, &combined)
     }
 }
 
@@ -163,8 +157,8 @@ mod tests {
 
     #[test]
     fn test_vfs_path_join_and_parent() {
-        let base = VfsPath::new("local", "/var/www");
-        let child = base.join("index.html");
+        let base = VfsPath::new("local", "/var/www").unwrap();
+        let child = base.join("index.html").unwrap();
         assert_eq!(child.path, "/var/www/index.html");
         assert_eq!(child.parent().unwrap().path, "/var/www");
     }
