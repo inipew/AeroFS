@@ -1,5 +1,5 @@
 use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
-use crate::domain::{FileKind, VfsPath};
+use crate::domain::{parse_single_byte_range, ByteRange, FileKind, RangeError, VfsPath};
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
 use axum::{
@@ -225,63 +225,38 @@ pub async fn get_file_content(
         }
     }
 
-    // Handle HTTP Range header for seeking in video/audio players (RFC 7233 compliant)
+    // Handle HTTP Range header for seeking in video/audio players (RFC 9110 / RFC 7233 compliant)
     if let Some(range_val) = req_headers.get(header::RANGE).and_then(|r| r.to_str().ok()) {
-        if let Some(range_spec) = range_val.strip_prefix("bytes=") {
-            let parts: Vec<&str> = range_spec.split('-').collect();
-            if parts.len() == 2 {
-                let (start, end) = if parts[0].is_empty() {
-                    // Suffix range: bytes=-500 (last 500 bytes)
-                    let suffix_len: u64 = parts[1].parse().unwrap_or(0);
-                    if suffix_len == 0 {
-                        (0, 0)
-                    } else {
-                        let s = file_size.saturating_sub(suffix_len);
-                        (s, file_size.saturating_sub(1))
-                    }
-                } else if parts[1].is_empty() {
-                    // Open-ended range: bytes=500- (from 500 to EOF)
-                    let s: u64 = parts[0].parse().unwrap_or(0);
-                    (s, file_size.saturating_sub(1))
-                } else {
-                    // Bounded range: bytes=100-200
-                    let s: u64 = parts[0].parse().unwrap_or(0);
-                    let e: u64 = parts[1]
-                        .parse()
-                        .unwrap_or(file_size.saturating_sub(1))
-                        .min(file_size.saturating_sub(1));
-                    (s, e)
-                };
+        match parse_single_byte_range(range_val, file_size) {
+            Ok(byte_range) => {
+                let chunk_len = byte_range.length();
+                let stream = provider
+                    .read_range(&vfs_path, byte_range.start, chunk_len)
+                    .await?;
+                let body = Body::from_stream(ReaderStream::new(stream));
 
-                if start <= end && start < file_size {
-                    let chunk_len = end - start + 1;
-
-                    // True O(1) range read via provider.read_range
-                    let stream = provider.read_range(&vfs_path, start, chunk_len).await?;
-                    let body = Body::from_stream(ReaderStream::new(stream));
-
-                    resp_headers.insert(CONTENT_LENGTH, chunk_len.to_string().parse().unwrap());
-                    resp_headers.insert(
-                        header::CONTENT_RANGE,
-                        format!("bytes {}-{}/{}", start, end, file_size)
-                            .parse()
-                            .unwrap(),
-                    );
-                    return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body));
-                } else {
-                    // 416 Range Not Satisfiable
-                    let mut unsat_headers = HeaderMap::new();
-                    unsat_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-                    unsat_headers.insert(
-                        header::CONTENT_RANGE,
-                        format!("bytes */{}", file_size).parse().unwrap(),
-                    );
-                    return Ok((
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        unsat_headers,
-                        Body::empty(),
-                    ));
-                }
+                resp_headers.insert(CONTENT_LENGTH, chunk_len.to_string().parse().unwrap());
+                resp_headers.insert(
+                    header::CONTENT_RANGE,
+                    byte_range.content_range_header().parse().unwrap(),
+                );
+                return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body));
+            }
+            Err(RangeError::MultiRangeNotSupported)
+            | Err(RangeError::NotSatisfiable(_))
+            | Err(RangeError::InvalidFormat(_)) => {
+                // 416 Range Not Satisfiable
+                let mut unsat_headers = HeaderMap::new();
+                unsat_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+                unsat_headers.insert(
+                    header::CONTENT_RANGE,
+                    ByteRange::unsatisfiable_header(file_size).parse().unwrap(),
+                );
+                return Ok((
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    unsat_headers,
+                    Body::empty(),
+                ));
             }
         }
     }

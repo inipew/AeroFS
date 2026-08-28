@@ -59,6 +59,7 @@ pub enum TransferStatus {
     Running,
     CancellationRequested,
     Cancelled,
+    Interrupted,
     Completed,
     Failed,
 }
@@ -70,6 +71,7 @@ impl TransferStatus {
             TransferStatus::Running => "running",
             TransferStatus::CancellationRequested => "cancellation_requested",
             TransferStatus::Cancelled => "cancelled",
+            TransferStatus::Interrupted => "interrupted",
             TransferStatus::Completed => "completed",
             TransferStatus::Failed => "failed",
         }
@@ -81,6 +83,7 @@ impl TransferStatus {
             "running" => TransferStatus::Running,
             "cancellation_requested" => TransferStatus::CancellationRequested,
             "cancelled" => TransferStatus::Cancelled,
+            "interrupted" => TransferStatus::Interrupted,
             "completed" => TransferStatus::Completed,
             "failed" => TransferStatus::Failed,
             _ => TransferStatus::Queued,
@@ -192,9 +195,9 @@ impl TransferManager {
                     if job.dismissed_at.is_some() {
                         continue;
                     }
-                    // Mark interrupted 'running' jobs as failed on restart
+                    // Mark interrupted 'running' jobs as interrupted on restart
                     if job.status == TransferStatus::Running {
-                        job.status = TransferStatus::Failed;
+                        job.status = TransferStatus::Interrupted;
                         job.error_message = Some("Transfer interrupted by server restart".into());
                         let _ = Self::save_job_to_db(&db_init, &job).await;
                     } else if job.status == TransferStatus::Queued {
@@ -668,7 +671,10 @@ impl TransferManager {
                 }
                 let is_finished = matches!(
                     job.status,
-                    TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
+                    TransferStatus::Completed
+                        | TransferStatus::Failed
+                        | TransferStatus::Cancelled
+                        | TransferStatus::Interrupted
                 );
                 if is_finished {
                     let can_clear = if is_admin {

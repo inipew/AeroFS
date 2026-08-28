@@ -33,6 +33,12 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Precondition failed: {0}")]
+    PreconditionFailed(String),
+
+    #[error("Range not satisfiable: {0}")]
+    RangeNotSatisfiable(String),
+
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
 
@@ -246,6 +252,22 @@ impl IntoResponse for AppError {
                 ErrorCategory::Conflict,
                 false,
                 Some("reload_latest_version_and_retry".to_string()),
+                msg.clone(),
+            ),
+            AppError::PreconditionFailed(msg) => (
+                StatusCode::PRECONDITION_FAILED,
+                "PRECONDITION_FAILED",
+                ErrorCategory::Conflict,
+                false,
+                Some("reload_latest_version_and_retry".to_string()),
+                msg.clone(),
+            ),
+            AppError::RangeNotSatisfiable(msg) => (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                "RANGE_NOT_SATISFIABLE",
+                ErrorCategory::Validation,
+                false,
+                Some("verify_range_bounds".to_string()),
                 msg.clone(),
             ),
             AppError::PayloadTooLarge(msg) => (

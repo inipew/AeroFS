@@ -37,7 +37,10 @@ export const useTransferStore = defineStore('transfer', () => {
 
   const activeJobs = computed(() => {
     return jobs.value.filter(
-      (j) => j.status === 'running' || j.status === 'queued'
+      (j) =>
+        j.status === 'running' ||
+        j.status === 'queued' ||
+        j.status === 'cancellation_requested'
     );
   });
 
@@ -82,7 +85,11 @@ export const useTransferStore = defineStore('transfer', () => {
       jobs.value = [job, ...jobs.value];
     }
 
-    if (job.status === 'running' || job.status === 'queued') {
+    if (
+      job.status === 'running' ||
+      job.status === 'queued' ||
+      job.status === 'cancellation_requested'
+    ) {
       startPollingIfNeeded();
     }
   }
@@ -220,7 +227,10 @@ export const useTransferStore = defineStore('transfer', () => {
 
   async function clearFinished() {
     jobs.value = jobs.value.filter(
-      (j) => j.status === 'running' || j.status === 'queued'
+      (j) =>
+        j.status === 'running' ||
+        j.status === 'queued' ||
+        j.status === 'cancellation_requested'
     );
     try {
       await apiClient.post('/transfers/clear-finished');

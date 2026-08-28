@@ -1,6 +1,13 @@
 export type TransferType = 'copy' | 'move' | 'upload' | 'sync';
 
-export type TransferStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type TransferStatus =
+  | 'queued'
+  | 'running'
+  | 'cancellation_requested'
+  | 'cancelled'
+  | 'interrupted'
+  | 'completed'
+  | 'failed';
 
 export interface TransferJob {
   id: string;

@@ -45,6 +45,8 @@ impl RetryPolicy {
             | AppError::Security(_)
             | AppError::BadRequest(_)
             | AppError::NotFound(_)
+            | AppError::PreconditionFailed(_)
+            | AppError::RangeNotSatisfiable(_)
             | AppError::PayloadTooLarge(_)
             | AppError::InsufficientStorage(_) => false,
             AppError::ChecksumMismatch(_) => true,

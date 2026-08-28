@@ -6,6 +6,7 @@ pub mod operation;
 pub mod path;
 pub mod permission;
 pub mod policy;
+pub mod range;
 pub mod retry;
 pub mod settings;
 
@@ -20,5 +21,6 @@ pub use operation::{
 pub use path::VfsPath;
 pub use permission::PermissionSet;
 pub use policy::*;
+pub use range::{parse_single_byte_range, ByteRange, RangeError};
 pub use retry::RetryPolicy;
 pub use settings::*;

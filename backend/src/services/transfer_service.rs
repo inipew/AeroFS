@@ -89,6 +89,27 @@ impl TransferService {
         Ok(job_id)
     }
 
+    /// Checks if a user has visibility authorization to view a specific transfer job
+    pub fn authorize_transfer_visibility(
+        user: &AuthenticatedUser,
+        job: &TransferJob,
+        allowed_connections: &HashSet<String>,
+    ) -> bool {
+        // 1. Admin always has full visibility
+        if user.is_admin {
+            return true;
+        }
+
+        // 2. Job Owner always has visibility to their own job
+        if job.user_id.as_deref() == Some(&user.id) {
+            return true;
+        }
+
+        // 3. For other jobs, user must have access to both source and destination connections
+        allowed_connections.contains(&job.source_connection_id)
+            && allowed_connections.contains(&job.destination_connection_id)
+    }
+
     /// List active and undismissed transfer jobs (scoped by user ownership and connection permissions)
     pub async fn list_transfers(
         state: &AppState,
@@ -101,7 +122,7 @@ impl TransferService {
 
         if !user.is_admin {
             let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1",
+                "SELECT connection_id FROM permissions WHERE user_id = ? AND (can_read = 1 OR can_write = 1)",
             )
             .bind(&user.id)
             .fetch_all(&state.db)
@@ -111,10 +132,7 @@ impl TransferService {
             let mut allowed: HashSet<String> = rows.into_iter().map(|r| r.0).collect();
             allowed.insert("local".to_string());
 
-            jobs.retain(|j| {
-                allowed.contains(&j.source_connection_id)
-                    && allowed.contains(&j.destination_connection_id)
-            });
+            jobs.retain(|j| Self::authorize_transfer_visibility(user, j, &allowed));
         }
 
         Ok(jobs)

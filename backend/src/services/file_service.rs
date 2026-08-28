@@ -154,19 +154,27 @@ impl FileService {
             }
         }
 
-        // Optimistic concurrency check (ETag)
+        // Optimistic concurrency check (ETag / If-Match)
         if let Some(expected) = expected_etag {
-            if let Ok(existing_meta) = provider.stat(&vfs_path).await {
-                let clean_expected = expected.trim().trim_matches('"');
-                let clean_actual = existing_meta.etag.trim().trim_matches('"');
-                if clean_expected != clean_actual && expected != "*" {
-                    return Err(AppError::Conflict(format!(
-                        "File was modified externally. Expected ETag: {}, Current ETag: {}",
-                        clean_expected, clean_actual
-                    )));
-                }
+            let existing_meta = provider.stat(&vfs_path).await.map_err(|e| match e {
+                VfsError::NotFound(_) => AppError::PreconditionFailed(format!(
+                    "Target file '{}' does not exist for If-Match precondition",
+                    vfs_path.path
+                )),
+                other => AppError::from(other),
+            })?;
+
+            let clean_expected = expected.trim().trim_matches('"');
+            let clean_actual = existing_meta.etag.trim().trim_matches('"');
+            if clean_expected != clean_actual && expected != "*" {
+                return Err(AppError::PreconditionFailed(format!(
+                    "File was modified externally. Expected ETag: {}, Current ETag: {}",
+                    clean_expected, clean_actual
+                )));
             }
         }
+
+        let caps = provider.capabilities();
 
         // Destination permission preservation: capture existing permissions or inherit from parent
         let target_perms = resolve_destination_permissions(
@@ -177,33 +185,70 @@ impl FileService {
         )
         .await;
 
-        // Atomic write safety: write to temporary path first then rename
-        let tmp_vfs = VfsPath::new(connection_id, format!("{}.aerofs.tmp", vfs_path.path))?;
-        let cursor = Cursor::new(content.clone());
+        if caps.atomic_rename {
+            // Atomic write safety: write to temporary path first then atomic rename
+            let tmp_vfs = VfsPath::new(connection_id, format!("{}.aerofs.tmp", vfs_path.path))?;
+            let cursor = Cursor::new(content.clone());
 
-        if provider
-            .write_stream(&tmp_vfs, Box::new(cursor))
-            .await
-            .is_ok()
-        {
-            if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&tmp_vfs, perms).await;
-            }
-            if provider.rename(&tmp_vfs, &vfs_path).await.is_err() {
+            if provider
+                .write_stream(&tmp_vfs, Box::new(cursor))
+                .await
+                .is_ok()
+            {
+                if caps.permissions {
+                    if let Some(ref perms) = target_perms {
+                        if let Err(e) = provider.set_permissions(&tmp_vfs, perms).await {
+                            tracing::warn!("Failed to set permissions on temporary file '{}': {}", tmp_vfs.path, e);
+                        }
+                    }
+                }
+
+                if let Err(rename_err) = provider.rename(&tmp_vfs, &vfs_path).await {
+                    tracing::warn!(
+                        "Atomic rename failed from '{}' to '{}': {}. Falling back to direct write.",
+                        tmp_vfs.path,
+                        vfs_path.path,
+                        rename_err
+                    );
+                    let _ = provider.delete(&tmp_vfs).await;
+
+                    let fallback = Cursor::new(content);
+                    provider.write_stream(&vfs_path, Box::new(fallback)).await?;
+                    if caps.permissions {
+                        if let Some(ref perms) = target_perms {
+                            if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
+                                tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                            }
+                        }
+                    }
+                } else if caps.permissions {
+                    if let Some(ref perms) = target_perms {
+                        if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
+                            tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                        }
+                    }
+                }
+            } else {
                 let fallback = Cursor::new(content);
                 provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-                if let Some(ref perms) = target_perms {
-                    let _ = provider.set_permissions(&vfs_path, perms).await;
+                if caps.permissions {
+                    if let Some(ref perms) = target_perms {
+                        if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
+                            tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                        }
+                    }
                 }
-                let _ = provider.delete(&tmp_vfs).await;
-            } else if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&vfs_path, perms).await;
             }
         } else {
-            let fallback = Cursor::new(content);
-            provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-            if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&vfs_path, perms).await;
+            // Direct write for providers without atomic rename support (e.g. object storage)
+            let cursor = Cursor::new(content);
+            provider.write_stream(&vfs_path, Box::new(cursor)).await?;
+            if caps.permissions {
+                if let Some(ref perms) = target_perms {
+                    if let Err(e) = provider.set_permissions(&vfs_path, perms).await {
+                        tracing::warn!("Failed to set permissions on '{}': {}", vfs_path.path, e);
+                    }
+                }
             }
         }
 
@@ -296,10 +341,27 @@ impl FileService {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
         })?;
 
+        // 1. Deduplicate input paths to prevent duplicate task execution
+        let mut unique_paths: Vec<String> = paths
+            .into_iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // 2. Sort by depth descending (deepest paths first) to eliminate parent/child deletion races
+        unique_paths.sort_by(|a, b| {
+            b.matches('/')
+                .count()
+                .cmp(&a.matches('/').count())
+                .then_with(|| b.len().cmp(&a.len()))
+        });
+
         let semaphore = Arc::new(Semaphore::new(8));
         let mut tasks = JoinSet::new();
 
-        for p in paths {
+        for p in unique_paths {
             let provider = provider.clone();
             let conn_id = connection_id.to_string();
             let sem = semaphore.clone();

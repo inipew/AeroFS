@@ -205,6 +205,7 @@
                     :class="[
                       'text-[9px] font-bold uppercase px-1.5 py-0.2 rounded-md',
                       job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
+                      job.status === 'interrupted' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : '',
                       job.status === 'failed' ? 'bg-red-500/20 text-red-600 dark:text-red-400' : '',
                       job.status === 'cancelled' ? 'bg-gray-200/60 dark:bg-slate-800 text-gray-500 dark:text-slate-400' : '',
                     ]"
@@ -212,9 +213,9 @@
                     {{ job.status }}
                   </span>
 
-                  <!-- Retry for failed / cancelled -->
+                  <!-- Retry for failed / cancelled / interrupted -->
                   <button
-                    v-if="job.status === 'failed' || job.status === 'cancelled'"
+                    v-if="job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted'"
                     @click="transferStore.retryTransfer(job.id)"
                     class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
                     title="Retry Transfer"
@@ -238,7 +239,11 @@
                 <div
                   :class="[
                     'h-1 rounded-full',
-                    job.status === 'completed' ? 'bg-emerald-500' : (job.status === 'failed' ? 'bg-red-500' : 'bg-gray-400 dark:bg-slate-600')
+                    job.status === 'completed'
+                      ? 'bg-emerald-500'
+                      : (job.status === 'interrupted'
+                          ? 'bg-amber-500'
+                          : (job.status === 'failed' ? 'bg-red-500' : 'bg-gray-400 dark:bg-slate-600'))
                   ]"
                   :style="{ width: `${calculatePercent(job)}%` }"
                 ></div>
@@ -250,8 +255,12 @@
                 <span>{{ calculatePercent(job) }}%</span>
               </div>
 
-              <!-- Error message if failed -->
-              <div v-if="job.status === 'failed' && job.error_message" class="text-[10px] text-red-500 dark:text-red-400 truncate">
+              <!-- Error message if failed or interrupted -->
+              <div
+                v-if="(job.status === 'failed' || job.status === 'interrupted') && job.error_message"
+                :class="job.status === 'interrupted' ? 'text-amber-600 dark:text-amber-400' : 'text-red-500 dark:text-red-400'"
+                class="text-[10px] truncate"
+              >
                 {{ job.error_message }}
               </div>
             </div>
@@ -275,13 +284,20 @@ const uiStore = useUiStore();
 
 const activeJobs = computed(() => {
   return transferStore.jobs.filter(
-    (j) => j.status === 'running' || j.status === 'queued'
+    (j) =>
+      j.status === 'running' ||
+      j.status === 'queued' ||
+      j.status === 'cancellation_requested'
   );
 });
 
 const finishedJobs = computed(() => {
   return transferStore.jobs.filter(
-    (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled'
+    (j) =>
+      j.status === 'completed' ||
+      j.status === 'failed' ||
+      j.status === 'cancelled' ||
+      j.status === 'interrupted'
   );
 });
 
