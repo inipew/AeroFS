@@ -2,8 +2,8 @@ import type { FileEntry } from './vfs';
 
 export type PanelId = 'left' | 'right';
 export type WorkspaceLayout = 'single' | 'split';
-export type PanelStatus = 'idle' | 'loading' | 'refreshing' | 'error';
-export type SortField = 'name' | 'size' | 'modified';
+export type PanelStatus = 'idle' | 'loading' | 'refreshing' | 'stale' | 'error' | 'offline';
+export type SortField = 'name' | 'size' | 'modified' | 'type';
 export type SortOrder = 'asc' | 'desc';
 export type ViewMode = 'grid' | 'list';
 

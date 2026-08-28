@@ -3,6 +3,8 @@ import { ref, computed, reactive } from 'vue';
 import { listFilesApi } from '../api/files';
 import { useTransferStore } from './transferStore';
 import { useUiStore } from './uiStore';
+import { parentPath } from '../utils/path';
+import { isAbortError, normalizeApiError } from '../utils/errorNormalizer';
 import type { FileEntry } from '../types/vfs';
 import type {
   PanelId,
@@ -170,6 +172,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const layout = ref<WorkspaceLayout>(initialLayout);
   const activePanelId = ref<PanelId>('left');
+  const activePanel = computed<Panel>(() => {
+    return activePanelId.value === 'left' ? leftPanel.value : rightPanel.value;
+  });
   const splitRatio = ref<number>(initialSplitRatio);
   const clipboard = ref<WorkspaceClipboard | null>(null);
 
@@ -346,21 +351,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.runtime.initialized = true;
       saveState();
       return { ok: true, path: data.path };
-    } catch (err: any) {
-      if (
-        err.name === 'CanceledError' ||
-        err.name === 'AbortError' ||
-        err.code === 'ERR_CANCELED' ||
-        err.message === 'canceled' ||
-        err.message === 'canceled'
-      ) {
+    } catch (err: unknown) {
+      if (isAbortError(err)) {
         return { ok: false, error: 'Aborted', aborted: true } as any;
       }
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
         return { ok: false, error: 'Stale response discarded', aborted: true } as any;
       }
-      p.runtime.status = 'error';
-      p.runtime.error = err.response?.data?.error?.message || 'Failed to list files';
+      const norm = normalizeApiError(err);
+      p.runtime.status = p.runtime.entries.length > 0 ? 'stale' : 'error';
+      p.runtime.error = norm.message;
       return { ok: false, error: p.runtime.error || undefined };
     }
   }
@@ -444,9 +444,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function navigateUp(panelId: PanelId) {
     const p = getPanel(panelId);
     if (p.location.path === '/' || p.location.path === '') return;
-    const parts = p.location.path.split('/').filter(Boolean);
-    parts.pop();
-    const parent = parts.length === 0 ? '/' : `/${parts.join('/')}`;
+    const parent = parentPath(p.location.path);
     await navigateTo(panelId, parent);
   }
 
@@ -703,6 +701,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     layout,
     isDualPane,
     activePanelId,
+    activePanel,
     splitRatio,
     leftPanel,
     rightPanel,

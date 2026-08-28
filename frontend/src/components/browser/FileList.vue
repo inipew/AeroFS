@@ -125,7 +125,7 @@ function setSort(field: string) {
   if (fileStore.sortField === field) {
     fileStore.sortOrder = fileStore.sortOrder === 'asc' ? 'desc' : 'asc';
   } else {
-    fileStore.sortField = field;
+    fileStore.sortField = field as any;
     fileStore.sortOrder = 'asc';
   }
   fileStore.fetchEntries();

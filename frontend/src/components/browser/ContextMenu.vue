@@ -27,7 +27,7 @@
         v-if="uiStore.isMobile && uiStore.contextMenu.item"
         class="flex items-center space-x-3 pb-3 mb-2 border-b border-gray-100 dark:border-slate-800"
       >
-        <span class="text-2xl">{{ uiStore.contextMenu.item.kind === 'directory' ? '📁' : '📄' }}</span>
+        <FbIcon :name="uiStore.contextMenu.item.kind === 'directory' ? 'folder' : 'file'" size="1.5em" class="text-amber-500 shrink-0" />
         <div class="truncate flex-1">
           <p class="font-bold text-sm text-gray-900 dark:text-white truncate">
             {{ uiStore.contextMenu.item.name }}
@@ -40,7 +40,7 @@
           @click="uiStore.closeContextMenu"
           class="p-1 text-gray-400 hover:text-gray-700 dark:hover:text-white text-base"
         >
-          ✕
+          <FbIcon name="x" size="1.1em" />
         </button>
       </div>
 
@@ -50,16 +50,20 @@
         <template v-if="uiStore.contextMenu.item.kind === 'directory'">
           <button
             @click="handleOpen"
-            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
           >
-            <span>📁 Open Folder</span>
+            <FbIcon name="folder" size="1.1em" class="text-amber-500 shrink-0" />
+            <span>Open Folder</span>
           </button>
 
           <button
             @click="handleOpenInOtherPanel"
             class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
           >
-            <span>📂 Open in Other Panel</span>
+            <div class="flex items-center space-x-2.5">
+              <FbIcon name="panel-right" size="1.1em" class="shrink-0" />
+              <span>Open in Other Panel</span>
+            </div>
             <span class="text-[10px] opacity-75 font-mono">Ctrl+Enter</span>
           </button>
         </template>
@@ -68,25 +72,28 @@
           <!-- Edit in Code Editor -->
           <button
             @click="handleEditInEditor"
-            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
           >
-            <span>📝 Edit in Code Editor</span>
+            <FbIcon name="code" size="1.1em" class="text-emerald-500 shrink-0" />
+            <span>Edit in Code Editor</span>
           </button>
 
           <!-- Browse Archive Contents -->
           <button
             v-if="isArchive(uiStore.contextMenu.item.name)"
             @click="handleOpenArchiveViewer"
-            class="w-full text-left px-3.5 py-2 hover:bg-amber-500 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-600 dark:text-amber-400 font-semibold cursor-pointer"
+            class="w-full text-left px-3.5 py-2 hover:bg-amber-500 hover:text-white flex items-center space-x-2.5 transition rounded-xl text-amber-600 dark:text-amber-400 font-semibold cursor-pointer"
           >
-            <span>📦 Browse Archive Contents</span>
+            <FbIcon name="archive" size="1.1em" class="shrink-0" />
+            <span>Browse Archive Contents</span>
           </button>
 
           <button
             @click="handleOpen"
-            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
           >
-            <span>📄 Download / Open</span>
+            <FbIcon name="download" size="1.1em" class="text-blue-500 shrink-0" />
+            <span>Download / Open</span>
           </button>
         </template>
 
@@ -98,7 +105,10 @@
             @click="handleCopyToOtherPane"
             class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-indigo-600 dark:text-indigo-400 font-semibold"
           >
-            <span>↪ Copy to Other Pane</span>
+            <div class="flex items-center space-x-2.5">
+              <FbIcon name="copy" size="1.1em" class="shrink-0" />
+              <span>Copy to Other Pane</span>
+            </div>
             <span class="text-[10px] opacity-75 font-mono">F5</span>
           </button>
 
@@ -107,7 +117,10 @@
             @click="handleMoveToOtherPane"
             class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-indigo-600 dark:text-indigo-400 font-semibold"
           >
-            <span>↦ Move to Other Pane</span>
+            <div class="flex items-center space-x-2.5">
+              <FbIcon name="move" size="1.1em" class="shrink-0" />
+              <span>Move to Other Pane</span>
+            </div>
             <span class="text-[10px] opacity-75 font-mono">F6</span>
           </button>
         </template>
@@ -117,32 +130,35 @@
         <!-- Toggle Star Bookmark -->
         <button
           @click="handleToggleStar"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>{{ isItemStarred ? '⭐ Remove from Starred' : '⭐ Add to Starred' }}</span>
+          <FbIcon name="star" size="1.1em" :class="isItemStarred ? 'text-yellow-500' : 'text-gray-400'" class="shrink-0" />
+          <span>{{ isItemStarred ? 'Remove from Starred' : 'Add to Starred' }}</span>
         </button>
 
         <!-- Share Link -->
         <button
           @click="handleShare"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
         >
-          <span>🔗 Share Link...</span>
+          <FbIcon name="share" size="1.1em" class="text-blue-500 shrink-0" />
+          <span>Share Link...</span>
         </button>
 
         <!-- Properties / Permissions -->
         <button
           @click="handleProperties"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>ℹ️ Properties / Permissions</span>
+          <FbIcon name="info" size="1.1em" class="text-cyan-500 shrink-0" />
+          <span>Properties / Permissions</span>
         </button>
 
         <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
 
         <!-- Read-Only Badge -->
-        <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-1.5 rounded-xl">
-          <span>🔒</span>
+        <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-2 rounded-xl">
+          <FbIcon name="shield" size="1.1em" class="text-amber-500 shrink-0" />
           <span>Read-Only Storage</span>
         </div>
 
@@ -151,7 +167,10 @@
           @click="handleCopy"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
         >
-          <span>📋 Copy</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="copy" size="1.1em" class="text-indigo-500 shrink-0" />
+            <span>Copy</span>
+          </div>
           <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+C</span>
         </button>
 
@@ -160,7 +179,10 @@
           @click="handleCut"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
         >
-          <span>✂️ Cut</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="move" size="1.1em" class="text-rose-500 shrink-0" />
+            <span>Cut</span>
+          </div>
           <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+X</span>
         </button>
 
@@ -169,7 +191,10 @@
           @click="handlePaste"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400"
         >
-          <span>📄 Paste</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="save" size="1.1em" class="shrink-0" />
+            <span>Paste</span>
+          </div>
           <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
         </button>
 
@@ -179,27 +204,30 @@
         <button
           v-if="canWrite && isArchive(uiStore.contextMenu.item.name)"
           @click="handleExtract"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl text-amber-500 cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl text-amber-500 cursor-pointer"
         >
-          <span>📦 Extract Archive Here</span>
+          <FbIcon name="archive" size="1.1em" class="shrink-0" />
+          <span>Extract Archive Here</span>
         </button>
 
         <!-- Compress Selected -->
         <button
           v-if="canWrite"
           @click="handleCompress"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>📦 Compress...</span>
+          <FbIcon name="archive" size="1.1em" class="text-cyan-500 shrink-0" />
+          <span>Compress...</span>
         </button>
 
         <!-- Rename -->
         <button
           v-if="canWrite"
           @click="handleRename"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>✏️ Rename</span>
+          <FbIcon name="rename" size="1.1em" class="text-purple-500 shrink-0" />
+          <span>Rename</span>
           <span class="text-[10px] text-gray-400 opacity-75 font-mono ml-auto">F2</span>
         </button>
 
@@ -209,15 +237,18 @@
           @click="handleDelete"
           class="w-full text-left px-3.5 py-2 hover:bg-red-600 hover:text-white text-red-500 flex items-center justify-between transition rounded-xl cursor-pointer"
         >
-          <span>🗑️ Delete</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="delete" size="1.1em" class="shrink-0" />
+            <span>Delete</span>
+          </div>
           <span class="text-[10px] opacity-75 font-mono">Del</span>
         </button>
       </div>
 
       <!-- B. BACKGROUND CONTEXT MENU (When clicked on empty space) -->
       <div v-else class="space-y-0.5">
-        <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-1.5 rounded-xl">
-          <span>🔒</span>
+        <div v-if="!canWrite" class="px-3.5 py-1.5 mb-1 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800/50 text-[11px] font-semibold text-amber-700 dark:text-amber-400 flex items-center space-x-2 rounded-xl">
+          <FbIcon name="shield" size="1.1em" class="text-amber-500 shrink-0" />
           <span>Read-Only Storage</span>
         </div>
 
@@ -226,7 +257,10 @@
           @click="handlePaste"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer text-blue-600 dark:text-blue-400 font-semibold"
         >
-          <span>📄 Paste Here</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="save" size="1.1em" class="shrink-0" />
+            <span>Paste Here</span>
+          </div>
           <span class="text-[10px] opacity-75 font-mono">Ctrl+V</span>
         </button>
 
@@ -235,25 +269,28 @@
         <button
           v-if="canWrite"
           @click="uiStore.openCreate('file'); uiStore.closeContextMenu()"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>📄 + New File</span>
+          <FbIcon name="new-file" size="1.1em" class="text-blue-500 shrink-0" />
+          <span>+ New File</span>
         </button>
 
         <button
           v-if="canWrite"
           @click="uiStore.openCreate('directory'); uiStore.closeContextMenu()"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>📁 + New Folder</span>
+          <FbIcon name="new-folder" size="1.1em" class="text-amber-500 shrink-0" />
+          <span>+ New Folder</span>
         </button>
 
         <button
           v-if="canWrite"
           @click="uiStore.openUpload(); uiStore.closeContextMenu()"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>⬆ Upload Files</span>
+          <FbIcon name="upload" size="1.1em" class="text-emerald-500 shrink-0" />
+          <span>Upload Files</span>
         </button>
 
         <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
@@ -262,22 +299,29 @@
           @click="handleSelectAll"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
         >
-          <span>☑ Select All</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="select-all" size="1.1em" class="text-indigo-500 shrink-0" />
+            <span>Select All</span>
+          </div>
           <span class="text-[10px] text-gray-400 opacity-75 font-mono">Ctrl+A</span>
         </button>
 
         <button
           @click="handleToggleViewMode"
-          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2 transition rounded-xl cursor-pointer"
+          class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer"
         >
-          <span>🗂 Toggle Grid / List View</span>
+          <FbIcon name="grid" size="1.1em" class="text-gray-500 shrink-0" />
+          <span>Toggle Grid / List View</span>
         </button>
 
         <button
           @click="workspaceStore.refreshAll(); uiStore.closeContextMenu()"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
         >
-          <span>↻ Refresh Directory</span>
+          <div class="flex items-center space-x-2.5">
+            <FbIcon name="refresh" size="1.1em" class="text-gray-500 shrink-0" />
+            <span>Refresh Directory</span>
+          </div>
           <span class="text-[10px] text-gray-400 opacity-75 font-mono">F5</span>
         </button>
       </div>
@@ -286,15 +330,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
+import FbIcon from '../common/FbIcon.vue';
 import { apiClient } from '../../api/client';
-import { useFileStore } from '../../stores/fileStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { useTransferStore } from '../../stores/transferStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useStarredStore } from '../../stores/starredStore';
 import { useUiStore } from '../../stores/uiStore';
 import { getDownloadUrl } from '../../api/files';
+import { extractArchiveApi } from '../../api/archive';
+import { isArchiveFile } from '../../domain/capabilities';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 
 const emit = defineEmits<{
   (e: 'openArchiveDialog', paths: string[]): void;
@@ -303,9 +349,7 @@ const emit = defineEmits<{
   (e: 'openArchiveViewer', payload: { connectionId: string; path: string }): void;
 }>();
 
-const fileStore = useFileStore();
 const workspaceStore = useWorkspaceStore();
-const transferStore = useTransferStore();
 const connStore = useConnectionStore();
 const starredStore = useStarredStore();
 const uiStore = useUiStore();
@@ -315,7 +359,7 @@ const posTop = ref(0);
 const posLeft = ref(0);
 
 const activeConnectionId = computed(() => {
-  return uiStore.contextMenu.connectionId || fileStore.currentConnectionId;
+  return uiStore.contextMenu.connectionId || workspaceStore.activePanel.location.connectionId;
 });
 
 const canWrite = computed(() => {
@@ -326,6 +370,10 @@ const isItemStarred = computed(() => {
   if (!uiStore.contextMenu.item) return false;
   return starredStore.isStarred(activeConnectionId.value, uiStore.contextMenu.item.path);
 });
+
+function isArchive(name: string): boolean {
+  return isArchiveFile(name);
+}
 
 // Smart Viewport Clamping: Prevents menu from overflowing off-screen
 watch(
@@ -379,8 +427,9 @@ async function handleEditInEditor() {
       responseType: 'text',
     });
     uiStore.openEditor(item, resp.data, resp.headers['etag'] || '');
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to open file in editor', 'error');
+  } catch (err: unknown) {
+    const norm = normalizeApiError(err);
+    uiStore.showToast(norm.message || 'Failed to open file in editor', 'error');
   }
 }
 
@@ -417,8 +466,8 @@ async function handleShare() {
         url: downloadUrl,
       });
       return;
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
+    } catch (err: unknown) {
+      // User cancelled share
     }
   }
 
@@ -459,103 +508,15 @@ async function handlePaste() {
   await workspaceStore.paste(panelId);
 }
 
-async function handleCopyToOtherPane() {
-  const item = uiStore.contextMenu.item;
-  if (!item) return;
-  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  const sourcePanel = workspaceStore.getPanel(sourcePanelId);
-  const targetPanelId = sourcePanelId === 'left' ? 'right' : 'left';
-  const targetPanel = workspaceStore.getPanel(targetPanelId);
-
-  const selectedPaths = sourcePanel.selectedEntries.includes(item.path)
-    ? sourcePanel.selectedEntries
-    : [item.path];
-
-  uiStore.closeContextMenu();
-
-  for (const filePath of selectedPaths) {
-    const fileName = filePath.split('/').pop() || 'file';
-    const targetPath = targetPanel.path === '/' ? `/${fileName}` : `${targetPanel.path}/${fileName}`;
-    await transferStore.submitTransfer(
-      `Copy ${fileName} to ${targetPanel.path}`,
-      'copy',
-      sourcePanel.connectionId,
-      filePath,
-      targetPanel.connectionId,
-      targetPath
-    );
-  }
-
-  uiStore.showToast(`Queued ${selectedPaths.length} item(s) copy to other pane`, 'info');
-  setTimeout(() => {
-    workspaceStore.fetchPanelEntries(targetPanelId);
-  }, 1000);
-}
-
-async function handleMoveToOtherPane() {
-  const item = uiStore.contextMenu.item;
-  if (!item) return;
-  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  const sourcePanel = workspaceStore.getPanel(sourcePanelId);
-  const targetPanelId = sourcePanelId === 'left' ? 'right' : 'left';
-  const targetPanel = workspaceStore.getPanel(targetPanelId);
-
-  const selectedPaths = sourcePanel.selectedEntries.includes(item.path)
-    ? sourcePanel.selectedEntries
-    : [item.path];
-
-  uiStore.closeContextMenu();
-
-  for (const filePath of selectedPaths) {
-    const fileName = filePath.split('/').pop() || 'file';
-    const targetPath = targetPanel.path === '/' ? `/${fileName}` : `${targetPanel.path}/${fileName}`;
-    await transferStore.submitTransfer(
-      `Move ${fileName} to ${targetPanel.path}`,
-      'move',
-      sourcePanel.connectionId,
-      filePath,
-      targetPanel.connectionId,
-      targetPath
-    );
-  }
-
-  uiStore.showToast(`Queued ${selectedPaths.length} item(s) move to other pane`, 'info');
-  setTimeout(() => {
-    workspaceStore.fetchPanelEntries(sourcePanelId);
-    workspaceStore.fetchPanelEntries(targetPanelId);
-  }, 1000);
-}
-
-function handleSelectAll() {
-  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  const panel = workspaceStore.getPanel(panelId);
-  panel.selectedEntries = panel.entries.map((e) => e.path);
-  uiStore.closeContextMenu();
-}
-
-function handleToggleViewMode() {
-  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  const panel = workspaceStore.getPanel(panelId);
-  panel.viewMode = panel.viewMode === 'grid' ? 'list' : 'grid';
-  workspaceStore.saveState();
-  uiStore.closeContextMenu();
-}
-
-function isArchive(name: string): boolean {
-  const n = name.toLowerCase();
-  return n.endsWith('.zip') || n.endsWith('.tar.gz') || n.endsWith('.tgz');
-}
-
 function handleOpen() {
   const item = uiStore.contextMenu.item;
   if (!item) return;
   const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  const connId = activeConnectionId.value;
 
   if (item.kind === 'directory') {
     workspaceStore.navigateTo(panelId, item.path);
   } else {
-    const url = getDownloadUrl(connId, item.path);
+    const url = getDownloadUrl(activeConnectionId.value, item.path);
     window.open(url, '_blank');
   }
   uiStore.closeContextMenu();
@@ -564,63 +525,94 @@ function handleOpen() {
 function handleOpenInOtherPanel() {
   const item = uiStore.contextMenu.item;
   if (!item || item.kind !== 'directory') return;
-  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  workspaceStore.openInOtherPanel(panelId, item.path);
+  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  workspaceStore.openInOtherPanel(sourcePanelId, item.path);
   uiStore.closeContextMenu();
 }
 
-function handleCompress() {
-  if (uiStore.contextMenu.item) {
-    emit('openArchiveDialog', [uiStore.contextMenu.item.path]);
-  }
+async function handleCopyToOtherPane() {
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const destPanelId = sourcePanelId === 'left' ? 'right' : 'left';
+  const p = workspaceStore.getPanel(sourcePanelId);
+  const paths = p.selection.paths.length > 0 ? p.selection.paths : [item.path];
+
   uiStore.closeContextMenu();
+  await workspaceStore.transferBetweenPanels(sourcePanelId, destPanelId, paths, false);
+}
+
+async function handleMoveToOtherPane() {
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const destPanelId = sourcePanelId === 'left' ? 'right' : 'left';
+  const p = workspaceStore.getPanel(sourcePanelId);
+  const paths = p.selection.paths.length > 0 ? p.selection.paths : [item.path];
+
+  uiStore.closeContextMenu();
+  await workspaceStore.transferBetweenPanels(sourcePanelId, destPanelId, paths, true);
 }
 
 async function handleExtract() {
   const item = uiStore.contextMenu.item;
   if (!item) return;
-  const connId = activeConnectionId.value;
   const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
-  uiStore.closeContextMenu();
+  const p = workspaceStore.getPanel(panelId);
+  const connId = activeConnectionId.value;
 
+  uiStore.closeContextMenu();
   try {
-    const parentDir = item.path.substring(0, item.path.lastIndexOf('/')) || '/';
-    await apiClient.post(`/connections/${connId}/archive/extract`, {
-      archive_path: item.path,
-      destination_dir: parentDir,
-    });
-    uiStore.showToast(`Extracted ${item.name} successfully`, 'success');
-    await workspaceStore.fetchPanelEntries(panelId);
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
+    await extractArchiveApi(connId, item.path, p.location.path);
+    uiStore.showToast(`Extracted ${item.name}`, 'success');
+    await workspaceStore.refresh(panelId);
+  } catch (err: unknown) {
+    const norm = normalizeApiError(err);
+    uiStore.showToast(norm.message || 'Failed to extract archive', 'error');
   }
 }
 
+function handleCompress() {
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const p = workspaceStore.getPanel(panelId);
+  const paths = p.selection.paths.length > 0 ? p.selection.paths : [item.path];
+
+  emit('openArchiveDialog', paths);
+  uiStore.closeContextMenu();
+}
+
 function handleRename() {
-  if (uiStore.contextMenu.item) {
-    uiStore.openRename(uiStore.contextMenu.item);
-  }
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  uiStore.openRename(item);
   uiStore.closeContextMenu();
 }
 
 function handleDelete() {
-  if (uiStore.contextMenu.item) {
-    uiStore.openDelete([uiStore.contextMenu.item.path]);
-  }
+  const item = uiStore.contextMenu.item;
+  if (!item) return;
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const p = workspaceStore.getPanel(panelId);
+  const paths = p.selection.paths.length > 0 ? p.selection.paths : [item.path];
+
+  uiStore.openDelete(paths);
   uiStore.closeContextMenu();
 }
 
-function onWindowClick() {
-  if (uiStore.contextMenu.visible) {
-    uiStore.closeContextMenu();
-  }
+function handleSelectAll() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const p = workspaceStore.getPanel(panelId);
+  p.selection.paths = p.runtime.entries.map((e) => e.path);
+  uiStore.closeContextMenu();
 }
 
-onMounted(() => {
-  window.addEventListener('click', onWindowClick);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('click', onWindowClick);
-});
+function handleToggleViewMode() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const p = workspaceStore.getPanel(panelId);
+  p.view.viewMode = p.view.viewMode === 'grid' ? 'list' : 'grid';
+  workspaceStore.saveState();
+  uiStore.closeContextMenu();
+}
 </script>
