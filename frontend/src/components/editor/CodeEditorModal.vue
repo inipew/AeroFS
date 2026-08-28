@@ -1319,8 +1319,9 @@ async function handleSave(): Promise<boolean> {
       headers['If-Match'] = uiStore.editorEtag;
     }
 
+    const connId = uiStore.editorConnectionId || fileStore.currentConnectionId || 'local';
     const resp = await apiClient.put(
-      `/connections/${fileStore.currentConnectionId}/files/content`,
+      `/connections/${connId}/files/content`,
       {
         path: uiStore.editorFile.path,
         content: currentText,
@@ -1359,8 +1360,9 @@ async function handleForceSave() {
   const currentText = editor.value.getValue();
 
   try {
+    const connId = uiStore.editorConnectionId || fileStore.currentConnectionId || 'local';
     const forceResp = await apiClient.put(
-      `/connections/${fileStore.currentConnectionId}/files/content`,
+      `/connections/${connId}/files/content`,
       {
         path: uiStore.editorFile.path,
         content: currentText,

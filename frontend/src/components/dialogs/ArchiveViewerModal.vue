@@ -540,7 +540,7 @@ async function previewFile(entry: VirtualArchiveEntry) {
       path: `${props.archivePath}/${entry.path}`,
       kind: 'file',
       size: entry.size,
-    } as any, text);
+    } as any, text, '', props.connectionId);
   } catch (err: any) {
     uiStore.showToast('Unable to preview file as text', 'info');
   }

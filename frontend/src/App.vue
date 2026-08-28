@@ -1,5 +1,5 @@
 <template>
-  <div class="h-screen w-screen overflow-hidden flex flex-col bg-white dark:bg-[#0b0f19] text-gray-800 dark:text-slate-100 font-sans select-none antialiased">
+  <div class="h-[100dvh] w-screen overflow-hidden flex flex-col bg-white dark:bg-[#0b0f19] text-gray-800 dark:text-slate-100 font-sans select-none antialiased fixed inset-0">
     <!-- Unauthenticated Login View -->
     <LoginModal v-if="!authStore.isAuthenticated && !authStore.isChecking" />
 
@@ -152,13 +152,13 @@
           <!-- Mobile Bottom Navigation Bar (Thumb Zone) -->
           <nav
             v-if="uiStore.isMobile"
-            class="h-14 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-gray-200 dark:border-slate-800 px-4 flex items-center justify-around text-gray-500 dark:text-slate-400 text-[10px] font-semibold shrink-0 z-20 pb-safe select-none"
+            class="min-h-[56px] h-14 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-gray-200 dark:border-slate-800 px-2 sm:px-4 flex items-center justify-around text-gray-500 dark:text-slate-400 text-[10px] font-semibold shrink-0 z-30 pb-safe select-none"
           >
             <button
               @click="workspaceStore.setActivePanel('left')"
               :class="[
-                'flex flex-col items-center space-y-1 transition-colors duration-fast cursor-pointer',
-                workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400 font-bold' : ''
+                'flex-1 flex flex-col items-center justify-center py-1 space-y-1 transition-colors duration-fast cursor-pointer min-h-[44px]',
+                workspaceStore.activePanelId === 'left' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'hover:text-gray-900 dark:hover:text-slate-200'
               ]"
             >
               <FbIcon name="folder" size="18px" />
@@ -169,8 +169,8 @@
               v-if="workspaceStore.isDualPane"
               @click="workspaceStore.setActivePanel('right')"
               :class="[
-                'flex flex-col items-center space-y-1 transition-colors duration-fast cursor-pointer',
-                workspaceStore.activePanelId === 'right' ? 'text-blue-600 dark:text-blue-400 font-bold' : ''
+                'flex-1 flex flex-col items-center justify-center py-1 space-y-1 transition-colors duration-fast cursor-pointer min-h-[44px]',
+                workspaceStore.activePanelId === 'right' ? 'text-blue-600 dark:text-blue-400 font-bold' : 'hover:text-gray-900 dark:hover:text-slate-200'
               ]"
             >
               <FbIcon name="folder" size="18px" />
@@ -179,7 +179,7 @@
 
             <button
               @click="isConnDialogOpen = true"
-              class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer"
+              class="flex-1 flex flex-col items-center justify-center py-1 space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer min-h-[44px]"
             >
               <FbIcon name="share" size="18px" />
               <span>Storage</span>
@@ -187,19 +187,21 @@
 
             <button
               @click="transferStore.isDrawerOpen = !transferStore.isDrawerOpen"
-              class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer relative"
+              class="flex-1 flex flex-col items-center justify-center py-1 space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer relative min-h-[44px]"
             >
-              <FbIcon name="refresh" size="18px" />
-              <span
-                v-if="transferStore.activeCount > 0"
-                class="absolute -top-1 right-2 w-2 h-2 rounded-full bg-blue-600 animate-pulse"
-              ></span>
+              <div class="relative inline-flex items-center justify-center">
+                <FbIcon name="refresh" size="18px" />
+                <span
+                  v-if="transferStore.activeCount > 0"
+                  class="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-blue-600 animate-pulse"
+                ></span>
+              </div>
               <span>Transfers</span>
             </button>
 
             <button
               @click="isSettingsDialogOpen = true"
-              class="flex flex-col items-center space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer"
+              class="flex-1 flex flex-col items-center justify-center py-1 space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer min-h-[44px]"
             >
               <FbIcon name="settings" size="18px" />
               <span>Settings</span>

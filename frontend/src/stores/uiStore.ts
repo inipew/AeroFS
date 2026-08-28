@@ -27,6 +27,7 @@ export const useUiStore = defineStore('ui', () => {
   const editorFile = ref<FileEntry | null>(null);
   const editorContent = ref<string>('');
   const editorEtag = ref<string>('');
+  const editorConnectionId = ref<string>('local');
 
   // Media Viewer & Player
   const isMediaViewerOpen = ref<boolean>(false);
@@ -93,10 +94,16 @@ export const useUiStore = defineStore('ui', () => {
     isUploadOpen.value = true;
   }
 
-  function openEditor(entry: FileEntry, content: string, etag: string = '') {
+  function openEditor(
+    entry: FileEntry,
+    content: string,
+    etag: string = '',
+    connectionId: string = 'local'
+  ) {
     editorFile.value = entry;
     editorContent.value = content;
     editorEtag.value = etag;
+    editorConnectionId.value = connectionId;
     isEditorOpen.value = true;
   }
 
@@ -161,7 +168,31 @@ export const useUiStore = defineStore('ui', () => {
     };
   }
 
-  const isMobile = ref<boolean>(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  function checkIsMobile(): boolean {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 767px)').matches || window.innerWidth < 768;
+  }
+
+  const isMobile = ref<boolean>(checkIsMobile());
+
+  if (typeof window !== 'undefined') {
+    const updateMobile = () => {
+      const newVal = checkIsMobile();
+      if (isMobile.value !== newVal) {
+        isMobile.value = newVal;
+      }
+    };
+    window.addEventListener('resize', updateMobile, { passive: true });
+    window.addEventListener('orientationchange', updateMobile, { passive: true });
+    try {
+      const mql = window.matchMedia('(max-width: 767px)');
+      if (mql.addEventListener) {
+        mql.addEventListener('change', updateMobile);
+      } else if ((mql as any).addListener) {
+        (mql as any).addListener(updateMobile);
+      }
+    } catch {}
+  }
   const isMobileSidebarOpen = ref<boolean>(false);
   const isCommandPaletteOpen = ref<boolean>(false);
   const listDensity = ref<'comfortable' | 'compact' | 'dense'>(
@@ -217,6 +248,7 @@ export const useUiStore = defineStore('ui', () => {
     editorFile,
     editorContent,
     editorEtag,
+    editorConnectionId,
     isMediaViewerOpen,
     mediaViewerUrl,
     mediaViewerTitle,

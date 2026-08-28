@@ -263,23 +263,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function clonePanel(source: Panel, targetId: PanelId): Panel {
-    const target = createPanel(targetId, source.location.connectionId, source.location.path);
-    target.navigation.history = [...source.navigation.history];
-    target.navigation.historyIndex = source.navigation.historyIndex;
-    target.view.viewMode = source.view.viewMode;
-    target.view.showHidden = source.view.showHidden;
-    target.view.sortField = source.view.sortField;
-    target.view.sortOrder = source.view.sortOrder;
-    target.view.filterType = source.view.filterType;
-    target.view.searchQuery = source.view.searchQuery;
-    target.selection.paths = [...source.selection.paths];
-    target.selection.focusedPath = source.selection.focusedPath;
-    target.runtime.entries = [...source.runtime.entries];
-    target.runtime.initialized = source.runtime.initialized;
-    return target;
-  }
-
   function abortPanel(panelId: PanelId) {
     if (panelId === 'left') {
       if (leftAbortController) {
@@ -300,8 +283,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     abortPanel(panelId);
     if (panelId === 'left') {
       abortPanel('right');
-      // Promote right panel to single left panel
-      leftPanel.value = clonePanel(rightPanel.value, 'left');
+      // Promote right panel to single left panel without deep cloning
+      const oldRight = rightPanel.value;
+      oldRight.id = 'left';
+      leftPanel.value = oldRight;
+      rightPanel.value = createPanel('right', 'local', '/');
     }
     layout.value = 'single';
     activePanelId.value = 'left';
@@ -309,11 +295,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function swapPanels() {
+    const uiStore = useUiStore();
+    if (uiStore.isMobile) {
+      // On mobile, swapping means switching active panel viewport focus via GPU translate3d
+      setActivePanel(activePanelId.value === 'left' ? 'right' : 'left');
+      return;
+    }
+
     abortPanel('left');
     abortPanel('right');
-    const tempLeft = clonePanel(leftPanel.value, 'left');
-    leftPanel.value = clonePanel(rightPanel.value, 'left');
-    rightPanel.value = clonePanel(tempLeft, 'right');
+    const oldLeft = leftPanel.value;
+    const oldRight = rightPanel.value;
+    oldLeft.id = 'right';
+    oldRight.id = 'left';
+    leftPanel.value = oldRight;
+    rightPanel.value = oldLeft;
+    activePanelId.value = activePanelId.value === 'left' ? 'right' : 'left';
     saveState();
   }
 

@@ -426,7 +426,7 @@ async function handleEditInEditor() {
 
   try {
     const resp = await readFileApi(connId, item.path);
-    uiStore.openEditor(item, resp.content, resp.etag);
+    uiStore.openEditor(item, resp.content, resp.etag, connId);
   } catch (err: unknown) {
     const norm = normalizeApiError(err);
     uiStore.showToast(norm.message || 'Failed to open file in editor', 'error');

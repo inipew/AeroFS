@@ -126,12 +126,18 @@ async function handleOpenItem(item: any) {
     if (textExts.includes(ext)) {
       try {
         const resp = await readFileApi(item.connectionId, item.entry.path);
-        uiStore.openEditor(item.entry, resp.content, resp.etag);
+        uiStore.openEditor(item.entry, resp.content, resp.etag, item.connectionId);
       } catch (err: any) {
         uiStore.showToast('Failed to load file', 'error');
       }
     } else {
-      uiStore.openMediaViewer(item.entry.name, `/api/v1/connections/${item.connectionId}/files/content?path=${encodeURIComponent(item.entry.path)}`);
+      uiStore.openMediaViewer(
+        item.entry.name,
+        `/api/v1/connections/${item.connectionId}/files/content?path=${encodeURIComponent(item.entry.path)}`,
+        item.entry,
+        [item.entry],
+        item.connectionId
+      );
     }
   }
 }

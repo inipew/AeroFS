@@ -140,7 +140,7 @@ export class PreviewResolver {
 
           try {
             const resp = await readFileApi(connectionId, entry.path);
-            uiStore.openEditor(entry, resp.content, resp.etag);
+            uiStore.openEditor(entry, resp.content, resp.etag, connectionId);
           } catch (err: any) {
             uiStore.showToast(err.response?.data?.error?.message || 'Failed to read file', 'error');
           }

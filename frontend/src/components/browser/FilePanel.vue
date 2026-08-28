@@ -272,7 +272,7 @@
       </div>
 
       <!-- Directional Spatial Navigation Transition Wrapper -->
-      <Transition :name="navTransitionName" mode="out-in">
+      <Transition :name="navTransitionName" :mode="uiStore.isMobile ? undefined : 'out-in'">
         <div :key="panel.location.path + '-' + panel.viewMode" class="w-full">
           <!-- Empty State -->
           <div
