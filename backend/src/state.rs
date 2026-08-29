@@ -7,6 +7,24 @@ use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+
+/// Application-wide runtime context managing cancellation and background task tracking
+#[derive(Clone)]
+pub struct AppRuntime {
+    pub shutdown_token: CancellationToken,
+    pub task_tracker: TaskTracker,
+}
+
+impl Default for AppRuntime {
+    fn default() -> Self {
+        Self {
+            shutdown_token: CancellationToken::new(),
+            task_tracker: TaskTracker::new(),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -20,6 +38,7 @@ pub struct AppState {
     pub global_io_semaphore: Arc<Semaphore>,
     pub archive_semaphore: Arc<Semaphore>,
     pub search_semaphore: Arc<Semaphore>,
+    pub runtime: AppRuntime,
 }
 
 impl AppState {
@@ -33,6 +52,7 @@ impl AppState {
         );
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());
+        let runtime = AppRuntime::default();
 
         let state = Self {
             config: Arc::new(config),
@@ -45,19 +65,25 @@ impl AppState {
             global_io_semaphore: Arc::new(Semaphore::new(32)),
             archive_semaphore: Arc::new(Semaphore::new(4)),
             search_semaphore: Arc::new(Semaphore::new(8)),
+            runtime,
         };
 
         // Initialize and register all connections from DB via ConnectionService
         ConnectionService::load_all_providers_from_db(&state).await;
 
-        // Spawn background cleanup for stale orphan .part files (> 24 hours old)
+        // Spawn background cleanup for stale orphan .part files (> 24 hours old) tracked via TaskTracker
         let local_root_clone = state.config.filesystem.default_local_root.clone();
-        tokio::spawn(async move {
-            crate::vfs::cleanup_stale_staging_files(
-                &local_root_clone,
-                std::time::Duration::from_secs(24 * 3600),
-            )
-            .await;
+        let cleanup_token = state.runtime.shutdown_token.clone();
+        state.runtime.task_tracker.spawn(async move {
+            tokio::select! {
+                _ = cleanup_token.cancelled() => {
+                    tracing::debug!("Stale staging cleanup cancelled by shutdown");
+                }
+                _ = crate::vfs::cleanup_stale_staging_files(
+                    &local_root_clone,
+                    std::time::Duration::from_secs(24 * 3600),
+                ) => {}
+            }
         });
 
         state

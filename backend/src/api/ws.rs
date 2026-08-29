@@ -23,7 +23,8 @@ pub async fn ws_handler(
     Query(query): Query<WsQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, user, query.last_seq))
+    let shutdown_token = state.runtime.shutdown_token.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, state, user, query.last_seq, shutdown_token))
 }
 
 fn is_event_authorized(
@@ -52,6 +53,7 @@ async fn handle_socket(
     state: AppState,
     user: AuthenticatedUser,
     last_seq: Option<u64>,
+    shutdown_token: tokio_util::sync::CancellationToken,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.transfer_manager.subscribe();
@@ -120,6 +122,7 @@ async fn handle_socket(
                 }
             }
         }
+        let _ = sender.send(Message::Close(None)).await;
     });
 
     // 3. Receive task to keep connection alive or handle client pings
@@ -131,8 +134,13 @@ async fn handle_socket(
         }
     });
 
-    // If either task finishes, abort the other
+    // If either task finishes OR server shutdown is requested, terminate socket
     tokio::select! {
+        _ = shutdown_token.cancelled() => {
+            tracing::debug!("WebSocket connection closing gracefully due to server shutdown");
+            send_task.abort();
+            recv_task.abort();
+        }
         _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => send_task.abort(),
     }

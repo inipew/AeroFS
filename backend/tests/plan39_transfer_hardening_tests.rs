@@ -36,8 +36,8 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
 async fn test_realtime_cancellation_with_token() {
     let (state, admin, _temp) = setup_test_context().await;
 
-    // 1. Create source file (16 MB) on disk to ensure in-flight cancellation window
-    let test_data = vec![b'X'; 16 * 1024 * 1024];
+    // 1. Create source file (32 MB) on disk to ensure in-flight cancellation window
+    let test_data = vec![b'X'; 32 * 1024 * 1024];
     std::fs::write(
         _temp.path().join("storage").join("source_cancel_test.dat"),
         &test_data,
@@ -64,7 +64,7 @@ async fn test_realtime_cancellation_with_token() {
 
     // 4. Wait for cancellation to settle
     let mut cancelled = false;
-    for _ in 0..100 {
+    for _ in 0..150 {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let jobs = state
             .transfer_manager
