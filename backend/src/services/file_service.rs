@@ -303,7 +303,10 @@ impl FileService {
         }
 
         // 3. Invalidate short-TTL metadata cache
-        state.metadata_cache.invalidate(connection_id, raw_path).await;
+        state
+            .metadata_cache
+            .invalidate(connection_id, raw_path)
+            .await;
 
         record_audit_log(
             &state.db,
@@ -328,7 +331,7 @@ impl FileService {
         Ok(meta)
     }
 
-    /// Retrieve file metadata with short-TTL cache
+    /// Retrieve file metadata with short-TTL cache and Single-Flight stampede protection
     pub async fn stat_file(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -337,25 +340,19 @@ impl FileService {
     ) -> Result<FileMetadata, AppError> {
         check_permission(&state.db, user, connection_id, PermissionAction::Read).await?;
 
-        // 1. Check in-memory metadata cache first
-        if let Some(cached) = state.metadata_cache.get(connection_id, raw_path).await {
-            return Ok(cached);
-        }
-
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
         })?;
 
         let vfs_path = VfsPath::new(connection_id, raw_path)?;
-        let meta = provider.stat(&vfs_path).await?;
 
-        // 2. Populate metadata cache
         state
             .metadata_cache
-            .put(connection_id, raw_path, meta.clone())
-            .await;
-
-        Ok(meta)
+            .get_or_fetch(connection_id, raw_path, || async {
+                let meta = provider.stat(&vfs_path).await?;
+                Ok(meta)
+            })
+            .await
     }
 
     /// Create a new empty file or save file content with permission resolution and audit logging
@@ -514,7 +511,10 @@ impl FileService {
         let meta = provider.stat(&vfs_path).await?;
 
         // Invalidate short-TTL metadata cache on write
-        state.metadata_cache.invalidate(connection_id, raw_path).await;
+        state
+            .metadata_cache
+            .invalidate(connection_id, raw_path)
+            .await;
 
         // Audit log and real-time event
         record_audit_log(
@@ -570,7 +570,10 @@ impl FileService {
         let meta = provider.stat(&vfs_path).await?;
 
         // Invalidate short-TTL metadata cache on mkdir
-        state.metadata_cache.invalidate(connection_id, raw_path).await;
+        state
+            .metadata_cache
+            .invalidate(connection_id, raw_path)
+            .await;
 
         record_audit_log(
             &state.db,
@@ -649,7 +652,10 @@ impl FileService {
                 match del_res {
                     Ok(_) => {
                         // Invalidate short-TTL metadata cache on delete
-                        state.metadata_cache.invalidate_prefix(connection_id, &path).await;
+                        state
+                            .metadata_cache
+                            .invalidate_prefix(connection_id, &path)
+                            .await;
 
                         record_audit_log(
                             &state.db,
@@ -699,7 +705,10 @@ impl FileService {
         provider.delete(&vfs_path).await?;
 
         // Invalidate short-TTL metadata cache
-        state.metadata_cache.invalidate_prefix(connection_id, raw_path).await;
+        state
+            .metadata_cache
+            .invalidate_prefix(connection_id, raw_path)
+            .await;
 
         record_audit_log(
             &state.db,
@@ -743,8 +752,14 @@ impl FileService {
         provider.rename(&from_vfs, &to_vfs).await?;
 
         // Invalidate both source and destination in metadata cache
-        state.metadata_cache.invalidate_prefix(connection_id, from_raw).await;
-        state.metadata_cache.invalidate_prefix(connection_id, to_raw).await;
+        state
+            .metadata_cache
+            .invalidate_prefix(connection_id, from_raw)
+            .await;
+        state
+            .metadata_cache
+            .invalidate_prefix(connection_id, to_raw)
+            .await;
 
         record_audit_log(
             &state.db,
@@ -786,7 +801,10 @@ impl FileService {
         provider.set_permissions(&vfs_path, &mode_str).await?;
 
         // Invalidate metadata cache on chmod
-        state.metadata_cache.invalidate(connection_id, raw_path).await;
+        state
+            .metadata_cache
+            .invalidate(connection_id, raw_path)
+            .await;
 
         record_audit_log(
             &state.db,

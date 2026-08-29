@@ -23,7 +23,11 @@ impl StorageRuntime {
         let conn_id = connection_id.into();
         let capabilities = provider.capabilities().clone();
         let retry = RetryPolicy::default();
-        let permits = if max_concurrency == 0 { 64 } else { max_concurrency };
+        let permits = if max_concurrency == 0 {
+            64
+        } else {
+            max_concurrency
+        };
         let semaphore = Arc::new(Semaphore::new(permits));
 
         Self {

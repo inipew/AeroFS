@@ -1,6 +1,8 @@
 use crate::auth::AuthenticatedUser;
 use crate::errors::AppError;
-use crate::services::connection_service::{ConnectionService, CreateConnectionRequest};
+use crate::services::connection_service::{
+    ConnectionService, CreateConnectionRequest, UpdateConnectionRequest,
+};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -35,6 +37,21 @@ pub async fn create_connection(
             "message": format!("Connection '{}' created successfully", name),
         })),
     ))
+}
+
+/// Update an existing connection (Admin only, with atomic hot-swap)
+pub async fn update_connection(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateConnectionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    ConnectionService::update_connection(&state, &user, &id, payload).await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Connection '{}' updated successfully", id),
+    })))
 }
 
 /// Delete a connection

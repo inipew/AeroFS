@@ -1,6 +1,18 @@
 use crate::errors::{AppError, ErrorCategory};
 use std::time::Duration;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Read,
+    Stat,
+    List,
+    Write,
+    Append,
+    Delete,
+    Rename,
+    Copy,
+}
+
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     pub max_attempts: usize,
@@ -37,6 +49,34 @@ impl RetryPolicy {
         }
     }
 
+    /// Check if an error is retryable for a specific storage operation and attempt count
+    pub fn is_retryable_for_operation(
+        &self,
+        op: OperationKind,
+        err: &AppError,
+        attempt: usize,
+    ) -> bool {
+        if attempt >= self.max_attempts {
+            return false;
+        }
+
+        // 1. Checksum mismatch: retry at most 1 time to rule out transient transport glitch
+        if matches!(
+            err,
+            AppError::ChecksumMismatch(_)
+                | AppError::Vfs(crate::errors::VfsError::ChecksumMismatch(_))
+        ) {
+            return attempt <= 1;
+        }
+
+        // 2. Non-idempotent Append: NEVER retry blind on timeout/I/O without verified offset
+        if op == OperationKind::Append {
+            return false;
+        }
+
+        self.is_retryable(err)
+    }
+
     pub fn is_retryable(&self, err: &AppError) -> bool {
         match err {
             AppError::Auth(_)
@@ -50,24 +90,7 @@ impl RetryPolicy {
             | AppError::PayloadTooLarge(_)
             | AppError::InsufficientStorage(_) => false,
             AppError::ChecksumMismatch(_) => true,
-            AppError::Vfs(vfs_err) => match vfs_err {
-                crate::errors::VfsError::NotFound(_)
-                | crate::errors::VfsError::PermissionDenied(_)
-                | crate::errors::VfsError::AlreadyExists(_)
-                | crate::errors::VfsError::InvalidPath(_)
-                | crate::errors::VfsError::NotADirectory(_)
-                | crate::errors::VfsError::NotAFile(_)
-                | crate::errors::VfsError::DirectoryNotEmpty(_)
-                | crate::errors::VfsError::NotSupported(_)
-                | crate::errors::VfsError::QuotaExceeded(_)
-                | crate::errors::VfsError::InsufficientStorage(_)
-                | crate::errors::VfsError::Security(_) => false,
-                crate::errors::VfsError::ConnectionError(_)
-                | crate::errors::VfsError::IoError(_)
-                | crate::errors::VfsError::RateLimited(_)
-                | crate::errors::VfsError::Timeout(_)
-                | crate::errors::VfsError::ChecksumMismatch(_) => true,
-            },
+            AppError::Vfs(vfs_err) => Self::is_vfs_retryable(vfs_err),
             AppError::Conflict(_) => false,
             AppError::Internal(anyhow_err) => Self::is_anyhow_retryable(anyhow_err),
         }

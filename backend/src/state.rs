@@ -16,6 +16,7 @@ pub struct AppState {
     pub credentials: Arc<CredentialStore>,
     pub transfer_manager: TransferManager,
     pub metadata_cache: Arc<crate::services::MetadataCache>,
+    pub upload_locks: Arc<crate::services::UploadLockManager>,
     pub global_io_semaphore: Arc<Semaphore>,
     pub archive_semaphore: Arc<Semaphore>,
     pub search_semaphore: Arc<Semaphore>,
@@ -31,6 +32,7 @@ impl AppState {
             config.limits.max_concurrent_transfers,
         );
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
+        let upload_locks = Arc::new(crate::services::UploadLockManager::default());
 
         let state = Self {
             config: Arc::new(config),
@@ -39,6 +41,7 @@ impl AppState {
             credentials,
             transfer_manager,
             metadata_cache,
+            upload_locks,
             global_io_semaphore: Arc::new(Semaphore::new(32)),
             archive_semaphore: Arc::new(Semaphore::new(4)),
             search_semaphore: Arc::new(Semaphore::new(8)),
@@ -46,6 +49,16 @@ impl AppState {
 
         // Initialize and register all connections from DB via ConnectionService
         ConnectionService::load_all_providers_from_db(&state).await;
+
+        // Spawn background cleanup for stale orphan .part files (> 24 hours old)
+        let local_root_clone = state.config.filesystem.default_local_root.clone();
+        tokio::spawn(async move {
+            crate::vfs::cleanup_stale_staging_files(
+                &local_root_clone,
+                std::time::Duration::from_secs(24 * 3600),
+            )
+            .await;
+        });
 
         state
     }
@@ -74,7 +87,10 @@ impl AppState {
     }
 
     /// Retrieve the unified StorageRuntime for a connection (with fail-safe local fallback)
-    pub async fn get_storage_runtime(&self, connection_id: &str) -> Option<Arc<crate::vfs::runtime::StorageRuntime>> {
+    pub async fn get_storage_runtime(
+        &self,
+        connection_id: &str,
+    ) -> Option<Arc<crate::vfs::runtime::StorageRuntime>> {
         if let Some(rt) = self.registry.get_runtime(connection_id).await {
             return Some(rt);
         }

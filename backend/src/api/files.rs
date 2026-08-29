@@ -578,7 +578,18 @@ pub async fn upload_file(
                 &connection_id,
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
-            let use_staging = provider.capabilities().atomic_rename;
+
+            // 1. In-Flight upload path lock to prevent concurrent same-path race conditions
+            let _upload_guard = state
+                .upload_locks
+                .try_acquire(&connection_id, &target_path.path)
+                .await?;
+
+            let target_exists = provider.stat(&target_path).await.is_ok();
+            let strategy =
+                crate::domain::WriteStrategy::select(&provider.capabilities(), target_exists);
+
+            let use_staging = strategy.semantics == crate::domain::CommitSemantics::AtomicRename;
             let write_target = if use_staging {
                 VfsPath::new(&connection_id, format!("{}.aerofs.part", target_path.path))?
             } else {
@@ -607,15 +618,18 @@ pub async fn upload_file(
                 }
             }
 
-            // Bounded 64 KiB asynchronous duplex pipe with zero whole-file RAM buffering
+            // Bounded 64 KiB asynchronous duplex pipe with CancellationToken
+            let cancel_token = tokio_util::sync::CancellationToken::new();
             let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
             let write_handle = tokio::spawn({
                 let provider = provider.clone();
                 let write_target = write_target.clone();
+                let cancel_token = cancel_token.clone();
                 async move {
-                    provider
-                        .write_stream(&write_target, Box::new(duplex_reader))
-                        .await
+                    tokio::select! {
+                        res = provider.write_stream(&write_target, Box::new(duplex_reader)) => res,
+                        _ = cancel_token.cancelled() => Err(VfsError::IoError("Upload cancelled by client".into())),
+                    }
                 }
             });
 
@@ -649,8 +663,12 @@ pub async fn upload_file(
             drop(duplex_writer);
 
             if let Some(err) = stream_err {
+                cancel_token.cancel();
                 let _ = write_handle.await;
-                let _ = provider.delete(&write_target).await;
+                // Only delete write_target if staging was used or if target did NOT exist previously
+                if use_staging || !target_exists {
+                    let _ = provider.delete(&write_target).await;
+                }
                 return Err(err);
             }
 
@@ -659,33 +677,33 @@ pub async fn upload_file(
             })?;
 
             if let Err(e) = write_res {
-                let _ = provider.delete(&write_target).await;
+                if use_staging || !target_exists {
+                    let _ = provider.delete(&write_target).await;
+                }
                 return Err(AppError::from(e));
             }
 
-            // If target already existed or parent perms found, apply to target
-            if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&write_target, perms).await;
-            }
-
-            // If staging was used, promote .aerofs.part to final target
+            // If staging was used, atomically promote .aerofs.part to final target
             if use_staging {
                 if let Err(rename_err) = provider.rename(&write_target, &target_path).await {
-                    if let Err(copy_err) = provider.copy(&write_target, &target_path).await {
-                        let _ = provider.delete(&write_target).await;
-                        return Err(AppError::Internal(anyhow::anyhow!(
-                            "Failed finalizing uploaded file: rename error ({}), copy error ({})",
-                            rename_err,
-                            copy_err
-                        )));
-                    }
                     let _ = provider.delete(&write_target).await;
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "Failed to promote staging file to final destination '{}': {}",
+                        target_path.path,
+                        rename_err
+                    )));
                 }
             }
 
             if let Some(ref perms) = target_perms {
                 let _ = provider.set_permissions(&target_path, perms).await;
             }
+
+            // Invalidate metadata cache on upload completion
+            state
+                .metadata_cache
+                .invalidate(&connection_id, &target_path.path)
+                .await;
 
             crate::auth::record_audit_log(
                 &state.db,

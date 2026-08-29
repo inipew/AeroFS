@@ -39,7 +39,11 @@ impl ProviderRegistry {
     }
 
     pub async fn register(&self, connection_id: String, provider: Arc<dyn FileSystem>) {
-        let runtime = Arc::new(StorageRuntime::new(&connection_id, Arc::clone(&provider), 64));
+        let runtime = Arc::new(StorageRuntime::new(
+            &connection_id,
+            Arc::clone(&provider),
+            64,
+        ));
         let mut providers = self.providers.write().await;
         let mut runtimes = self.runtimes.write().await;
         providers.insert(connection_id.clone(), provider);

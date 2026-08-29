@@ -259,9 +259,15 @@ async fn test_presign_upload_completion_endpoint() {
     assert_eq!(meta.name, "presigned_uploaded_file.bin");
 
     // Non-existent path fails stat check
-    let err_res =
-        FileService::complete_presigned_upload(&state, &admin, "local", "/non_existent_file.bin", None, None)
-            .await;
+    let err_res = FileService::complete_presigned_upload(
+        &state,
+        &admin,
+        "local",
+        "/non_existent_file.bin",
+        None,
+        None,
+    )
+    .await;
     assert!(err_res.is_err());
 }
 
@@ -291,7 +297,8 @@ async fn test_transfer_to_non_atomic_rename_provider() {
     );
     caps.atomic_rename = false;
     caps.atomic_write = false;
-    let dst_fs = backend::vfs::opendal::OpenDalFileSystem::new_with_capabilities("mock_ftp", op, caps);
+    let dst_fs =
+        backend::vfs::opendal::OpenDalFileSystem::new_with_capabilities("mock_ftp", op, caps);
     let dst_fs_arc: Arc<dyn backend::vfs::FileSystem> = Arc::new(dst_fs);
 
     let src_fs_arc = state.get_provider("local").await.unwrap();
@@ -344,7 +351,11 @@ async fn test_transfer_to_non_atomic_rename_provider() {
     )
     .await;
 
-    assert!(res.is_ok(), "Transfer to non-atomic provider must succeed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "Transfer to non-atomic provider must succeed: {:?}",
+        res.err()
+    );
 
     // Verify content on destination
     let mut reader = dst_fs_arc.read_stream(&dst_vfs).await.unwrap();

@@ -21,6 +21,18 @@ pub struct CreateConnectionRequest {
     pub read_only: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateConnectionRequest {
+    pub name: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub username: Option<String>,
+    pub secret: Option<String>,
+    pub base_path: Option<String>,
+    pub read_only: Option<bool>,
+    pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConnectionDetailResponse {
     pub connection: Connection,
@@ -439,6 +451,187 @@ impl ConnectionService {
         state.registry.register(id.clone(), fs).await;
 
         Ok(id)
+    }
+
+    /// Update connection (admin only) with credential re-encryption and atomic runtime hot-swap
+    pub async fn update_connection(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        id: &str,
+        payload: UpdateConnectionRequest,
+    ) -> Result<(), AppError> {
+        if !user.is_admin {
+            return Err(AppError::Forbidden(
+                "Only administrators can update storage connections".into(),
+            ));
+        }
+
+        if id == "local" {
+            return Err(AppError::BadRequest(
+                "Default local connection cannot be edited directly".into(),
+            ));
+        }
+
+        // 1. Fetch current connection row from SQLite
+        let row: Option<ConnectionDbRow> = sqlx::query_as(
+            "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at 
+             FROM connections WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+
+        let (
+            _,
+            cur_name,
+            provider_str,
+            cur_host,
+            cur_port,
+            cur_username,
+            cur_base_path,
+            cur_read_only,
+            cur_enabled,
+            created_at_str,
+            _,
+        ) = row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
+
+        let provider_kind = match provider_str.as_str() {
+            "ftp" => ProviderKind::Ftp,
+            "ftps" => ProviderKind::Ftps,
+            "sftp" => ProviderKind::Sftp,
+            "s3" => ProviderKind::S3,
+            _ => ProviderKind::Local,
+        };
+
+        let new_name = payload.name.unwrap_or(cur_name);
+        let new_host = payload.host.or(cur_host);
+        let new_port = payload.port.or(cur_port.map(|p| p as u16));
+        let new_username = payload.username.or(cur_username);
+        let new_base_path = payload.base_path.unwrap_or(cur_base_path);
+        let new_read_only = payload.read_only.unwrap_or(cur_read_only != 0);
+        let new_enabled = payload.enabled.unwrap_or(cur_enabled != 0);
+        let now = Utc::now().to_rfc3339();
+
+        let updated_conn = Connection {
+            id: id.to_string(),
+            name: new_name.clone(),
+            provider: provider_kind,
+            host: new_host.clone(),
+            port: new_port,
+            username: new_username.clone(),
+            base_path: new_base_path.clone(),
+            read_only: new_read_only,
+            enabled: new_enabled,
+            status: if new_enabled {
+                ConnectionStatus::Connected
+            } else {
+                ConnectionStatus::Disconnected
+            },
+            error_message: None,
+            created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: Utc::now(),
+        };
+
+        // 2. Resolve secret (either new secret from payload or existing decrypted secret)
+        let resolved_secret = if let Some(sec) = payload.secret {
+            if !sec.trim().is_empty() {
+                Some(sec)
+            } else {
+                None
+            }
+        } else {
+            // Decrypt existing stored secret
+            let cred_row: Option<(String,)> = sqlx::query_as(
+                "SELECT encrypted_secret FROM connection_credentials WHERE connection_id = ?",
+            )
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
+
+            if let Some((enc,)) = cred_row {
+                state.credentials.decrypt(&enc).ok()
+            } else {
+                None
+            }
+        };
+
+        // 3. Test build the new provider FIRST (fail-closed)
+        if new_enabled {
+            let provider_cfg = state.config.storage.get_provider_config(&provider_str);
+            let fs = ProviderFactory::build_with_config(
+                &updated_conn,
+                resolved_secret.as_deref(),
+                Some(&provider_cfg),
+            )
+            .map_err(|e| {
+                AppError::BadRequest(format!("Failed to build updated provider: {}", e))
+            })?;
+
+            // 4. Update SQLite database in transaction
+            let mut tx = state
+                .db
+                .begin()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
+
+            sqlx::query(
+                "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, base_path = ?, read_only = ?, enabled = ?, updated_at = ?
+                 WHERE id = ?"
+            )
+            .bind(&new_name)
+            .bind(&new_host)
+            .bind(new_port.map(|p| p as i64))
+            .bind(&new_username)
+            .bind(&new_base_path)
+            .bind(if new_read_only { 1 } else { 0 })
+            .bind(if new_enabled { 1 } else { 0 })
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to update connection in DB: {}", e))?;
+
+            if let Some(sec) = &resolved_secret {
+                let encrypted = state.credentials.encrypt(sec)?;
+                sqlx::query(
+                    "INSERT INTO connection_credentials (connection_id, credential_type, encrypted_secret, created_at)
+                     VALUES (?, 'password_or_key', ?, ?)
+                     ON CONFLICT(connection_id) DO UPDATE SET encrypted_secret = excluded.encrypted_secret, created_at = excluded.created_at"
+                )
+                .bind(id)
+                .bind(&encrypted)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to save credential: {}", e))?;
+            }
+
+            tx.commit()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to commit update transaction: {}", e))?;
+
+            // 5. Atomic hot-swap in ProviderRegistry (old operations drain gracefully)
+            state.registry.register(id.to_string(), fs).await;
+        } else {
+            // Disabled connection: update DB and remove from active registry
+            sqlx::query("UPDATE connections SET enabled = 0, updated_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(id)
+                .execute(&state.db)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to disable connection: {}", e))?;
+
+            state.registry.remove(id).await;
+        }
+
+        // 6. Invalidate metadata cache for this connection
+        state.metadata_cache.invalidate_prefix(id, "/").await;
+
+        Ok(())
     }
 
     /// Delete connection (admin only)

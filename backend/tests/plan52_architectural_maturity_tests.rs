@@ -205,10 +205,7 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
     assert_eq!(stat1.size, content1.len() as u64);
 
     // Verify cache has entry
-    let cached = state
-        .metadata_cache
-        .get("local", "/cached_file.txt")
-        .await;
+    let cached = state.metadata_cache.get("local", "/cached_file.txt").await;
     assert!(cached.is_some(), "MetadataCache must contain cached stat");
 
     // 2. Overwrite file -> invalidates cache
@@ -235,10 +232,7 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
         .await
         .unwrap();
 
-    let cached_after_del = state
-        .metadata_cache
-        .get("local", "/cached_file.txt")
-        .await;
+    let cached_after_del = state.metadata_cache.get("local", "/cached_file.txt").await;
     assert!(
         cached_after_del.is_none(),
         "MetadataCache must be invalidated on deletion"

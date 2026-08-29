@@ -9,6 +9,7 @@ pub mod policy;
 pub mod range;
 pub mod retry;
 pub mod settings;
+pub mod write_strategy;
 
 pub use capabilities::{Capabilities, ChecksumCapabilities};
 pub use conflict::{ConflictPolicy, ConflictResolver};
@@ -22,5 +23,6 @@ pub use path::VfsPath;
 pub use permission::PermissionSet;
 pub use policy::*;
 pub use range::{parse_single_byte_range, ByteRange, RangeError};
-pub use retry::RetryPolicy;
+pub use retry::{OperationKind, RetryPolicy};
 pub use settings::*;
+pub use write_strategy::{CommitSemantics, WriteStrategy};

@@ -123,7 +123,9 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route(
             "/{id}",
-            get(connections::get_connection).delete(connections::delete_connection),
+            get(connections::get_connection)
+                .put(connections::update_connection)
+                .delete(connections::delete_connection),
         )
         .route("/{id}/test", post(connections::test_connection))
         .route(
