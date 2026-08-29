@@ -1,5 +1,6 @@
 pub mod cleanup;
 pub mod factory;
+pub mod lifecycle;
 pub mod opendal;
 pub mod registry;
 pub mod runtime;
@@ -7,6 +8,7 @@ pub mod traits;
 
 pub use cleanup::cleanup_stale_staging_files;
 pub use factory::ProviderFactory;
+pub use lifecycle::ProviderState;
 pub use opendal::OpenDalFileSystem;
 pub use registry::ProviderRegistry;
 pub use runtime::StorageRuntime;

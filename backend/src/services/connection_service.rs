@@ -614,7 +614,10 @@ impl ConnectionService {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to commit update transaction: {}", e))?;
 
-            // 5. Atomic hot-swap in ProviderRegistry (old operations drain gracefully)
+            // 5. Atomic hot-swap in ProviderRegistry (mark existing runtime as Draining before swapping)
+            if let Some(existing_rt) = state.registry.get_runtime(id).await {
+                existing_rt.set_state(crate::vfs::ProviderState::Draining).await;
+            }
             state.registry.register(id.to_string(), fs).await;
         } else {
             // Disabled connection: update DB and remove from active registry

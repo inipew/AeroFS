@@ -9,7 +9,7 @@ use sqlx::Row;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -193,6 +193,17 @@ pub enum WsEvent {
     ResyncRequired {
         reason: String,
         latest_sequence: u64,
+    },
+    #[serde(rename = "permission_changed")]
+    PermissionChanged {
+        user_id: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_id: Option<String>,
+    },
+    #[serde(rename = "full_sync")]
+    FullSync {
+        reason: String,
+        epoch: String,
     },
 }
 
@@ -498,6 +509,7 @@ impl TransferManager {
                             } else {
                                 match result {
                                     Ok(()) => {
+                                        let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(&db_worker, &job.id).await;
                                         job.status = TransferStatus::Completed;
                                         job.phase = TransferPhase::Completed;
                                         job.speed_bytes_per_sec = 0;
@@ -839,6 +851,7 @@ impl TransferManager {
         if let Some(token) = token_opt {
             token.cancel();
         }
+        let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(&self.db, id).await;
 
         if let Some(job) = updated_job {
             let _ = Self::save_job_to_db(&self.db, &job).await;
@@ -1701,7 +1714,7 @@ impl TransferManager {
             )
         };
         let write_target_vfs = if use_staging {
-            VfsPath::new(&job.destination_connection_id, staging_path)?
+            VfsPath::new(&job.destination_connection_id, staging_path.clone())?
         } else {
             dst_vfs.clone()
         };
@@ -1710,8 +1723,28 @@ impl TransferManager {
         // and destination target file MUST already exist with exact matching size.
         let can_append = dst_fs.capabilities().write_can_append;
         let can_range_read = src_fs.capabilities().range_read;
+        let src_meta = src_fs.stat(&src_vfs).await.ok();
+
+        // Check if there is a saved checkpoint and whether source etag changed
+        let saved_checkpoint = crate::transfer::checkpoint::TransferCheckpoint::load(db, &job.id).await.ok().flatten();
+        let checkpoint_valid = if let Some(cp) = &saved_checkpoint {
+            if let (Some(saved_etag), Some(src)) = (&cp.source_etag, src_meta.as_ref()) {
+                if saved_etag != &src.etag {
+                    tracing::warn!("transfer.resume: Source ETag changed since checkpoint, restarting from 0");
+                    false
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
         let existing_part_stat = if can_append
             && can_range_read
+            && checkpoint_valid
             && job.transferred_bytes > 0
             && job.transferred_bytes < total_bytes
         {
@@ -1772,6 +1805,8 @@ impl TransferManager {
         let event_hist_clone = Arc::clone(event_history);
         let db_clone = db.clone();
         let cancel_token_pump = cancel_token.clone();
+        let staging_path_clone = staging_path.clone();
+        let source_etag_clone = src_meta.map(|m| m.etag);
 
         job.phase = TransferPhase::Transferring;
         {
@@ -1818,12 +1853,19 @@ impl TransferManager {
                     }
                     res = pipe_writer.write_all(&buffer[..n]) => res?,
                 };
+
                 transferred += n as u64;
 
-                // Update metrics & emit progress events
-                if last_emit.elapsed().as_millis() >= 100 || transferred == total_bytes {
-                    let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
-                    let speed = (transferred as f64 / elapsed_secs) as u64;
+                let now = Instant::now();
+                if now.duration_since(last_emit) >= Duration::from_millis(100) || transferred == total_bytes {
+                    last_emit = now;
+                    let elapsed_sec = start_time.elapsed().as_secs_f64();
+                    let bytes_since_start = transferred.saturating_sub(resume_offset);
+                    let speed = if elapsed_sec > 0.05 {
+                        (bytes_since_start as f64 / elapsed_sec) as u64
+                    } else {
+                        0
+                    };
                     let eta = if speed > 0 && total_bytes > transferred {
                         Some((total_bytes - transferred) / speed)
                     } else {
@@ -1867,11 +1909,20 @@ impl TransferManager {
                         // Persist to DB every 2 seconds or on finish
                         if last_db_save.elapsed().as_secs() >= 2 || transferred == total_bytes {
                             let _ = Self::save_job_to_db(&db_clone, &j).await;
+                            let cp = crate::transfer::checkpoint::TransferCheckpoint {
+                                transfer_id: job_id.clone(),
+                                offset: transferred,
+                                total: total_bytes,
+                                staging_path: staging_path_clone.clone(),
+                                source_etag: source_etag_clone.clone(),
+                                source_version: None,
+                                checksum_so_far: None,
+                                updated_at: Utc::now(),
+                            };
+                            let _ = cp.save(&db_clone).await;
                             last_db_save = Instant::now();
                         }
                     }
-
-                    last_emit = Instant::now();
                 }
             }
 

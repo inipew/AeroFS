@@ -1,7 +1,10 @@
 use crate::config::AppConfig;
 use crate::db::DbPool;
+use crate::events::EventJournal;
 use crate::infrastructure::CredentialStore;
+use crate::runtime::{ResourceBudget, TaskSupervisor};
 use crate::services::connection_service::ConnectionService;
+use crate::sync::SyncManager;
 use crate::transfer::TransferManager;
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
@@ -16,18 +19,20 @@ use tokio_util::task::TaskTracker;
 #[repr(u8)]
 pub enum RuntimePhase {
     Starting = 0,
-    Running = 1,
-    ShuttingDown = 2,
-    Stopped = 3,
+    Binding = 1,
+    Running = 2,
+    ShuttingDown = 3,
+    Stopped = 4,
 }
 
 impl RuntimePhase {
     fn from_u8(v: u8) -> Self {
         match v {
             0 => RuntimePhase::Starting,
-            1 => RuntimePhase::Running,
-            2 => RuntimePhase::ShuttingDown,
-            3 => RuntimePhase::Stopped,
+            1 => RuntimePhase::Binding,
+            2 => RuntimePhase::Running,
+            3 => RuntimePhase::ShuttingDown,
+            4 => RuntimePhase::Stopped,
             _ => RuntimePhase::Stopped,
         }
     }
@@ -35,6 +40,7 @@ impl RuntimePhase {
     pub fn as_str(self) -> &'static str {
         match self {
             RuntimePhase::Starting => "starting",
+            RuntimePhase::Binding => "binding",
             RuntimePhase::Running => "running",
             RuntimePhase::ShuttingDown => "shutting_down",
             RuntimePhase::Stopped => "stopped",
@@ -78,6 +84,7 @@ impl ShutdownReason {
 pub struct AppRuntime {
     pub shutdown_token: CancellationToken,
     pub force_shutdown_token: CancellationToken,
+    pub supervisor: TaskSupervisor,
     pub task_tracker: TaskTracker,
     phase: Arc<AtomicU8>,
     shutdown_reason: Arc<AtomicU8>,
@@ -85,10 +92,13 @@ pub struct AppRuntime {
 
 impl Default for AppRuntime {
     fn default() -> Self {
+        let supervisor = TaskSupervisor::new();
+        let task_tracker = supervisor.tracker().clone();
         Self {
             shutdown_token: CancellationToken::new(),
             force_shutdown_token: CancellationToken::new(),
-            task_tracker: TaskTracker::new(),
+            supervisor,
+            task_tracker,
             phase: Arc::new(AtomicU8::new(RuntimePhase::Starting as u8)),
             shutdown_reason: Arc::new(AtomicU8::new(0)),
         }
@@ -148,6 +158,9 @@ pub struct AppState {
     pub global_io_semaphore: Arc<Semaphore>,
     pub archive_semaphore: Arc<Semaphore>,
     pub search_semaphore: Arc<Semaphore>,
+    pub resource_budget: Arc<ResourceBudget>,
+    pub event_journal: Arc<EventJournal>,
+    pub sync_manager: Arc<SyncManager>,
     pub runtime: AppRuntime,
 }
 
@@ -156,6 +169,14 @@ impl AppState {
         let credentials = Arc::new(CredentialStore::new(&config.security.session_secret));
         let registry = Arc::new(ProviderRegistry::new());
         let runtime = AppRuntime::default();
+
+        let event_journal = Arc::new(
+            EventJournal::init(db.clone())
+                .await
+                .expect("Failed to initialize durable event journal"),
+        );
+
+        let resource_budget = Arc::new(ResourceBudget::default());
 
         // TransferManager receives shutdown_token + task_tracker so its internal tasks
         // (recovery + scheduler) are tracked and respond to cancellation.
@@ -168,6 +189,12 @@ impl AppState {
             &runtime.task_tracker,
         )
         .await;
+
+        let sync_manager = Arc::new(SyncManager::new(
+            db.clone(),
+            transfer_manager.clone(),
+            runtime.supervisor.clone(),
+        ));
 
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());
@@ -183,16 +210,19 @@ impl AppState {
             global_io_semaphore: Arc::new(Semaphore::new(32)),
             archive_semaphore: Arc::new(Semaphore::new(4)),
             search_semaphore: Arc::new(Semaphore::new(8)),
+            resource_budget,
+            event_journal,
+            sync_manager,
             runtime,
         };
 
         // Initialize and register all connections from DB via ConnectionService
         ConnectionService::load_all_providers_from_db(&state).await;
 
-        // Spawn background cleanup for stale orphan .part files (> 24 hours old) tracked via TaskTracker
+        // Spawn background cleanup for stale orphan .part files (> 24 hours old) tracked via TaskSupervisor
         let local_root_clone = state.config.filesystem.default_local_root.clone();
         let cleanup_token = state.runtime.shutdown_token.clone();
-        state.runtime.task_tracker.spawn(async move {
+        state.runtime.supervisor.spawn("stale_staging_cleanup", async move {
             tokio::select! {
                 _ = cleanup_token.cancelled() => {
                     tracing::debug!("Stale staging cleanup cancelled by shutdown");
@@ -201,6 +231,22 @@ impl AppState {
                     &local_root_clone,
                     std::time::Duration::from_secs(24 * 3600),
                 ) => {}
+            }
+        });
+
+        // Spawn event journal vacuum task every 6 hours
+        let journal_clone = state.event_journal.clone();
+        let vacuum_token = state.runtime.shutdown_token.clone();
+        state.runtime.supervisor.spawn("event_journal_vacuum", async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await; // Skip first immediate tick
+            loop {
+                tokio::select! {
+                    _ = vacuum_token.cancelled() => break,
+                    _ = interval.tick() => {
+                        let _ = journal_clone.vacuum(std::time::Duration::from_secs(24 * 3600)).await;
+                    }
+                }
             }
         });
 

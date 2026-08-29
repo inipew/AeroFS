@@ -1,6 +1,8 @@
+pub mod checkpoint;
 pub mod engine;
 pub mod planner;
 
+pub use checkpoint::TransferCheckpoint;
 pub use engine::{
     EventEnvelope, ReplayResult, TransferJob, TransferManager, TransferPhase, TransferStatus,
     TransferType, WsEvent,

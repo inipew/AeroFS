@@ -69,7 +69,7 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     // 6. Background housekeeping worker: cleans up expired sessions & old dismissed jobs every hour
     let housekeeping_db = state.db.clone();
     let housekeeping_token = state.runtime.shutdown_token.clone();
-    state.runtime.task_tracker.spawn(async move {
+    state.runtime.supervisor.spawn("housekeeping", async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         loop {
             tokio::select! {
@@ -109,7 +109,8 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     // 7. Build router (includes shutdown_guard, security headers, CORS, etc.)
     let app = create_router(state.clone());
 
-    // 8. Bind TCP listener FIRST, and only mark phase as Running after listener is successfully bound
+    // 8. Bind TCP listener: transition Starting -> Binding -> Running
+    state.runtime.set_phase(RuntimePhase::Binding);
     let listener = TcpListener::bind(addr).await?;
     state.runtime.set_phase(RuntimePhase::Running);
 
