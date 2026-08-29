@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed, reactive } from 'vue';
+import { useQueryClient } from '@tanstack/vue-query';
 import { listFilesApi } from '../api/files';
 import { subscribeFileChanges } from '../services/fileChangeBus';
 import { useTransferStore } from './transferStore';
@@ -575,7 +576,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function goForwardPanel(panelId: PanelId) { await goForward(panelId); }
   async function navigateUpPanel(panelId: PanelId) { await navigateUp(panelId); }
 
+  const queryClient = useQueryClient();
+
+  function invalidatePanel(panelId: PanelId) {
+    const p = getPanel(panelId);
+    try {
+      queryClient.invalidateQueries({
+        queryKey: ['directory', p.location.connectionId, p.location.path],
+      });
+    } catch {}
+  }
+
   async function refresh(panelId: PanelId) {
+    invalidatePanel(panelId);
     await fetchPanelEntries(panelId);
   }
 

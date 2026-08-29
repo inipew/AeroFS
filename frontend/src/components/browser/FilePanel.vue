@@ -288,360 +288,384 @@
             </p>
           </div>
 
-          <!-- GRID VIEW (Large, Beautiful, High-Information-Density Cards) -->
-          <div v-else-if="panel.viewMode === 'grid'" class="space-y-6">
-            <!-- Folders Grid Section -->
-            <div v-if="displayedFolders.length > 0 || (panel.path !== '/' && panel.path !== '')" class="space-y-2.5">
-              <div class="flex items-center justify-between text-[11px] font-bold text-gray-400 dark:text-slate-500 tracking-wider uppercase px-1">
-                <span>Folders</span>
-                <span>{{ displayedFolders.length }}</span>
+          <!-- GRID VIEW (Virtualised High-Information-Density Cards) -->
+          <div v-else-if="panel.viewMode === 'grid'" class="space-y-4">
+            <!-- Parent Folder Navigation Card (..) -->
+            <div v-if="panel.path !== '/' && panel.path !== ''" class="mb-3">
+              <div
+                @click="workspaceStore.navigateUp(panelId)"
+                @dblclick="workspaceStore.navigateUp(panelId)"
+                class="w-32 border border-dashed border-gray-300/80 dark:border-slate-700/80 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group bg-gray-50/60 dark:bg-slate-900/40 hover:bg-blue-50/40 dark:hover:bg-blue-950/30 hover:-translate-y-0.5 active:scale-[0.98] min-h-[100px]"
+                title="Go to parent directory (..)"
+              >
+                <div class="flex-1 flex items-center justify-center w-full py-1">
+                  <div class="w-9 h-9 rounded-2xl bg-gradient-to-tr from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-standard ease-spring ring-1 ring-blue-500/20">
+                    <FbIcon name="arrow-up" size="16px" class="group-hover:-translate-y-0.5 transition-transform" />
+                  </div>
+                </div>
+                <span class="font-bold text-xs truncate text-gray-700 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 w-full block">.. Parent</span>
               </div>
+            </div>
 
-              <div class="grid gap-3 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">
-                <!-- Parent Folder Navigation Card (..) -->
+            <!-- Virtual Grid Container -->
+            <div
+              v-if="!dirQuery.isLoading.value && displayedEntries.length > 0"
+              :style="{ height: `${gridTotalSize}px`, position: 'relative' }"
+            >
+              <div
+                v-for="vRow in virtualGridRows"
+                :key="String(vRow.key)"
+                :style="{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: `${vRow.size}px`,
+                  transform: `translateY(${vRow.start}px)`,
+                  gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
+                }"
+                class="grid gap-3 sm:gap-3.5"
+              >
                 <div
+                  v-for="colIdx in gridCols"
+                  :key="colIdx"
+                >
+                  <template v-if="getGridItemAt(vRow.index, colIdx - 1)">
+                    <!-- FOLDER CARD -->
+                    <div
+                      v-if="getGridItemAt(vRow.index, colIdx - 1)!.kind === 'directory'"
+                      data-entry-item="true"
+                      :data-entry-path="getGridItemAt(vRow.index, colIdx - 1)!.path"
+                      draggable="true"
+                      @dragstart="handleDragStart($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @touchstart.passive="handleTouchStart($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @touchend="handleTouchEnd"
+                      @touchmove="handleTouchMove"
+                      @touchcancel="handleTouchEnd"
+                      @click="handleEntryClick($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @dblclick="handleEntryDoubleClick(getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @contextmenu="openContextMenu($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @dragover.stop.prevent="handleFolderDragOver($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @dragleave.stop="handleFolderDragLeave(getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @drop.stop.prevent="handleDrop($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      :class="[
+                        'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
+                        isItemHidden(getGridItemAt(vRow.index, colIdx - 1)!) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
+                        workspaceStore.isCutItem(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
+                        hoveredFolderDrop === getGridItemAt(vRow.index, colIdx - 1)!.path
+                          ? 'ring-2 ring-blue-500 scale-[1.04] bg-blue-100/70 dark:bg-blue-900/60 border-blue-500 shadow-lg'
+                          : (panel.selectedEntries.includes(getGridItemAt(vRow.index, colIdx - 1)!.path)
+                            ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
+                            : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1')
+                      ]"
+                    >
+                      <div class="flex-1 flex items-center justify-center w-full py-1">
+                        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 sm:w-13 sm:h-13 drop-shadow-xs group-hover:scale-110 transition-transform duration-standard ease-spring">
+                          <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-500 dark:fill-sky-600" />
+                          <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-400 dark:fill-sky-400" />
+                        </svg>
+                      </div>
+                      <div class="w-full px-0.5 mt-1 text-center">
+                        <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition line-clamp-2 break-all leading-tight block" :title="getGridItemAt(vRow.index, colIdx - 1)!.name">
+                          {{ getGridItemAt(vRow.index, colIdx - 1)!.name }}
+                        </span>
+                        <span v-if="isItemHidden(getGridItemAt(vRow.index, colIdx - 1)!)" class="inline-block mt-0.5 text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono">
+                          dot
+                        </span>
+                      </div>
+                    </div>
+
+                    <!-- FILE CARD -->
+                    <div
+                      v-else
+                      data-entry-item="true"
+                      :data-entry-path="getGridItemAt(vRow.index, colIdx - 1)!.path"
+                      draggable="true"
+                      @dragstart="handleDragStart($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @touchstart.passive="handleTouchStart($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @touchend="handleTouchEnd"
+                      @touchmove="handleTouchMove"
+                      @touchcancel="handleTouchEnd"
+                      @click="handleEntryClick($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @dblclick="handleEntryDoubleClick(getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @contextmenu="openContextMenu($event, getGridItemAt(vRow.index, colIdx - 1)!)"
+                      :class="[
+                        'border rounded-2xl overflow-hidden cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[136px] sm:min-h-[148px]',
+                        isItemHidden(getGridItemAt(vRow.index, colIdx - 1)!) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
+                        workspaceStore.isCutItem(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
+                        panel.selectedEntries.includes(getGridItemAt(vRow.index, colIdx - 1)!.path)
+                          ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
+                          : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1 hover:border-blue-400 dark:hover:border-blue-500'
+                      ]"
+                    >
+                      <div class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-[85px]">
+                        <template v-if="isImage(getGridItemAt(vRow.index, colIdx - 1)!)">
+                          <img
+                            :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path)"
+                            :alt="getGridItemAt(vRow.index, colIdx - 1)!.name"
+                            class="w-full h-full object-cover group-hover:scale-105 transition duration-300 rounded-lg"
+                            loading="lazy"
+                          />
+                          <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md border border-white/10">
+                            {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
+                          </span>
+                        </template>
+                        <template v-else-if="isVideo(getGridItemAt(vRow.index, colIdx - 1)!)">
+                          <video
+                            :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) + '#t=0.5'"
+                            preload="metadata"
+                            muted
+                            playsinline
+                            class="w-full h-full object-cover group-hover:scale-105 transition duration-300 pointer-events-none rounded-lg"
+                          ></video>
+                          <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent group-hover:opacity-90 transition"></div>
+                          <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div class="w-8 h-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
+                              <FbIcon name="play" size="12px" class="fill-white" />
+                            </div>
+                          </div>
+                          <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md z-10 border border-white/10">
+                            {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
+                          </span>
+                        </template>
+                        <template v-else-if="isAudio(getGridItemAt(vRow.index, colIdx - 1)!)">
+                          <div class="w-full h-full bg-gradient-to-br from-indigo-500/15 via-purple-500/15 to-pink-500/15 dark:from-indigo-950/50 dark:to-purple-950/50 flex flex-col items-center justify-center space-y-1 rounded-lg">
+                            <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-sm shadow-md group-hover:scale-110 transition duration-200">
+                              🎵
+                            </div>
+                            <span class="text-[8px] font-mono font-bold uppercase text-indigo-600 dark:text-indigo-400 tracking-wider">
+                              {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
+                            </span>
+                          </div>
+                        </template>
+                        <div v-else class="flex flex-col items-center justify-center w-full h-full relative">
+                          <div :class="['absolute inset-0 bg-gradient-to-b opacity-60 pointer-events-none rounded-t-2xl', getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).cardBg]"></div>
+                          <div
+                            class="w-10 h-13 sm:w-11 sm:h-14 rounded-lg relative flex flex-col items-center justify-between py-1.5 px-1 shadow-xs border group-hover:scale-110 group-hover:shadow-md transition-[transform,box-shadow] duration-standard ease-spring bg-white/90 dark:bg-slate-900/90"
+                            :class="getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder"
+                          >
+                            <div
+                              class="absolute top-0 right-0 w-2.5 h-2.5 bg-gray-100 dark:bg-slate-950 rounded-bl-md border-l border-b"
+                              :class="getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder"
+                            ></div>
+                            <span class="text-xs mt-0.5 select-none">{{ getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).symbol }}</span>
+                            <span
+                              class="px-1.5 py-0.5 rounded-md font-mono text-[8px] sm:text-[9px] font-bold uppercase tracking-wider border shadow-2xs max-w-[44px] truncate text-center"
+                              :class="[getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBg, getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeText, getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder]"
+                            >
+                              {{ getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).label }}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="p-2 bg-white dark:bg-[#0f1422] shrink-0 text-center flex flex-col items-center justify-center">
+                        <div class="flex items-center justify-center gap-1 w-full">
+                          <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition leading-tight block w-full" :title="getGridItemAt(vRow.index, colIdx - 1)!.name">
+                            {{ getGridItemAt(vRow.index, colIdx - 1)!.name }}
+                          </span>
+                          <span v-if="isItemHidden(getGridItemAt(vRow.index, colIdx - 1)!)" class="text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-500 dark:text-slate-400 font-mono shrink-0">
+                            dot
+                          </span>
+                        </div>
+                        <div class="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5 font-normal font-mono truncate w-full">
+                          {{ formatBytes(getGridItemAt(vRow.index, colIdx - 1)!.size || 0) }}
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <!-- Load More button for Grid View -->
+            <div v-if="dirQuery.hasMore.value && !dirQuery.isLoading.value" class="mt-6 text-center">
+              <button
+                @click.stop="dirQuery.loadMore()"
+                :disabled="dirQuery.isFetchingNextPage.value"
+                class="px-5 py-2 rounded-xl bg-blue-50 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400 text-xs font-semibold transition cursor-pointer disabled:opacity-50 inline-flex items-center space-x-2 shadow-xs"
+              >
+                <div v-if="dirQuery.isFetchingNextPage.value" class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-blue-500 border-t-transparent"></div>
+                <span>{{ dirQuery.isFetchingNextPage.value ? 'Loading more...' : 'Load More Files' }}</span>
+                <span v-if="dirQuery.totalCount.value" class="text-gray-400 dark:text-slate-500 text-[10px]">({{ displayedEntries.length }} of {{ dirQuery.totalCount.value }})</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- LIST TABLE VIEW -->
+          <div v-else class="w-full">
+            <table class="w-full text-left border-collapse text-xs select-none">
+              <thead class="sticky top-0 z-10 bg-white/95 dark:bg-[#0b0f19]/95 backdrop-blur-xs border-b border-gray-200 dark:border-slate-800 text-[11px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
+                <tr>
+                  <th class="py-2.5 px-3 w-8 text-center">
+                    <input
+                      type="checkbox"
+                      :checked="isAllSelected"
+                      @change="toggleSelectAll"
+                      class="rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                    />
+                  </th>
+                  <th class="py-2.5 px-2 cursor-pointer hover:text-gray-900 dark:hover:text-white transition" @click="setSort('name')">
+                    <div class="flex items-center space-x-1">
+                      <span>Name</span>
+                      <span v-if="panel.sortField === 'name'" class="text-blue-600 dark:text-blue-400 text-xs">
+                        {{ panel.sortOrder === 'asc' ? '▲' : '▼' }}
+                      </span>
+                    </div>
+                  </th>
+                  <th class="py-2.5 px-2 w-28 text-right cursor-pointer hover:text-gray-900 dark:hover:text-white transition" @click="setSort('size')">
+                    <div class="flex items-center justify-end space-x-1">
+                      <span>Size</span>
+                      <span v-if="panel.sortField === 'size'" class="text-blue-600 dark:text-blue-400 text-xs">
+                        {{ panel.sortOrder === 'asc' ? '▲' : '▼' }}
+                      </span>
+                    </div>
+                  </th>
+                  <th class="py-2.5 px-2 w-36 text-right cursor-pointer hover:text-gray-900 dark:hover:text-white transition" @click="setSort('modified')">
+                    <div class="flex items-center justify-end space-x-1">
+                      <span>Modified</span>
+                      <span v-if="panel.sortField === 'modified'" class="text-blue-600 dark:text-blue-400 text-xs">
+                        {{ panel.sortOrder === 'asc' ? '▲' : '▼' }}
+                      </span>
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100 dark:divide-slate-800/60 font-sans">
+                <!-- Parent Folder Navigation Row (..) -->
+                <tr
                   v-if="panel.path !== '/' && panel.path !== ''"
                   @click="workspaceStore.navigateUp(panelId)"
                   @dblclick="workspaceStore.navigateUp(panelId)"
-                  class="border border-dashed border-gray-300/80 dark:border-slate-700/80 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group bg-gray-50/60 dark:bg-slate-900/40 hover:bg-blue-50/40 dark:hover:bg-blue-950/30 hover:-translate-y-0.5 active:scale-[0.98] min-h-[124px] sm:min-h-[132px]"
+                  class="cursor-pointer transition hover:bg-blue-50/40 dark:hover:bg-slate-800/60 text-gray-700 dark:text-slate-300"
                   title="Go to parent directory (..)"
                 >
-                  <div class="flex-1 flex items-center justify-center w-full py-1">
-                    <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-500/10 to-indigo-500/10 dark:from-blue-500/20 dark:to-indigo-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center group-hover:scale-110 transition-transform duration-standard ease-spring ring-1 ring-blue-500/20">
-                      <FbIcon name="arrow-up" size="18px" class="group-hover:-translate-y-0.5 transition-transform" />
-                    </div>
-                  </div>
-                  <span class="font-bold text-xs truncate text-gray-700 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 w-full block">.. Parent</span>
-                </div>
+                  <td class="py-2.5 px-3 text-center"></td>
+                  <td class="py-2.5 px-2 flex items-center space-x-3 truncate">
+                    <FbIcon name="chevron-left" size="16px" class="text-blue-500 shrink-0" />
+                    <span class="font-bold text-sm text-blue-600 dark:text-blue-400">.. (Parent Directory)</span>
+                  </td>
+                  <td class="py-2.5 px-2 text-right text-gray-400 font-mono text-xs">-</td>
+                  <td class="py-2.5 px-2 text-right text-gray-400 font-mono text-xs">-</td>
+                </tr>
 
-                <!-- Modern Azure Folder Card matching Filestash / Dolphin -->
-                <div
-                  v-for="folder in displayedFolders"
-                  :key="folder.path"
+                <!-- Virtual spacer TOP -->
+                <tr v-if="!dirQuery.isLoading.value && virtualListItems.length > 0" aria-hidden="true">
+                  <td colspan="4" :style="{ height: `${listOffsetTop}px`, padding: 0 }"></td>
+                </tr>
+
+                <!-- Virtualized Rows -->
+                <tr
+                  v-for="vRow in virtualListItems"
+                  :key="displayedEntries[vRow.index]?.path ?? vRow.index"
                   data-entry-item="true"
-                  :data-entry-path="folder.path"
+                  :data-entry-path="displayedEntries[vRow.index]?.path"
                   draggable="true"
-                  @dragstart="handleDragStart($event, folder)"
-                  @touchstart.passive="handleTouchStart($event, folder)"
+                  @dragstart="handleDragStart($event, displayedEntries[vRow.index])"
+                  @touchstart.passive="handleTouchStart($event, displayedEntries[vRow.index])"
                   @touchend="handleTouchEnd"
                   @touchmove="handleTouchMove"
                   @touchcancel="handleTouchEnd"
-                  @click="handleEntryClick($event, folder)"
-                  @dblclick="handleEntryDoubleClick(folder)"
-                  @contextmenu="openContextMenu($event, folder)"
-                  @dragover.stop.prevent="handleFolderDragOver($event, folder)"
-                  @dragleave.stop="handleFolderDragLeave(folder)"
-                  @drop.stop.prevent="handleDrop($event, folder)"
+                  @click="handleEntryClick($event, displayedEntries[vRow.index])"
+                  @dblclick="handleEntryDoubleClick(displayedEntries[vRow.index])"
+                  @contextmenu="openContextMenu($event, displayedEntries[vRow.index])"
+                  @dragover.stop.prevent="displayedEntries[vRow.index]?.kind === 'directory' ? handleFolderDragOver($event, displayedEntries[vRow.index]) : null"
+                  @dragleave.stop="displayedEntries[vRow.index]?.kind === 'directory' ? handleFolderDragLeave(displayedEntries[vRow.index]) : null"
+                  @drop.stop.prevent="displayedEntries[vRow.index]?.kind === 'directory' ? handleDrop($event, displayedEntries[vRow.index]) : null"
                   :class="[
-                    'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
-                    isItemHidden(folder) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
-                    workspaceStore.isCutItem(panel.connectionId, folder.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
-                    hoveredFolderDrop === folder.path
-                      ? 'ring-2 ring-blue-500 scale-[1.04] bg-blue-100/70 dark:bg-blue-900/60 border-blue-500 shadow-lg'
-                      : (panel.selectedEntries.includes(folder.path)
-                        ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
-                        : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1')
+                    'cursor-pointer transition group',
+                    displayedEntries[vRow.index] && isItemHidden(displayedEntries[vRow.index]) ? 'opacity-65 hover:opacity-100 italic' : '',
+                    displayedEntries[vRow.index] && workspaceStore.isCutItem(panel.connectionId, displayedEntries[vRow.index].path) ? 'opacity-40 italic' : '',
+                    displayedEntries[vRow.index] && hoveredFolderDrop === displayedEntries[vRow.index].path
+                      ? 'bg-blue-100/70 dark:bg-blue-900/60 border-l-4 border-l-blue-600'
+                      : (displayedEntries[vRow.index] && panel.selectedEntries.includes(displayedEntries[vRow.index].path)
+                        ? 'bg-blue-50/80 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200 border-l-2 border-l-blue-600 dark:border-l-blue-400'
+                        : 'hover:bg-gray-50/80 dark:hover:bg-slate-800/60 text-gray-800 dark:text-slate-200 border-l-2 border-l-transparent')
                   ]"
                 >
-                  <!-- Large Prominent Sky-Blue / Azure Folder Icon -->
-                  <div class="flex-1 flex items-center justify-center w-full py-1">
-                    <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 sm:w-13 sm:h-13 drop-shadow-xs group-hover:scale-110 transition-transform duration-standard ease-spring">
-                      <path d="M6 18C6 14.6863 8.68629 12 12 12H24.3431C25.9345 12 27.4609 12.6321 28.5858 13.7574L32.4142 17.5858C33.5391 18.7107 35.0655 19.3431 36.6569 19.3431H52C55.3137 19.3431 58 22.0294 58 25.3431V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V18Z" class="fill-sky-500 dark:fill-sky-600" />
-                      <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-400 dark:fill-sky-400" />
-                    </svg>
-                  </div>
-
-                  <!-- Centered Folder Name Label (2-line wrap) -->
-                  <div class="w-full px-0.5 mt-1 text-center">
-                    <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition line-clamp-2 break-all leading-tight block" :title="folder.name">
-                      {{ folder.name }}
-                    </span>
-                    <span v-if="isItemHidden(folder)" class="inline-block mt-0.5 text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono">
-                      dot
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-        <!-- 2. FILES SECTION -->
-        <div v-if="displayedFiles.length > 0">
-          <div class="flex items-center justify-between mb-3 px-0.5">
-            <div class="flex items-center space-x-2">
-              <span class="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-slate-500">Files</span>
-              <span class="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 font-mono font-bold text-[10px]">
-                {{ displayedFiles.length }}
-              </span>
-            </div>
-          </div>
-
-          <div class="grid gap-3 sm:gap-3.5" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">
-            <div
-              v-for="file in displayedFiles"
-              :key="file.path"
-              data-entry-item="true"
-              :data-entry-path="file.path"
-              draggable="true"
-              @dragstart="handleDragStart($event, file)"
-              @touchstart.passive="handleTouchStart($event, file)"
-              @touchend="handleTouchEnd"
-              @touchmove="handleTouchMove"
-              @touchcancel="handleTouchEnd"
-              @click="handleEntryClick($event, file)"
-              @dblclick="handleEntryDoubleClick(file)"
-              @contextmenu="openContextMenu($event, file)"
-              :class="[
-                'border rounded-2xl overflow-hidden cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[136px] sm:min-h-[148px]',
-                isItemHidden(file) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
-                workspaceStore.isCutItem(panel.connectionId, file.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
-                panel.selectedEntries.includes(file.path)
-                  ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-500 ring-2 ring-blue-500/30 shadow-md'
-                  : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1 hover:border-blue-400 dark:hover:border-blue-500'
-              ]"
-            >
-              <!-- Card Thumbnail Area (Centered Absolute Overlays) -->
-              <div
-                class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-[85px]"
-              >
-                <!-- Real Image Preview -->
-                <template v-if="isImage(file)">
-                  <img
-                    :src="getDownloadUrl(panel.connectionId, file.path)"
-                    :alt="file.name"
-                    class="w-full h-full object-cover group-hover:scale-105 transition duration-300 rounded-lg"
-                    loading="lazy"
-                  />
-                  <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md border border-white/10">
-                    {{ getFileExt(file) }}
-                  </span>
-                </template>
-
-                <!-- Video Thumbnail with Real Snapshot Preview & Centered Play Overlay -->
-                <template v-else-if="isVideo(file)">
-                  <video
-                    :src="getDownloadUrl(panel.connectionId, file.path) + '#t=0.5'"
-                    preload="metadata"
-                    muted
-                    playsinline
-                    class="w-full h-full object-cover group-hover:scale-105 transition duration-300 pointer-events-none rounded-lg"
-                  ></video>
-                  <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent group-hover:opacity-90 transition"></div>
-                  <!-- Centered Play Button -->
-                  <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div class="w-8 h-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
-                      <FbIcon name="play" size="12px" class="fill-white" />
-                    </div>
-                  </div>
-                  <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md z-10 border border-white/10">
-                    {{ getFileExt(file) }}
-                  </span>
-                </template>
-
-                <!-- Audio Thumbnail with Music Visual Artwork -->
-                <template v-else-if="isAudio(file)">
-                  <div class="w-full h-full bg-gradient-to-br from-indigo-500/15 via-purple-500/15 to-pink-500/15 dark:from-indigo-950/50 dark:to-purple-950/50 flex flex-col items-center justify-center space-y-1 rounded-lg">
-                    <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-sm shadow-md group-hover:scale-110 transition duration-200">
-                      🎵
-                    </div>
-                    <span class="text-[8px] font-mono font-bold uppercase text-indigo-600 dark:text-indigo-400 tracking-wider">
-                      {{ getFileExt(file) }}
-                    </span>
-                  </div>
-                </template>
-
-                <!-- Dynamic Color-Coded Document / Code / Config / Database / Binary Illustration -->
-                <div v-else class="flex flex-col items-center justify-center w-full h-full relative">
-                  <div :class="['absolute inset-0 bg-gradient-to-b opacity-60 pointer-events-none rounded-t-2xl', getFileTypeMeta(file).cardBg]"></div>
-
-                  <!-- Sleek Document Illustration -->
-                  <div
-                    class="w-10 h-13 sm:w-11 sm:h-14 rounded-lg relative flex flex-col items-center justify-between py-1.5 px-1 shadow-xs border group-hover:scale-110 group-hover:shadow-md transition-[transform,box-shadow] duration-standard ease-spring bg-white/90 dark:bg-slate-900/90"
-                    :class="getFileTypeMeta(file).badgeBorder"
-                  >
-                    <!-- Folded dog-ear corner -->
-                    <div
-                      class="absolute top-0 right-0 w-2.5 h-2.5 bg-gray-100 dark:bg-slate-950 rounded-bl-md border-l border-b"
-                      :class="getFileTypeMeta(file).badgeBorder"
-                    ></div>
-
-                    <!-- Category Emoji Symbol -->
-                    <span class="text-xs mt-0.5 select-none">{{ getFileTypeMeta(file).symbol }}</span>
-
-                    <!-- Format Pill Badge -->
-                    <span
-                      class="px-1.5 py-0.5 rounded-md font-mono text-[8px] sm:text-[9px] font-bold uppercase tracking-wider border shadow-2xs max-w-[44px] truncate text-center"
-                      :class="[getFileTypeMeta(file).badgeBg, getFileTypeMeta(file).badgeText, getFileTypeMeta(file).badgeBorder]"
-                    >
-                      {{ getFileTypeMeta(file).label }}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Card Bottom Footer -->
-              <div class="p-2 bg-white dark:bg-[#0f1422] shrink-0 text-center flex flex-col items-center justify-center">
-                <div class="flex items-center justify-center gap-1 w-full">
-                  <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition leading-tight block w-full" :title="file.name">
-                    {{ file.name }}
-                  </span>
-                  <span v-if="isItemHidden(file)" class="text-[8px] px-1 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-500 dark:text-slate-400 font-mono shrink-0">
-                    dot
-                  </span>
-                </div>
-                <div class="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5 font-normal font-mono truncate w-full">
-                  {{ formatBytes(file.size || 0) }}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- LIST TABLE VIEW -->
-      <div v-else class="w-full">
-        <table class="w-full text-left border-collapse text-xs select-none">
-          <thead class="sticky top-0 z-10 bg-white/95 dark:bg-[#0b0f19]/95 backdrop-blur-xs border-b border-gray-200 dark:border-slate-800 text-[11px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
-            <tr>
-              <th class="py-2.5 px-3 w-8 text-center">
-                <input
-                  type="checkbox"
-                  :checked="isAllSelected"
-                  @change="toggleSelectAll"
-                  class="rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
-                />
-              </th>
-              <th class="py-2.5 px-2 cursor-pointer hover:text-gray-900 dark:hover:text-white transition" @click="setSort('name')">
-                <div class="flex items-center space-x-1">
-                  <span>Name</span>
-                  <span v-if="panel.sortField === 'name'" class="text-blue-600 dark:text-blue-400 text-xs">
-                    {{ panel.sortOrder === 'asc' ? '▲' : '▼' }}
-                  </span>
-                </div>
-              </th>
-              <th class="py-2.5 px-2 w-28 text-right cursor-pointer hover:text-gray-900 dark:hover:text-white transition" @click="setSort('size')">
-                <div class="flex items-center justify-end space-x-1">
-                  <span>Size</span>
-                  <span v-if="panel.sortField === 'size'" class="text-blue-600 dark:text-blue-400 text-xs">
-                    {{ panel.sortOrder === 'asc' ? '▲' : '▼' }}
-                  </span>
-                </div>
-              </th>
-              <th class="py-2.5 px-2 w-36 text-right cursor-pointer hover:text-gray-900 dark:hover:text-white transition" @click="setSort('modified')">
-                <div class="flex items-center justify-end space-x-1">
-                  <span>Modified</span>
-                  <span v-if="panel.sortField === 'modified'" class="text-blue-600 dark:text-blue-400 text-xs">
-                    {{ panel.sortOrder === 'asc' ? '▲' : '▼' }}
-                  </span>
-                </div>
-              </th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-100 dark:divide-slate-800/60 font-sans">
-            <!-- Parent Folder Navigation Row (..) -->
-            <tr
-              v-if="panel.path !== '/' && panel.path !== ''"
-              @click="workspaceStore.navigateUp(panelId)"
-              @dblclick="workspaceStore.navigateUp(panelId)"
-              class="cursor-pointer transition hover:bg-blue-50/40 dark:hover:bg-slate-800/60 text-gray-700 dark:text-slate-300"
-              title="Go to parent directory (..)"
-            >
-              <td class="py-2.5 px-3 text-center"></td>
-              <td class="py-2.5 px-2 flex items-center space-x-3 truncate">
-                <FbIcon name="chevron-left" size="16px" class="text-blue-500 shrink-0" />
-                <span class="font-bold text-sm text-blue-600 dark:text-blue-400">.. (Parent Directory)</span>
-              </td>
-              <td class="py-2.5 px-2 text-right text-gray-400 font-mono text-xs">-</td>
-              <td class="py-2.5 px-2 text-right text-gray-400 font-mono text-xs">-</td>
-            </tr>
-
-            <tr
-              v-for="entry in displayedEntries"
-              :key="entry.path"
-              data-entry-item="true"
-              :data-entry-path="entry.path"
-              draggable="true"
-              @dragstart="handleDragStart($event, entry)"
-              @touchstart.passive="handleTouchStart($event, entry)"
-              @touchend="handleTouchEnd"
-              @touchmove="handleTouchMove"
-              @touchcancel="handleTouchEnd"
-              @click="handleEntryClick($event, entry)"
-              @dblclick="handleEntryDoubleClick(entry)"
-              @contextmenu="openContextMenu($event, entry)"
-              @dragover.stop.prevent="entry.kind === 'directory' ? handleFolderDragOver($event, entry) : null"
-              @dragleave.stop="entry.kind === 'directory' ? handleFolderDragLeave(entry) : null"
-              @drop.stop.prevent="entry.kind === 'directory' ? handleDrop($event, entry) : null"
-              :class="[
-                'cursor-pointer transition group',
-                isItemHidden(entry) ? 'opacity-65 hover:opacity-100 italic' : '',
-                workspaceStore.isCutItem(panel.connectionId, entry.path) ? 'opacity-40 italic' : '',
-                hoveredFolderDrop === entry.path
-                  ? 'bg-blue-100/70 dark:bg-blue-900/60 border-l-4 border-l-blue-600'
-                  : (panel.selectedEntries.includes(entry.path)
-                    ? 'bg-blue-50/80 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200 border-l-2 border-l-blue-600 dark:border-l-blue-400'
-                    : 'hover:bg-gray-50/80 dark:hover:bg-slate-800/60 text-gray-800 dark:text-slate-200 border-l-2 border-l-transparent')
-              ]"
-            >
-              <td
-                :class="[
-                  uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
-                  'px-3 text-center'
-                ]"
-                @click.stop
-              >
-                <input
-                  type="checkbox"
-                  :checked="panel.selectedEntries.includes(entry.path)"
-                  @change="toggleEntrySelect(entry.path, true)"
-                  class="rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
-                />
-              </td>
-              <td
-                :class="[
-                  uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
-                  'px-2 flex items-center space-x-3 truncate'
-                ]"
-              >
-                <FbIcon
-                  :name="entry.kind === 'directory' ? 'folder' : getCategoryIcon(entry)"
-                  :size="uiStore.listDensity === 'dense' ? '15px' : '18px'"
-                  :class="isItemHidden(entry) ? 'text-gray-400 dark:text-slate-500' : (entry.kind === 'directory' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-slate-500')"
-                />
-                <div class="truncate flex items-center space-x-1.5">
-                  <span
-                    class="truncate font-medium group-hover:text-blue-600 dark:group-hover:text-blue-400 transition"
+                  <td
                     :class="[
-                      entry.kind === 'directory' ? 'font-semibold' : '',
-                      uiStore.listDensity === 'dense' ? 'text-xs' : 'text-sm'
+                      uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
+                      'px-3 text-center'
+                    ]"
+                    @click.stop
+                  >
+                    <input
+                      v-if="displayedEntries[vRow.index]"
+                      type="checkbox"
+                      :checked="panel.selectedEntries.includes(displayedEntries[vRow.index].path)"
+                      @change="toggleEntrySelect(displayedEntries[vRow.index].path, true)"
+                      class="rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                    />
+                  </td>
+                  <td
+                    :class="[
+                      uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
+                      'px-2 flex items-center space-x-3 truncate'
                     ]"
                   >
-                    {{ entry.name }}
-                  </span>
-                  <span v-if="isItemHidden(entry)" class="text-[9px] px-1.5 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono not-italic">
-                    dot
-                  </span>
-                </div>
-              </td>
-              <td
-                :class="[
-                  uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
-                  'px-2 text-right text-gray-500 dark:text-slate-400 font-mono text-xs'
-                ]"
-              >
-                {{ entry.kind === 'directory' ? '—' : formatBytes(entry.size || 0) }}
-              </td>
-              <td
-                :class="[
-                  uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
-                  'px-2 text-right text-gray-400 dark:text-slate-500 text-xs truncate'
-                ]"
-              >
-                {{ formatDate(entry.modified_at) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+                    <template v-if="displayedEntries[vRow.index]">
+                      <FbIcon
+                        :name="displayedEntries[vRow.index].kind === 'directory' ? 'folder' : getCategoryIcon(displayedEntries[vRow.index])"
+                        :size="uiStore.listDensity === 'dense' ? '15px' : '18px'"
+                        :class="isItemHidden(displayedEntries[vRow.index]) ? 'text-gray-400 dark:text-slate-500' : (displayedEntries[vRow.index].kind === 'directory' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-slate-500')"
+                      />
+                      <div class="truncate flex items-center space-x-1.5">
+                        <span
+                          class="truncate font-medium group-hover:text-blue-600 dark:group-hover:text-blue-400 transition"
+                          :class="[
+                            displayedEntries[vRow.index].kind === 'directory' ? 'font-semibold' : '',
+                            uiStore.listDensity === 'dense' ? 'text-xs' : 'text-sm'
+                          ]"
+                        >
+                          {{ displayedEntries[vRow.index].name }}
+                        </span>
+                        <span v-if="isItemHidden(displayedEntries[vRow.index])" class="text-[9px] px-1.5 py-0.2 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-400 dark:text-slate-500 font-mono not-italic">
+                          dot
+                        </span>
+                      </div>
+                    </template>
+                  </td>
+                  <td
+                    :class="[
+                      uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
+                      'px-2 text-right text-gray-500 dark:text-slate-400 font-mono text-xs'
+                    ]"
+                  >
+                    {{ displayedEntries[vRow.index]?.kind === 'directory' ? '—' : formatBytes(displayedEntries[vRow.index]?.size || 0) }}
+                  </td>
+                  <td
+                    :class="[
+                      uiStore.listDensity === 'comfortable' ? 'py-3' : (uiStore.listDensity === 'dense' ? 'py-1' : 'py-2'),
+                      'px-2 text-right text-gray-400 dark:text-slate-500 text-xs truncate'
+                    ]"
+                  >
+                    {{ formatDate(displayedEntries[vRow.index]?.modified_at) }}
+                  </td>
+                </tr>
+
+                <!-- Virtual spacer BOTTOM -->
+                <tr v-if="!dirQuery.isLoading.value && virtualListItems.length > 0" aria-hidden="true">
+                  <td colspan="4" :style="{ height: `${listOffsetBottom}px`, padding: 0 }"></td>
+                </tr>
+
+                <!-- Load More Row (Cursor Pagination) -->
+                <tr v-if="dirQuery.hasMore.value && !dirQuery.isLoading.value" class="hover:bg-slate-900/40">
+                  <td colspan="4" class="py-3 text-center">
+                    <button
+                      @click.stop="dirQuery.loadMore()"
+                      :disabled="dirQuery.isFetchingNextPage.value"
+                      class="px-4 py-1.5 rounded-xl bg-blue-50 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400 text-xs font-semibold transition cursor-pointer disabled:opacity-50 inline-flex items-center space-x-2 shadow-xs"
+                    >
+                      <div v-if="dirQuery.isFetchingNextPage.value" class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-blue-500 border-t-transparent"></div>
+                      <span>{{ dirQuery.isFetchingNextPage.value ? 'Loading more...' : 'Load More Files' }}</span>
+                      <span v-if="dirQuery.totalCount.value" class="text-gray-400 dark:text-slate-500 text-[10px]">({{ displayedEntries.length }} of {{ dirQuery.totalCount.value }})</span>
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
     </div>
   </Transition>
 </div>
@@ -674,7 +698,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import FilePanelSelectionBar from './FilePanelSelectionBar.vue';
 import FilePanelStatusBar from './FilePanelStatusBar.vue';
@@ -689,6 +713,8 @@ import { getDownloadUrl, uploadFileApi } from '../../api/files';
 import type { FileEntry } from '../../types/vfs';
 import { PreviewResolver } from '../../services/previewResolver';
 import { getNavTransitionName } from '../../motion/tokens';
+import { useDirectoryQuery } from '../../composables/useDirectoryQuery';
+import { useVirtualizer } from '@tanstack/vue-virtual';
 
 const props = defineProps<{
   panelId: 'left' | 'right';
@@ -713,6 +739,63 @@ const isPanelMoreOpen = ref(false);
 const panelMoreRef = ref<HTMLElement | null>(null);
 
 const isAddressBar = ref(false);
+
+// ── TanStack Query Directory Integration ──────────────────────────────────────
+const connectionIdRef = computed(() => panel.value.location.connectionId);
+const pathRef = computed(() => panel.value.location.path);
+const queryParamsRef = computed(() => ({
+  show_hidden: panel.value.view.showHidden,
+  sort: panel.value.view.sortField,
+  order: panel.value.view.sortOrder,
+  limit: 100,
+}));
+
+const dirQuery = useDirectoryQuery(connectionIdRef, pathRef, queryParamsRef);
+
+// Keep panel runtime synchronized for backward compatibility with dialogs & modals
+watch(
+  () => dirQuery.entries.value,
+  (newEntries) => {
+    panel.value.entries = newEntries || [];
+    const validPaths = new Set((newEntries || []).map((e) => e.path));
+    panel.value.selectedEntries = panel.value.selectedEntries.filter((p: string) => validPaths.has(p));
+  },
+  { immediate: true, deep: true }
+);
+
+watch(
+  () => dirQuery.isLoading.value,
+  (loading) => {
+    panel.value.runtime.status = loading ? 'loading' : (dirQuery.isFetchingNextPage.value ? 'loading_more' : 'idle');
+    panel.value.runtime.initialized = true;
+  },
+  { immediate: true }
+);
+
+watch(
+  () => dirQuery.error.value,
+  (err) => {
+    panel.value.runtime.error = err ? err.message : null;
+  },
+  { immediate: true }
+);
+
+watch(
+  () => dirQuery.hasMore.value,
+  (hm) => {
+    panel.value.runtime.hasMore = hm;
+  },
+  { immediate: true }
+);
+
+watch(
+  () => dirQuery.totalCount.value,
+  (tc) => {
+    panel.value.runtime.totalCount = tc;
+  },
+  { immediate: true }
+);
+
 const addressInput = ref('');
 const addressInputRef = ref<HTMLInputElement | null>(null);
 
@@ -801,7 +884,7 @@ const totalFolderSize = computed(() => {
 });
 
 const displayedEntries = computed(() => {
-  let list = [...panel.value.entries];
+  let list = [...(dirQuery.entries.value || [])];
 
   // 1. Filter by category (if filterType is active)
   if (panel.value.filterType && panel.value.filterType !== 'all') {
@@ -870,8 +953,63 @@ const isAllSelected = computed(() => {
   return displayedEntries.value.every((e) => panel.value.selectedEntries.includes(e.path));
 });
 
-onMounted(async () => {
-  await workspaceStore.fetchPanelEntries(props.panelId);
+// ── Virtualisation Engines (TanStack Vue Virtual) ───────────────────────────
+const listVirtualizer = useVirtualizer({
+  get count() { return displayedEntries.value.length; },
+  getScrollElement: () => panelContentRef.value,
+  estimateSize: () => uiStore.listDensity === 'dense' ? 32 : (uiStore.listDensity === 'comfortable' ? 44 : 38),
+  overscan: 10,
+});
+
+const virtualListItems = computed(() => listVirtualizer.value.getVirtualItems());
+const listTotalSize = computed(() => listVirtualizer.value.getTotalSize());
+const listOffsetTop = computed(() => virtualListItems.value[0]?.start ?? 0);
+const listOffsetBottom = computed(() => {
+  const last = virtualListItems.value.at(-1);
+  if (!last) return 0;
+  return listTotalSize.value - last.end;
+});
+
+const containerWidth = ref(0);
+const gridCols = computed(() => {
+  const w = containerWidth.value;
+  if (w >= 1280) return 8;
+  if (w >= 1024) return 6;
+  if (w >= 768)  return 4;
+  if (w >= 640)  return 3;
+  return 2;
+});
+
+const gridRowCount = computed(() => Math.ceil(displayedEntries.value.length / gridCols.value));
+
+const gridVirtualizer = useVirtualizer({
+  get count() { return gridRowCount.value; },
+  getScrollElement: () => panelContentRef.value,
+  estimateSize: () => 140,
+  overscan: 3,
+});
+
+const virtualGridRows = computed(() => gridVirtualizer.value.getVirtualItems());
+const gridTotalSize = computed(() => gridVirtualizer.value.getTotalSize());
+
+function getGridItemAt(rowIndex: number, colIdx: number): FileEntry | null {
+  const idx = rowIndex * gridCols.value + colIdx;
+  return displayedEntries.value[idx] ?? null;
+}
+
+let resizeObserver: ResizeObserver | null = null;
+onMounted(() => {
+  if (panelContentRef.value) {
+    containerWidth.value = panelContentRef.value.offsetWidth;
+    resizeObserver = new ResizeObserver((entries) => {
+      containerWidth.value = entries[0]?.contentRect.width ?? 0;
+    });
+    resizeObserver.observe(panelContentRef.value);
+  }
+});
+
+onUnmounted(() => {
+  resizeObserver?.disconnect();
 });
 
 function isItemHidden(entry: FileEntry): boolean {
@@ -919,8 +1057,8 @@ function setSort(field: string) {
     panel.value.sortField = field;
     panel.value.sortOrder = 'asc';
   }
-  workspaceStore.fetchPanelEntries(props.panelId);
 }
+
 
 function toggleEntrySelect(path: string, multi: boolean = false) {
   if (!multi) {
