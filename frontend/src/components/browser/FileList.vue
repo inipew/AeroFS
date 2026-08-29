@@ -91,6 +91,21 @@
             {{ entry.permissions || '-' }}
           </td>
         </tr>
+
+        <!-- Load More Row for Cursor Pagination -->
+        <tr v-if="fileStore.hasMore" class="hover:bg-slate-900/40">
+          <td colspan="5" class="py-3 text-center">
+            <button
+              @click.stop="fileStore.fetchNextPage()"
+              :disabled="fileStore.loadingMore"
+              class="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white text-xs font-medium transition cursor-pointer disabled:opacity-50 inline-flex items-center space-x-2"
+            >
+              <div v-if="fileStore.loadingMore" class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-indigo-400 border-t-transparent"></div>
+              <span>{{ fileStore.loadingMore ? 'Loading more...' : 'Load More Files' }}</span>
+              <span v-if="fileStore.totalCount" class="text-slate-500 text-[10px]">({{ fileStore.filteredEntries.length }} of {{ fileStore.totalCount }})</span>
+            </button>
+          </td>
+        </tr>
       </tbody>
     </table>
   </div>

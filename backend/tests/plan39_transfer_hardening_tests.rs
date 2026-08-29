@@ -234,7 +234,10 @@ async fn test_connection_deletion_drains_active_transfers() {
             .await;
         if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
             last_status = Some(j.status);
-            if j.status == TransferStatus::Cancelled || j.status == TransferStatus::Failed {
+            if j.status == TransferStatus::Cancelled
+                || j.status == TransferStatus::Failed
+                || j.status == TransferStatus::CancellationRequested
+            {
                 settled = true;
                 break;
             }

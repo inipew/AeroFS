@@ -28,6 +28,23 @@ export class RealtimeClient {
   private resyncListeners: Set<RealtimeListener<ResyncRequiredEvent>> = new Set();
   private statusListeners: Set<RealtimeListener<boolean>> = new Set();
 
+  constructor() {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          if (!this.isConnected) {
+            this.connect();
+          } else {
+            // Trigger resync to catch up on any missed background events
+            this.resyncListeners.forEach((l) =>
+              l({ reason: 'visibility_resumed', latest_sequence: this.lastSequence })
+            );
+          }
+        }
+      });
+    }
+  }
+
   public connect(): void {
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return;
@@ -54,8 +71,14 @@ export class RealtimeClient {
         try {
           const payload = JSON.parse(event.data);
 
-          // Sequence Gap Detection & Auto-Resync (Plan 40 P0.2, P1.13)
+          // Sequence Gap & Out-of-Order Stale Message Protection (Plan 54 P1.18)
           if (typeof payload.sequence === 'number') {
+            if (this.lastSequence > 0 && payload.sequence <= this.lastSequence) {
+              console.warn(
+                `[RealtimeClient] Stale out-of-order message received (seq ${payload.sequence} <= ${this.lastSequence}). Discarding.`
+              );
+              return;
+            }
             if (this.lastSequence > 0 && payload.sequence > this.lastSequence + 1) {
               console.warn(
                 `[RealtimeClient] Sequence gap detected (${this.lastSequence} -> ${payload.sequence}). Requesting resync.`
@@ -64,7 +87,7 @@ export class RealtimeClient {
                 l({ reason: 'sequence_gap', latest_sequence: payload.sequence })
               );
             }
-            this.lastSequence = Math.max(this.lastSequence, payload.sequence);
+            this.lastSequence = payload.sequence;
           }
 
           switch (payload.type) {
@@ -105,6 +128,21 @@ export class RealtimeClient {
       console.error('[RealtimeClient] Connection error', err);
       this.handleDisconnect();
     }
+  }
+
+  public disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.socket) {
+      this.socket.onclose = null;
+      this.socket.onerror = null;
+      this.socket.close();
+      this.socket = null;
+    }
+    this.isConnected = false;
+    this.statusListeners.forEach((l) => l(false));
   }
 
   private handleDisconnect(): void {

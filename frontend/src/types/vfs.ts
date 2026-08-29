@@ -41,6 +41,12 @@ export interface DirectoryListing {
   next_cursor?: string;
 }
 
+export interface ChecksumCapabilities {
+  md5: boolean;
+  sha1: boolean;
+  sha256: boolean;
+}
+
 export interface Capabilities {
   list: boolean;
   stat: boolean;
@@ -59,8 +65,19 @@ export interface Capabilities {
   atomic_write: boolean;
   atomic_rename: boolean;
   server_side_copy: boolean;
+  native_copy: boolean;
   symlink: boolean;
   permissions: boolean;
   watch: boolean;
   checksum: boolean;
+  native_checksum: boolean;
+  computed_checksums: ChecksumCapabilities;
+  write_can_append: boolean;
+  write_can_empty: boolean;
+  write_can_multi: boolean;
+  presign_read: boolean;
+  presign_write: boolean;
+  list_with_limit: boolean;
+  list_with_start_after: boolean;
+  list_with_recursive: boolean;
 }

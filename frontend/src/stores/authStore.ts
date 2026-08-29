@@ -3,6 +3,8 @@ import { ref, computed } from 'vue';
 import { loginApi, logoutApi, meApi, type LoginPayload } from '../api/auth';
 import type { UserInfo } from '../types/auth';
 
+import { realtimeClient } from '../transport/websocket';
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<UserInfo | null>(null);
   const isAuthenticated = ref<boolean>(false);
@@ -47,6 +49,7 @@ export const useAuthStore = defineStore('auth', () => {
     } finally {
       user.value = null;
       isAuthenticated.value = false;
+      realtimeClient.disconnect();
     }
   }
 

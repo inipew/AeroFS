@@ -6,6 +6,8 @@ export interface ListFilesParams {
   show_hidden?: boolean;
   sort?: string;
   order?: 'asc' | 'desc';
+  cursor?: string;
+  limit?: number;
   signal?: AbortSignal;
 }
 
@@ -25,6 +27,58 @@ export async function getMetadataApi(connectionId: string, path: string): Promis
   const resp = await apiClient.get<FileMetadata>(`/connections/${connectionId}/files/metadata`, {
     params: { path },
   });
+  return resp.data;
+}
+
+export interface PresignResponse {
+  url: string;
+  expires_in_seconds: number;
+}
+
+export async function getPresignedDownloadUrlApi(
+  connectionId: string,
+  path: string,
+  expireSeconds: number = 3600
+): Promise<PresignResponse> {
+  const resp = await apiClient.post<PresignResponse>(
+    `/connections/${connectionId}/files/presign/download`,
+    {
+      path,
+      expire_seconds: expireSeconds,
+    }
+  );
+  return resp.data;
+}
+
+export async function getPresignedUploadUrlApi(
+  connectionId: string,
+  path: string,
+  expireSeconds: number = 3600
+): Promise<PresignResponse> {
+  const resp = await apiClient.post<PresignResponse>(
+    `/connections/${connectionId}/files/presign/upload`,
+    {
+      path,
+      expire_seconds: expireSeconds,
+    }
+  );
+  return resp.data;
+}
+
+export async function completePresignedUploadApi(
+  connectionId: string,
+  path: string,
+  expectedSize?: number,
+  expectedChecksum?: string
+): Promise<FileMetadata> {
+  const resp = await apiClient.post<FileMetadata>(
+    `/connections/${connectionId}/files/presign/complete`,
+    {
+      path,
+      expected_size: expectedSize,
+      expected_checksum: expectedChecksum,
+    }
+  );
   return resp.data;
 }
 
@@ -96,7 +150,8 @@ export async function uploadFileApi(
   connectionId: string,
   targetDir: string,
   file: File,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const formData = new FormData();
   formData.append('path', targetDir);
@@ -106,6 +161,7 @@ export async function uploadFileApi(
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    signal,
     onUploadProgress: (progressEvent) => {
       if (progressEvent.total && onProgress) {
         const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);

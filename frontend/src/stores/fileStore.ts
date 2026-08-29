@@ -83,6 +83,9 @@ export const useFileStore = defineStore('file', () => {
   });
 
   const loading = computed(() => workspaceStore.activePanel.runtime.loading);
+  const loadingMore = computed(() => workspaceStore.activePanel.runtime.loadingMore);
+  const hasMore = computed(() => workspaceStore.activePanel.runtime.hasMore);
+  const totalCount = computed(() => workspaceStore.activePanel.runtime.totalCount);
   const error = computed(() => workspaceStore.activePanel.runtime.error);
 
   const history = computed(() => workspaceStore.activePanel.navigation.history);
@@ -101,6 +104,10 @@ export const useFileStore = defineStore('file', () => {
 
   async function fetchEntries(path?: string) {
     await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId, path);
+  }
+
+  async function fetchNextPage() {
+    return await workspaceStore.fetchNextPage(workspaceStore.activePanelId);
   }
 
   async function navigateTo(path: string, addToHistory: boolean = true) {
@@ -140,29 +147,100 @@ export const useFileStore = defineStore('file', () => {
     workspaceStore.activePanel.selection.paths = [];
   }
 
+  // --- OPTIMISTIC MUTATION ENGINE (Plan 54 P0.16, P1.41) ---
+
   async function createFile(name: string) {
     const fullPath = joinPath(currentPath.value, name);
-    await createFileApi(currentConnectionId.value, fullPath);
-    await workspaceStore.refreshActive();
+    const optimisticEntry: FileEntry = {
+      name,
+      path: fullPath,
+      kind: 'file',
+      size: 0,
+      modified_at: new Date().toISOString(),
+      is_hidden: name.startsWith('.'),
+    };
+
+    // Optimistic addition
+    entries.value = [...entries.value, optimisticEntry];
+
+    try {
+      await createFileApi(currentConnectionId.value, fullPath);
+    } catch (err) {
+      // Revert on failure
+      entries.value = entries.value.filter((e) => e.path !== fullPath);
+      throw err;
+    }
   }
 
   async function createDirectory(name: string) {
     const fullPath = joinPath(currentPath.value, name);
-    await createDirectoryApi(currentConnectionId.value, fullPath);
-    await workspaceStore.refreshActive();
+    const optimisticEntry: FileEntry = {
+      name,
+      path: fullPath,
+      kind: 'directory',
+      modified_at: new Date().toISOString(),
+      is_hidden: name.startsWith('.'),
+    };
+
+    // Optimistic addition
+    entries.value = [...entries.value, optimisticEntry];
+
+    try {
+      await createDirectoryApi(currentConnectionId.value, fullPath);
+    } catch (err) {
+      // Revert on failure
+      entries.value = entries.value.filter((e) => e.path !== fullPath);
+      throw err;
+    }
   }
 
   async function deleteSelected() {
-    if (selectedEntries.value.length === 0) return;
-    await deleteFilesApi(currentConnectionId.value, selectedEntries.value);
-    await workspaceStore.refreshActive();
+    const targets = [...selectedEntries.value];
+    if (targets.length === 0) return;
+
+    const previousEntries = [...entries.value];
+    const previousSelection = [...selectedEntries.value];
+    const targetSet = new Set(targets);
+
+    // Optimistic removal
+    entries.value = entries.value.filter((e) => !targetSet.has(e.path));
+    selectedEntries.value = [];
+
+    try {
+      await deleteFilesApi(currentConnectionId.value, targets);
+    } catch (err) {
+      // Revert on failure
+      entries.value = previousEntries;
+      selectedEntries.value = previousSelection;
+      throw err;
+    }
   }
 
   async function renameEntry(from: string, newName: string) {
     const parent = parentPath(from);
     const to = joinPath(parent, newName);
-    await renameEntryApi(currentConnectionId.value, from, to);
-    await workspaceStore.refreshActive();
+
+    const previousEntries = [...entries.value];
+    // Optimistic rename
+    entries.value = entries.value.map((e) => {
+      if (e.path === from) {
+        return {
+          ...e,
+          name: newName,
+          path: to,
+          is_hidden: newName.startsWith('.'),
+        };
+      }
+      return e;
+    });
+
+    try {
+      await renameEntryApi(currentConnectionId.value, from, to);
+    } catch (err) {
+      // Revert on failure
+      entries.value = previousEntries;
+      throw err;
+    }
   }
 
   async function copyEntry(from: string, destDir: string) {
@@ -172,21 +250,60 @@ export const useFileStore = defineStore('file', () => {
     await workspaceStore.refreshActive();
   }
 
-  async function uploadFiles(files: FileList | File[], onProgress?: (p: number) => void) {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      await uploadFileApi(
-        currentConnectionId.value,
-        currentPath.value,
-        file,
-        (progress) => {
-          if (onProgress) {
-            const overall = ((i + progress) / files.length) * 100;
-            onProgress(Math.round(overall));
-          }
-        }
-      );
+  /**
+   * Bounded Concurrent Upload Queue (concurrency: 3) with Per-File & Aggregated Progress Tracking
+   */
+  async function uploadFiles(
+    files: FileList | File[],
+    onProgress?: (p: number) => void,
+    signal?: AbortSignal
+  ) {
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+
+    const totalBytes = fileArray.reduce((acc, f) => acc + f.size, 0);
+    const loadedBytesMap: number[] = new Array(fileArray.length).fill(0);
+
+    const reportProgress = () => {
+      if (!onProgress) return;
+      if (totalBytes === 0) {
+        onProgress(100);
+        return;
+      }
+      const loaded = loadedBytesMap.reduce((acc, v) => acc + v, 0);
+      const percent = Math.min(100, Math.round((loaded * 100) / totalBytes));
+      onProgress(percent);
+    };
+
+    const CONCURRENCY = 3;
+    let nextIndex = 0;
+
+    async function worker() {
+      while (nextIndex < fileArray.length) {
+        if (signal?.aborted) throw new Error('Upload aborted');
+        const idx = nextIndex++;
+        const file = fileArray[idx];
+
+        await uploadFileApi(
+          currentConnectionId.value,
+          currentPath.value,
+          file,
+          (filePercent) => {
+            loadedBytesMap[idx] = Math.round((filePercent / 100) * file.size);
+            reportProgress();
+          },
+          signal
+        );
+
+        loadedBytesMap[idx] = file.size;
+        reportProgress();
+      }
     }
+
+    const workerCount = Math.min(CONCURRENCY, fileArray.length);
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
+
     await workspaceStore.refreshActive();
   }
 
@@ -201,12 +318,16 @@ export const useFileStore = defineStore('file', () => {
     sortOrder,
     searchQuery,
     loading,
+    loadingMore,
+    hasMore,
+    totalCount,
     error,
     history,
     historyIndex,
     filteredEntries,
     selectedCount,
     fetchEntries,
+    fetchNextPage,
     navigateTo,
     goBack,
     goForward,

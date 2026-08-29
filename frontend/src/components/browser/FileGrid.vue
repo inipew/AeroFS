@@ -39,6 +39,19 @@
         </span>
       </div>
     </div>
+
+    <!-- Load More for Grid Cursor Pagination -->
+    <div v-if="fileStore.hasMore" class="mt-6 text-center">
+      <button
+        @click.stop="fileStore.fetchNextPage()"
+        :disabled="fileStore.loadingMore"
+        class="px-5 py-2 rounded-lg bg-slate-850 hover:bg-slate-800 border border-slate-750 text-indigo-300 hover:text-white text-xs font-medium transition cursor-pointer disabled:opacity-50 inline-flex items-center space-x-2 shadow-sm"
+      >
+        <div v-if="fileStore.loadingMore" class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-indigo-400 border-t-transparent"></div>
+        <span>{{ fileStore.loadingMore ? 'Loading more...' : 'Load More Files' }}</span>
+        <span v-if="fileStore.totalCount" class="text-slate-500 text-[10px]">({{ fileStore.filteredEntries.length }} of {{ fileStore.totalCount }})</span>
+      </button>
+    </div>
   </div>
 </template>
 

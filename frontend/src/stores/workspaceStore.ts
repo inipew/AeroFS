@@ -54,8 +54,13 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     set loading(_v: boolean) {},
     get refreshing() { return this.status === 'refreshing'; },
     set refreshing(_v: boolean) {},
+    get loadingMore() { return this.status === 'loading_more'; },
+    set loadingMore(_v: boolean) {},
     error: null,
     initialized: false,
+    hasMore: false,
+    nextCursor: undefined,
+    totalCount: undefined,
   });
 
   const panel: Panel = {
@@ -99,6 +104,9 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     get loading() { return runtime.status === 'loading' || runtime.status === 'refreshing'; },
     set loading(_val: boolean) {},
 
+    get loadingMore() { return runtime.status === 'loading_more'; },
+    set loadingMore(_val: boolean) {},
+
     get error() { return runtime.error; },
     set error(val: string | null) { runtime.error = val; },
 
@@ -112,6 +120,15 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
 
     get initialized() { return runtime.initialized; },
     set initialized(val: boolean) { runtime.initialized = val; },
+
+    get hasMore() { return runtime.hasMore; },
+    set hasMore(val: boolean) { runtime.hasMore = val; },
+
+    get nextCursor() { return runtime.nextCursor; },
+    set nextCursor(val: string | undefined) { runtime.nextCursor = val; },
+
+    get totalCount() { return runtime.totalCount; },
+    set totalCount(val: number | undefined) { runtime.totalCount = val; },
   };
 
   return reactive(panel) as Panel;
@@ -370,6 +387,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       // TRANSACTIONAL COMMIT: commit path and entries only upon verified success!
       p.location.path = data.path;
       p.runtime.entries = data.entries;
+      p.runtime.hasMore = data.has_more ?? false;
+      p.runtime.nextCursor = data.next_cursor;
+      p.runtime.totalCount = data.total_count;
 
       // Reconcile selection: preserve items that still exist
       const previousSelection = new Set(p.selection.paths);
@@ -393,6 +413,57 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.runtime.status = p.runtime.entries.length > 0 ? 'stale' : 'error';
       p.runtime.error = norm.message;
       return { ok: false, error: p.runtime.error || undefined };
+    }
+  }
+
+  async function fetchNextPage(
+    panelId: PanelId
+  ): Promise<{ ok: boolean; count?: number; error?: string }> {
+    const p = getPanel(panelId);
+    if (
+      !p.runtime.hasMore ||
+      !p.runtime.nextCursor ||
+      p.runtime.status === 'loading_more' ||
+      p.runtime.status === 'loading'
+    ) {
+      return { ok: true, count: 0 };
+    }
+
+    const currentGen = panelId === 'left' ? leftRequestGen : rightRequestGen;
+    const currentPath = p.location.path;
+    const currentConn = p.location.connectionId;
+
+    p.runtime.status = 'loading_more';
+    try {
+      const data = await listFilesApi(p.location.connectionId, {
+        path: p.location.path,
+        show_hidden: p.view.showHidden,
+        sort: p.view.sortField,
+        order: p.view.sortOrder,
+        cursor: p.runtime.nextCursor,
+        limit: 50,
+      });
+
+      // Discard stale out-of-order pagination if directory changed mid-flight
+      if (
+        p.location.path !== currentPath ||
+        p.location.connectionId !== currentConn ||
+        (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen)
+      ) {
+        p.runtime.status = 'idle';
+        return { ok: false, error: 'Stale pagination response discarded' };
+      }
+
+      p.runtime.entries.push(...data.entries);
+      p.runtime.hasMore = data.has_more ?? false;
+      p.runtime.nextCursor = data.next_cursor;
+      p.runtime.totalCount = data.total_count;
+      p.runtime.status = 'idle';
+      return { ok: true, count: data.entries.length };
+    } catch (err: unknown) {
+      p.runtime.status = 'idle';
+      const norm = normalizeApiError(err);
+      return { ok: false, error: norm.message };
     }
   }
 
@@ -787,6 +858,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     swapPanels,
     openInOtherPanel,
     fetchPanelEntries,
+    fetchNextPage,
     navigateTo,
     navigatePanel,
     switchPanelConnection,
