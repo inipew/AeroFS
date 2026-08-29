@@ -72,6 +72,19 @@ pub async fn cancel_transfer(
     })))
 }
 
+/// Retry or resume an interrupted or failed transfer job
+pub async fn retry_transfer(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    TransferService::retry_transfer(&state, &user, &id).await?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Transfer job '{}' queued for retry", id),
+    })))
+}
+
 /// Dismiss a single transfer job from history (persistent)
 pub async fn dismiss_transfer(
     State(state): State<AppState>,

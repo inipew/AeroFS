@@ -229,6 +229,7 @@ pub fn create_router(state: AppState) -> Router {
             get(transfers::list_transfers).post(transfers::create_transfer),
         )
         .route("/{id}/cancel", post(transfers::cancel_transfer))
+        .route("/{id}/retry", post(transfers::retry_transfer))
         .route("/{id}/dismiss", post(transfers::dismiss_transfer))
         .route("/clear-finished", post(transfers::clear_finished_transfers));
 
@@ -255,10 +256,17 @@ pub fn create_router(state: AppState) -> Router {
             axum::routing::delete(crate::api::trash::delete_trash_item),
         );
 
+    let sync_routes = Router::new()
+        .route(
+            "/",
+            get(crate::api::sync::list_sync_jobs).post(crate::api::sync::create_sync_job),
+        );
+
     let api_v1 = Router::new()
         .nest("/auth", auth_routes)
         .nest("/connections", connection_routes)
         .nest("/transfers", transfer_routes)
+        .nest("/sync", sync_routes)
         .nest("/shares", share_routes)
         .nest("/trash", trash_routes)
         .route(

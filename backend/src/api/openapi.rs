@@ -43,11 +43,18 @@ use crate::state::AppState;
         ChmodRequest,
         TransferRequest,
         SuccessResponse,
+        // Sync schemas
+        crate::sync::models::SyncStrategy,
+        crate::sync::models::SyncStatus,
+        crate::sync::models::FileManifest,
+        crate::sync::models::SyncJob,
+        crate::api::sync::CreateSyncRequest,
     )),
     tags(
         (name = "files", description = "File and directory operations"),
         (name = "connections", description = "Storage connection management"),
         (name = "transfers", description = "Background transfer jobs"),
+        (name = "sync", description = "File synchronization jobs"),
         (name = "auth", description = "Authentication"),
         (name = "shares", description = "Public share links"),
     )

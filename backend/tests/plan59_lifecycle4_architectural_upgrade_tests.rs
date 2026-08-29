@@ -262,3 +262,47 @@ fn test_sync_conflict_resolution_filename() {
     assert!(conflict_no_ext.starts_with("README (conflict-"));
     assert!(conflict_no_ext.ends_with(")"));
 }
+
+#[tokio::test]
+async fn test_sync_manager_creation_and_reconciliation() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+
+    let migrator = sqlx::migrate!("./migrations");
+    migrator.run(&pool).await.unwrap();
+
+    let registry = Arc::new(backend::vfs::ProviderRegistry::new());
+    let token = tokio_util::sync::CancellationToken::new();
+    let tracker = tokio_util::task::TaskTracker::new();
+
+    let transfer_manager = backend::transfer::TransferManager::new(
+        registry.providers_map(),
+        pool.clone(),
+        4,
+        token,
+        &tracker,
+    )
+    .await;
+
+    let supervisor = TaskSupervisor::new();
+    let sync_mgr = backend::sync::SyncManager::new(
+        pool.clone(),
+        transfer_manager,
+        supervisor,
+    );
+
+    let job = sync_mgr
+        .create_job("user-1", "local", "/src", "local", "/dst", SyncStrategy::SourceWins)
+        .await
+        .unwrap();
+
+    assert_eq!(job.user_id, "user-1");
+    assert_eq!(job.status, backend::sync::SyncStatus::Created);
+
+    let list = sync_mgr.list_jobs("user-1").await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, job.id);
+}
+

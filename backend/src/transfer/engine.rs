@@ -369,6 +369,7 @@ impl TransferManager {
         let worker_semaphore_task = Arc::clone(&worker_semaphore);
         let is_accepting_clone = Arc::clone(&is_accepting_jobs);
         let scheduler_token = shutdown_token.clone();
+        let tracker_clone = task_tracker.clone();
 
         task_tracker.spawn(async move {
             tracing::debug!("transfer.scheduler.start");
@@ -413,8 +414,9 @@ impl TransferManager {
                 let hist_worker = Arc::clone(&event_history_clone);
                 let db_worker = db_clone.clone();
                 let retries_task = Arc::clone(&retries_clone);
+                let tracker_for_worker = tracker_clone.clone();
 
-                tokio::spawn(async move {
+                tracker_for_worker.spawn(async move {
                     let _permit = permit;
                     let cancel_token = {
                         let mut tokens = cancel_tokens_worker.write().await;
@@ -909,6 +911,54 @@ impl TransferManager {
             }
             Ok(false)
         }
+    }
+
+    /// Retry or resume an interrupted or failed transfer job.
+    pub async fn retry_job(
+        &self,
+        id: &str,
+        user_id: Option<&str>,
+        is_admin: bool,
+    ) -> Result<bool, String> {
+        let (can_retry, job_opt) = {
+            let mut map = self.jobs.write().await;
+            if let Some(job) = map.get_mut(id) {
+                if !is_admin {
+                    match (&job.user_id, user_id) {
+                        (Some(owner), Some(uid)) if owner == uid => {}
+                        _ => return Err("Permission denied: cannot retry another user's transfer".into()),
+                    }
+                }
+
+                if matches!(job.status, TransferStatus::Failed | TransferStatus::Interrupted) {
+                    job.status = TransferStatus::Queued;
+                    job.phase = TransferPhase::Preparing;
+                    job.error_message = None;
+                    job.updated_at = Utc::now();
+                    (true, Some(job.clone()))
+                } else {
+                    (false, None)
+                }
+            } else {
+                (false, None)
+            }
+        };
+
+        if can_retry {
+            if let Some(job) = job_opt {
+                let _ = Self::save_job_to_db(&self.db, &job).await;
+                Self::send_enveloped_event(
+                    &self.event_tx,
+                    &self.sequence_counter,
+                    &self.event_history,
+                    WsEvent::TransferProgress(job),
+                );
+                let _ = self.queue_tx.send(id.to_string()).await;
+                return Ok(true);
+            }
+        }
+
+        Err(format!("Transfer job '{}' cannot be retried (not in failed or interrupted state)", id))
     }
 
     pub async fn dismiss_job(

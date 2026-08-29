@@ -9,6 +9,7 @@ pub mod preferences;
 pub mod search;
 pub mod settings;
 pub mod shares;
+pub mod sync;
 pub mod transfers;
 pub mod trash;
 pub mod ws;

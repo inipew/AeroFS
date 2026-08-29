@@ -171,6 +171,39 @@ impl TransferService {
         }
     }
 
+    /// Retry or resume an interrupted or failed transfer job
+    pub async fn retry_transfer(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        job_id: &str,
+    ) -> Result<bool, AppError> {
+        match state
+            .transfer_manager
+            .retry_job(job_id, Some(&user.id), user.is_admin)
+            .await
+        {
+            Ok(true) => {
+                record_audit_log(
+                    &state.db,
+                    Some(&user.id),
+                    "TRANSFER_RETRY",
+                    None,
+                    None,
+                    "SUCCESS",
+                    None,
+                    Some(&format!("Retried transfer job {}", job_id)),
+                )
+                .await;
+                Ok(true)
+            }
+            Ok(false) => Err(AppError::NotFound(format!(
+                "Transfer job '{}' cannot be retried or not found",
+                job_id
+            ))),
+            Err(e) => Err(AppError::BadRequest(e)),
+        }
+    }
+
     /// Dismiss a single transfer job from history (persistent)
     pub async fn dismiss_transfer(
         state: &AppState,
