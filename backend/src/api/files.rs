@@ -527,6 +527,12 @@ pub async fn copy_entry(
 
     provider.copy(&from_vfs, &to_vfs).await?;
 
+    // Invalidate destination in metadata cache on copy
+    state
+        .metadata_cache
+        .invalidate_prefix(&connection_id, &payload.to)
+        .await;
+
     crate::auth::record_audit_log(
         &state.db,
         Some(&user.id),
@@ -538,6 +544,12 @@ pub async fn copy_entry(
         Some(&format!("Copied {} -> {}", from_vfs.path, to_vfs.path)),
     )
     .await;
+
+    state.transfer_manager.broadcast_event(crate::transfer::WsEvent::file_change(
+        &connection_id,
+        &to_vfs.path,
+        "copy",
+    ));
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -716,6 +728,12 @@ pub async fn upload_file(
                 Some(&format!("Uploaded: {}", target_path.path)),
             )
             .await;
+
+            state.transfer_manager.broadcast_event(crate::transfer::WsEvent::file_change(
+                &connection_id,
+                &target_path.path,
+                "upload",
+            ));
 
             uploaded_files.push(target_path.path);
         }

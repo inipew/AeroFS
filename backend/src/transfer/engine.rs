@@ -1747,17 +1747,24 @@ impl TransferManager {
                     let updated_job = {
                         let mut map = jobs_map_clone.write().await;
                         if let Some(j) = map.get_mut(&job_id) {
-                            j.transferred_bytes = transferred;
-                            j.total_bytes = total_bytes;
-                            j.speed_bytes_per_sec = speed;
-                            j.eta_seconds = eta;
-                            j.phase = if transferred >= total_bytes && total_bytes > 0 {
-                                TransferPhase::Finalizing
+                            if j.status == TransferStatus::Cancelled
+                                || j.status == TransferStatus::CancellationRequested
+                                || cancel_token_pump.is_cancelled()
+                            {
+                                None
                             } else {
-                                TransferPhase::Transferring
-                            };
-                            j.updated_at = Utc::now();
-                            Some(j.clone())
+                                j.transferred_bytes = transferred;
+                                j.total_bytes = total_bytes;
+                                j.speed_bytes_per_sec = speed;
+                                j.eta_seconds = eta;
+                                j.phase = if transferred >= total_bytes && total_bytes > 0 {
+                                    TransferPhase::Finalizing
+                                } else {
+                                    TransferPhase::Transferring
+                                };
+                                j.updated_at = Utc::now();
+                                Some(j.clone())
+                            }
                         } else {
                             None
                         }
@@ -1785,26 +1792,35 @@ impl TransferManager {
             pipe_writer.flush().await?;
             drop(pipe_writer); // Signal EOF to destination consumer
 
-            // Emit Finalizing phase explicitly to UI
-            {
+            // Emit Finalizing phase explicitly to UI ONLY if not cancelled
+            let emit_finalizing = {
                 let mut map = jobs_map_clone.write().await;
                 if let Some(j) = map.get_mut(&job_id) {
-                    j.transferred_bytes = transferred;
-                    j.phase = TransferPhase::Finalizing;
-                    j.speed_bytes_per_sec = 0;
-                    j.eta_seconds = Some(0);
-                    j.updated_at = Utc::now();
+                    if j.status != TransferStatus::Cancelled
+                        && j.status != TransferStatus::CancellationRequested
+                        && !cancel_token_pump.is_cancelled()
+                    {
+                        j.transferred_bytes = transferred;
+                        j.phase = TransferPhase::Finalizing;
+                        j.speed_bytes_per_sec = 0;
+                        j.eta_seconds = Some(0);
+                        j.updated_at = Utc::now();
+                        Some(j.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 }
+            };
+            if let Some(j) = emit_finalizing {
+                Self::send_enveloped_event(
+                    &event_tx_clone,
+                    &seq_counter_clone,
+                    &event_hist_clone,
+                    WsEvent::TransferProgress(j),
+                );
             }
-            Self::send_enveloped_event(
-                &event_tx_clone,
-                &seq_counter_clone,
-                &event_hist_clone,
-                WsEvent::TransferProgress({
-                    let map = jobs_map_clone.read().await;
-                    map.get(&job_id).cloned().unwrap()
-                }),
-            );
 
             let checksum_hex = if is_clean_start {
                 Some(hex::encode(hasher.finalize()))
@@ -1814,23 +1830,27 @@ impl TransferManager {
             Ok::<(u64, Option<String>), anyhow::Error>((transferred, checksum_hex))
         });
 
-        // 6. Destination writes into target file (No arbitrary whole-file 120s timeout)
+        // 6. Destination writes into target file with joint cancellation synchronization
         let write_fut = dst_fs.write_stream(&write_target_vfs, Box::new(pipe_reader));
-        let write_res = tokio::select! {
+        let mut pump_handle = pump_handle;
+        let (write_res, pump_res) = tokio::select! {
             _ = cancel_token.cancelled() => {
+                pump_handle.abort();
+                let _ = pump_handle.await;
                 let _ = dst_fs.delete(&write_target_vfs).await;
                 return Err(anyhow::anyhow!("Transfer cancelled by user"));
             }
-            res = write_fut => res,
-        };
-
-        let pump_res = tokio::select! {
-            _ = cancel_token.cancelled() => {
-                let _ = dst_fs.delete(&write_target_vfs).await;
-                return Err(anyhow::anyhow!("Transfer cancelled by user"));
-            }
-            res = pump_handle => {
-                res.map_err(|e| anyhow::anyhow!("Stream pump task panicked: {}", e))?
+            (w, p) = async {
+                let w_res = write_fut.await;
+                let p_res = (&mut pump_handle).await;
+                (w_res, p_res)
+            } => {
+                let p_val = match p {
+                    Ok(res) => res,
+                    Err(e) if e.is_cancelled() => Err(anyhow::anyhow!("Transfer cancelled by user")),
+                    Err(e) => Err(anyhow::anyhow!("Stream pump task panicked: {}", e)),
+                };
+                (w, p_val)
             }
         };
 

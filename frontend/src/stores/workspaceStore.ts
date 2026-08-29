@@ -298,7 +298,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  function cancelPendingInvalidations() {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    pendingInvalidations.clear();
+  }
+
   function closePanel(panelId: PanelId) {
+    cancelPendingInvalidations();
     abortPanel(panelId);
     if (panelId === 'left') {
       abortPanel('right');
@@ -321,6 +330,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return;
     }
 
+    cancelPendingInvalidations();
     abortPanel('left');
     abortPanel('right');
     const oldLeft = leftPanel.value;
@@ -402,7 +412,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.runtime.status = 'idle';
       p.runtime.error = null;
       p.runtime.initialized = true;
-      saveState();
       return { ok: true, path: data.path };
     } catch (err: unknown) {
       if (isAbortError(err)) {
@@ -602,10 +611,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function refreshAll() {
-    await refresh('left');
-    if (isDualPane.value) {
-      await refresh('right');
-    }
+    await Promise.all([
+      refresh('left'),
+      ...(isDualPane.value ? [refresh('right')] : []),
+    ]);
   }
 
   async function toggleShowHidden(panelId?: PanelId) {
@@ -883,21 +892,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   // Realtime Filesystem Event Invalidation (Plan 41 + Plan 58 + Plan 59)
-  subscribeFileChanges((event) => {
+  const unsubscribeFileChanges = subscribeFileChanges((event) => {
     handleFileChangeEvent(event);
   });
 
   // Re-synchronize visible panels upon server buffer expiration or visibility resumption
-  realtimeClient.onResyncRequired(() => {
+  const unsubscribeResync = realtimeClient.onResyncRequired(async () => {
     try {
       queryClient?.invalidateQueries({ queryKey: ['directory'] });
       queryClient?.invalidateQueries({ queryKey: ['metadata'] });
     } catch {}
-    fetchPanelEntries('left');
-    if (isDualPane.value) {
-      fetchPanelEntries('right');
-    }
+    await Promise.all([
+      fetchPanelEntries('left'),
+      ...(isDualPane.value ? [fetchPanelEntries('right')] : []),
+    ]);
   });
+
+  function disposeWorkspace() {
+    cancelPendingInvalidations();
+    abortPanel('left');
+    abortPanel('right');
+    unsubscribeFileChanges();
+    unsubscribeResync();
+  }
 
   return {
     layout,
@@ -942,5 +959,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     transferBetweenPanels,
     notifyFileChange,
     saveState,
+    disposeWorkspace,
   };
 });

@@ -122,6 +122,12 @@ impl TrashService {
                     .execute(&state.db)
                     .await;
 
+                    // Invalidate short-TTL metadata cache
+                    state
+                        .metadata_cache
+                        .invalidate_prefix(&payload.connection_id, path_str)
+                        .await;
+
                     record_audit_log(
                         &state.db,
                         Some(&user.id),
@@ -133,6 +139,14 @@ impl TrashService {
                         Some(&format!("Moved {} to trash", path_str)),
                     )
                     .await;
+
+                    state.transfer_manager.broadcast_event(
+                        crate::transfer::WsEvent::file_change(
+                            &payload.connection_id,
+                            path_str,
+                            "delete",
+                        ),
+                    );
 
                     moved_count += 1;
                 }
@@ -172,6 +186,12 @@ impl TrashService {
 
         provider.rename(&trash_vfs, &orig_vfs).await?;
 
+        // Invalidate short-TTL metadata cache
+        state
+            .metadata_cache
+            .invalidate_prefix(&connection_id, &orig_path)
+            .await;
+
         sqlx::query("DELETE FROM trash_items WHERE id = ?")
             .bind(trash_id)
             .execute(&state.db)
@@ -189,6 +209,14 @@ impl TrashService {
             Some(&format!("Restored {} from trash", orig_path)),
         )
         .await;
+
+        state.transfer_manager.broadcast_event(
+            crate::transfer::WsEvent::file_change(
+                &connection_id,
+                &orig_path,
+                "create",
+            ),
+        );
 
         Ok(())
     }
