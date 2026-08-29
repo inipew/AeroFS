@@ -4,6 +4,7 @@ pub mod auth;
 pub mod connections;
 pub mod files;
 pub mod health;
+pub mod openapi;
 pub mod preferences;
 pub mod search;
 pub mod settings;

@@ -1,4 +1,4 @@
-use crate::api::{archive, audit, auth, connections, files, search, transfers, ws};
+use crate::api::{archive, audit, auth, connections, files, openapi, search, transfers, ws};
 use crate::state::AppState;
 use axum::{
     http::{
@@ -239,6 +239,7 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/shares/public/{token}",
             get(crate::api::shares::public_get_share),
         )
+        .merge(openapi::openapi_router())
         .nest("/api/v1", api_v1)
         .fallback(crate::static_files::static_handler)
         .layer(axum::middleware::from_fn(
