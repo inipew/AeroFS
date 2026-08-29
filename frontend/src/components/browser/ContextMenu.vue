@@ -67,6 +67,14 @@
             </div>
             <span class="text-[10px] opacity-75 font-mono">Ctrl+Enter</span>
           </button>
+
+          <button
+            @click="handleSyncFolder"
+            class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center space-x-2.5 transition rounded-xl cursor-pointer text-indigo-600 dark:text-indigo-400"
+          >
+            <span class="text-sm shrink-0">🔄</span>
+            <span>Sync Folder...</span>
+          </button>
         </template>
 
         <template v-else>
@@ -527,6 +535,15 @@ function handleOpenInOtherPanel() {
   if (!item || item.kind !== 'directory') return;
   const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
   workspaceStore.openInOtherPanel(sourcePanelId, item.path);
+  uiStore.closeContextMenu();
+}
+
+function handleSyncFolder() {
+  const item = uiStore.contextMenu.item;
+  if (!item || item.kind !== 'directory') return;
+  const sourcePanelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  const panel = workspaceStore.getPanel(sourcePanelId);
+  uiStore.openSync(panel.connectionId || 'local', item.path);
   uiStore.closeContextMenu();
 }
 

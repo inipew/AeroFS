@@ -38,6 +38,11 @@ export async function cancelTransferApi(jobId: string): Promise<{ success: boole
   return resp.data;
 }
 
+export async function retryTransferApi(jobId: string): Promise<{ success: boolean; message: string }> {
+  const resp = await apiClient.post<{ success: boolean; message: string }>(`/transfers/${jobId}/retry`);
+  return resp.data;
+}
+
 export async function dismissTransferApi(jobId: string): Promise<{ success: boolean; message: string }> {
   const resp = await apiClient.post<{ success: boolean; message: string }>(`/transfers/${jobId}/dismiss`);
   return resp.data;

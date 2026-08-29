@@ -4,6 +4,7 @@ import {
   createTransferApi,
   listTransfersApi,
   cancelTransferApi,
+  retryTransferApi,
   dismissTransferApi,
   clearFinishedTransfersApi,
 } from '../api/transfers';
@@ -198,16 +199,28 @@ export const useTransferStore = defineStore('transfer', () => {
   });
 
   async function retryTransfer(jobId: string) {
-    const job = jobs.value.find((j) => j.id === jobId);
-    if (!job) return;
-    await submitTransfer(
-      job.name,
-      job.transfer_type,
-      job.source_connection_id,
-      job.source_path,
-      job.destination_connection_id,
-      job.destination_path
-    );
+    try {
+      await retryTransferApi(jobId);
+      const job = jobs.value.find((j) => j.id === jobId);
+      if (job) {
+        job.status = 'queued';
+        job.phase = 'preparing';
+        job.error_message = undefined;
+        jobs.value = [...jobs.value];
+      }
+    } catch (err) {
+      console.warn('retryTransferApi failed, fallback to resubmission', err);
+      const job = jobs.value.find((j) => j.id === jobId);
+      if (!job) return;
+      await submitTransfer(
+        job.name,
+        job.transfer_type,
+        job.source_connection_id,
+        job.source_path,
+        job.destination_connection_id,
+        job.destination_path
+      );
+    }
   }
 
   async function removeJob(jobId: string) {

@@ -254,6 +254,7 @@
           :path="shareTargetPath"
         />
         <ConflictDialog v-if="transferStore.conflictState?.isOpen" />
+        <SyncDialog v-if="uiStore.isSyncOpen" />
         <CodeEditorModal v-if="uiStore.isEditorOpen" />
         <MediaViewerModal v-if="uiStore.isMediaViewerOpen" />
         <CommandPaletteModal
@@ -349,6 +350,7 @@ const ConnectionDialog = defineAsyncComponent(() => import('./components/dialogs
 const ArchiveDialog = defineAsyncComponent(() => import('./components/dialogs/ArchiveDialog.vue'));
 const ArchiveViewerModal = defineAsyncComponent(() => import('./components/dialogs/ArchiveViewerModal.vue'));
 const ConflictDialog = defineAsyncComponent(() => import('./components/dialogs/ConflictDialog.vue'));
+const SyncDialog = defineAsyncComponent(() => import('./components/dialogs/SyncDialog.vue'));
 const SearchModal = defineAsyncComponent(() => import('./components/dialogs/SearchModal.vue'));
 const SettingsModal = defineAsyncComponent(() => import('./components/dialogs/SettingsModal.vue'));
 const SharesModal = defineAsyncComponent(() => import('./components/dialogs/SharesModal.vue'));

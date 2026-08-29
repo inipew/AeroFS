@@ -5,17 +5,22 @@ export interface FileChangeEvent {
   connection_id: string;
   path: string;
   action: string;
+  old_path?: string;
+  parent_path?: string;
+  old_parent_path?: string;
 }
 
 export interface ResyncRequiredEvent {
   reason: string;
-  latest_sequence: number;
+  latest_sequence?: number;
+  epoch?: string;
 }
 
 export type RealtimeListener<T> = (data: T) => void;
 
 export class RealtimeClient {
   private socket: WebSocket | null = null;
+  private lastEpoch: string | null = null;
   private lastSequence: number = 0;
   private isConnected: boolean = false;
   private retryAttempt: number = 0;
@@ -27,10 +32,21 @@ export class RealtimeClient {
   private fileChangeListeners: Set<RealtimeListener<FileChangeEvent>> = new Set();
   private resyncListeners: Set<RealtimeListener<ResyncRequiredEvent>> = new Set();
   private statusListeners: Set<RealtimeListener<boolean>> = new Set();
+  private permissionListeners: Set<RealtimeListener<{ user_id: string; connection_id: string }>> = new Set();
 
   private visibilityHandler: (() => void) | null = null;
 
   constructor() {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      try {
+        this.lastEpoch = window.sessionStorage.getItem('aerofs_ws_epoch');
+        const seq = window.sessionStorage.getItem('aerofs_ws_seq');
+        if (seq) {
+          this.lastSequence = parseInt(seq, 10) || 0;
+        }
+      } catch (_) {}
+    }
+
     if (typeof document !== 'undefined') {
       this.visibilityHandler = () => {
         if (document.visibilityState === 'visible') {
@@ -39,12 +55,23 @@ export class RealtimeClient {
           } else {
             // Trigger resync to catch up on any missed background events
             this.resyncListeners.forEach((l) =>
-              l({ reason: 'visibility_resumed', latest_sequence: this.lastSequence })
+              l({ reason: 'visibility_resumed', latest_sequence: this.lastSequence, epoch: this.lastEpoch || undefined })
             );
           }
         }
       };
       document.addEventListener('visibilitychange', this.visibilityHandler);
+    }
+  }
+
+  private persistCursor(epoch: string | null, seq: number): void {
+    this.lastEpoch = epoch;
+    this.lastSequence = seq;
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      try {
+        if (epoch) window.sessionStorage.setItem('aerofs_ws_epoch', epoch);
+        window.sessionStorage.setItem('aerofs_ws_seq', String(seq));
+      } catch (_) {}
     }
   }
 
@@ -68,6 +95,7 @@ export class RealtimeClient {
     this.fileChangeListeners.clear();
     this.resyncListeners.clear();
     this.statusListeners.clear();
+    this.permissionListeners.clear();
   }
 
   public connect(): void {
@@ -76,7 +104,14 @@ export class RealtimeClient {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const query = this.lastSequence > 0 ? `?last_seq=${this.lastSequence}` : '';
+    const params = new URLSearchParams();
+    if (this.lastSequence > 0) {
+      params.set('last_seq', String(this.lastSequence));
+    }
+    if (this.lastEpoch) {
+      params.set('last_epoch', this.lastEpoch);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
     const url = `${protocol}//${window.location.host}/api/v1/ws${query}`;
 
     try {
@@ -96,6 +131,21 @@ export class RealtimeClient {
         try {
           const payload = JSON.parse(event.data);
 
+          // Handle Epoch Announcement & Full Sync
+          if (payload.type === 'epoch_info' && payload.data) {
+            this.persistCursor(payload.data.epoch, payload.data.latest_sequence || this.lastSequence);
+            return;
+          }
+
+          if (payload.type === 'full_sync' && payload.data) {
+            console.warn('[RealtimeClient] Server epoch changed (restart detected). Triggering full store sync.');
+            this.persistCursor(payload.data.epoch, payload.data.latest_sequence || 0);
+            this.resyncListeners.forEach((l) =>
+              l({ reason: 'epoch_changed', latest_sequence: payload.data.latest_sequence, epoch: payload.data.epoch })
+            );
+            return;
+          }
+
           // Sequence Gap & Out-of-Order Stale Message Protection (Plan 54 P1.18)
           if (typeof payload.sequence === 'number') {
             if (this.lastSequence > 0 && payload.sequence <= this.lastSequence) {
@@ -109,10 +159,10 @@ export class RealtimeClient {
                 `[RealtimeClient] Sequence gap detected (${this.lastSequence} -> ${payload.sequence}). Requesting resync.`
               );
               this.resyncListeners.forEach((l) =>
-                l({ reason: 'sequence_gap', latest_sequence: payload.sequence })
+                l({ reason: 'sequence_gap', latest_sequence: payload.sequence, epoch: this.lastEpoch || undefined })
               );
             }
-            this.lastSequence = payload.sequence;
+            this.persistCursor(this.lastEpoch, payload.sequence);
           }
 
           switch (payload.type) {
@@ -135,6 +185,9 @@ export class RealtimeClient {
                 parentPath: payload.data.parent_path,
                 oldParentPath: payload.data.old_parent_path,
               });
+              break;
+            case 'permission_changed':
+              this.permissionListeners.forEach((l) => l(payload.data));
               break;
             case 'resync_required':
               this.resyncListeners.forEach((l) => l(payload.data));
@@ -195,6 +248,10 @@ export class RealtimeClient {
     return this.isConnected;
   }
 
+  public getLastEpoch(): string | null {
+    return this.lastEpoch;
+  }
+
   public getLastSequence(): number {
     return this.lastSequence;
   }
@@ -222,6 +279,11 @@ export class RealtimeClient {
   public onResyncRequired(listener: RealtimeListener<ResyncRequiredEvent>): () => void {
     this.resyncListeners.add(listener);
     return () => this.resyncListeners.delete(listener);
+  }
+
+  public onPermissionChanged(listener: RealtimeListener<{ user_id: string; connection_id: string }>): () => void {
+    this.permissionListeners.add(listener);
+    return () => this.permissionListeners.delete(listener);
   }
 
   public onStatusChange(listener: RealtimeListener<boolean>): () => void {

@@ -21,6 +21,11 @@ export const useUiStore = defineStore('ui', () => {
 
   const isUploadOpen = ref<boolean>(false);
   const isSearchOpen = ref<boolean>(false);
+  const isSyncOpen = ref<boolean>(false);
+  const syncSourceConnection = ref<string>('local');
+  const syncSourcePath = ref<string>('/');
+  const syncDestConnection = ref<string>('local');
+  const syncDestPath = ref<string>('/');
 
   // Code Editor
   const isEditorOpen = ref<boolean>(false);
@@ -92,6 +97,19 @@ export const useUiStore = defineStore('ui', () => {
 
   function openUpload() {
     isUploadOpen.value = true;
+  }
+
+  function openSync(
+    sourceConn: string = 'local',
+    sourcePath: string = '/',
+    destConn: string = 'local',
+    destPath: string = '/'
+  ) {
+    syncSourceConnection.value = sourceConn;
+    syncSourcePath.value = sourcePath;
+    syncDestConnection.value = destConn;
+    syncDestPath.value = destPath;
+    isSyncOpen.value = true;
   }
 
   function openEditor(
@@ -244,6 +262,12 @@ export const useUiStore = defineStore('ui', () => {
     deleteTargets,
     isUploadOpen,
     isSearchOpen,
+    isSyncOpen,
+    syncSourceConnection,
+    syncSourcePath,
+    syncDestConnection,
+    syncDestPath,
+    openSync,
     isEditorOpen,
     editorFile,
     editorContent,

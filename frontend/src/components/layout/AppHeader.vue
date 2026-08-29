@@ -507,6 +507,14 @@
                   <FbIcon name="upload" size="15px" class="text-emerald-500" />
                   <span class="font-medium">Upload Files</span>
                 </button>
+                <div class="my-1 border-t border-gray-100 dark:border-slate-800"></div>
+                <button
+                  @click="openSyncModal"
+                  class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition text-left cursor-pointer"
+                >
+                  <span class="text-sm">🔄</span>
+                  <span class="font-medium">Sync Folder...</span>
+                </button>
               </div>
             </Transition>
           </div>
@@ -783,6 +791,13 @@ function openUpload() {
   fileStore.currentConnectionId = activePanel.value.connectionId;
   fileStore.currentPath = activePanel.value.path;
   uiStore.openUpload();
+}
+
+function openSyncModal() {
+  uiStore.openSync(
+    activePanel.value.connectionId || 'local',
+    activePanel.value.path || '/'
+  );
 }
 
 function handleCompressSelection() {

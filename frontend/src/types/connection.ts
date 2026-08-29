@@ -1,5 +1,14 @@
 export type ProviderKind = 'local' | 'ftp' | 'ftps' | 'sftp';
 
+export type ProviderState =
+  | 'initializing'
+  | 'connecting'
+  | 'ready'
+  | 'degraded'
+  | 'draining'
+  | 'disconnected'
+  | 'failed';
+
 export type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
@@ -11,6 +20,8 @@ export interface Connection {
   id: string;
   name: string;
   provider: ProviderKind;
+  provider_type?: string;
+  provider_state?: ProviderState;
   host?: string;
   port?: number;
   username?: string;
