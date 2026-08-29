@@ -827,29 +827,63 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveState();
   }
 
-  function notifyFileChange(connectionId: string, filePath: string) {
-    const normFile = normalizePath(filePath);
-    const parentDir = parentPath(normFile);
+  // Realtime Smart Debounced Invalidation (Plan 58)
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const pendingInvalidations = new Set<string>(); // "connId::dirPath"
 
-    function isPanelAffected(loc: PanelLocation): boolean {
-      if (loc.connectionId !== connectionId) return false;
-      const normPanelPath = normalizePath(loc.path);
-      return normPanelPath === parentDir || normPanelPath === normFile;
-    }
+  function queueDirectoryInvalidation(connectionId: string, dirPath: string) {
+    pendingInvalidations.add(`${connectionId}::${normalizePath(dirPath)}`);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      for (const item of pendingInvalidations) {
+        const [connId, dPath] = item.split('::');
+        // 1. Invalidate TanStack Query cache
+        try {
+          queryClient?.invalidateQueries({ queryKey: ['directory', connId, dPath] });
+          queryClient?.invalidateQueries({ queryKey: ['metadata', connId] });
+        } catch {
+          // ignore if outside setup context
+        }
 
-    // Check left panel
-    if (isPanelAffected(leftPanel.value.location)) {
-      fetchPanelEntries('left');
-    }
-    // Check right panel
-    if (isDualPane.value && isPanelAffected(rightPanel.value.location)) {
-      fetchPanelEntries('right');
+        // 2. Refresh left panel if affected
+        if (leftPanel.value.location.connectionId === connId && normalizePath(leftPanel.value.location.path) === dPath) {
+          fetchPanelEntries('left');
+        }
+        // 3. Refresh right panel if affected
+        if (isDualPane.value && rightPanel.value.location.connectionId === connId && normalizePath(rightPanel.value.location.path) === dPath) {
+          fetchPanelEntries('right');
+        }
+      }
+      pendingInvalidations.clear();
+    }, 150);
+  }
+
+  function handleFileChangeEvent(event: import('../services/fileChangeBus').FileChangeEvent) {
+    const normFile = normalizePath(event.path);
+    const parentDir = event.parentPath ? normalizePath(event.parentPath) : parentPath(normFile);
+    queueDirectoryInvalidation(event.connectionId, parentDir);
+
+    if (event.oldPath || event.oldParentPath) {
+      const oldNorm = event.oldPath ? normalizePath(event.oldPath) : '';
+      const oldParent = event.oldParentPath ? normalizePath(event.oldParentPath) : (oldNorm ? parentPath(oldNorm) : '');
+      if (oldParent) {
+        queueDirectoryInvalidation(event.connectionId, oldParent);
+      }
     }
   }
 
-  // Realtime Filesystem Event Invalidation (Plan 41 P0 #5, #6, #7, #9, #10)
+  function notifyFileChange(connectionId: string, filePath: string) {
+    handleFileChangeEvent({
+      connectionId,
+      path: filePath,
+      action: 'write',
+    });
+  }
+
+  // Realtime Filesystem Event Invalidation (Plan 41 + Plan 58)
   subscribeFileChanges((event) => {
-    notifyFileChange(event.connectionId, event.path);
+    handleFileChangeEvent(event);
   });
 
   return {

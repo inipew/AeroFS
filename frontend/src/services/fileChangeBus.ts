@@ -1,7 +1,10 @@
 export interface FileChangeEvent {
   connectionId: string;
   path: string;
-  action: 'create' | 'write' | 'delete' | 'rename' | string;
+  action: 'create' | 'write' | 'delete' | 'rename' | 'chmod' | 'upload' | 'copy' | 'move' | 'extract' | string;
+  oldPath?: string;
+  parentPath?: string;
+  oldParentPath?: string;
 }
 
 type Listener = (event: FileChangeEvent) => void;

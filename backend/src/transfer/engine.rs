@@ -182,12 +182,77 @@ pub enum WsEvent {
         connection_id: String,
         path: String,
         action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_parent_path: Option<String>,
     },
     #[serde(rename = "resync_required")]
     ResyncRequired {
         reason: String,
         latest_sequence: u64,
     },
+}
+
+impl WsEvent {
+    pub fn file_change(
+        connection_id: impl Into<String>,
+        path: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        let p: String = path.into();
+        let parent = std::path::Path::new(&p).parent().map(|d| {
+            let s = d.to_string_lossy().to_string();
+            if s.is_empty() {
+                "/".to_string()
+            } else {
+                s
+            }
+        });
+        Self::FileChange {
+            connection_id: connection_id.into(),
+            path: p,
+            action: action.into(),
+            old_path: None,
+            parent_path: parent,
+            old_parent_path: None,
+        }
+    }
+
+    pub fn file_rename(
+        connection_id: impl Into<String>,
+        from_path: impl Into<String>,
+        to_path: impl Into<String>,
+    ) -> Self {
+        let from_str: String = from_path.into();
+        let to_str: String = to_path.into();
+        let old_parent = std::path::Path::new(&from_str).parent().map(|d| {
+            let s = d.to_string_lossy().to_string();
+            if s.is_empty() {
+                "/".to_string()
+            } else {
+                s
+            }
+        });
+        let parent = std::path::Path::new(&to_str).parent().map(|d| {
+            let s = d.to_string_lossy().to_string();
+            if s.is_empty() {
+                "/".to_string()
+            } else {
+                s
+            }
+        });
+        Self::FileChange {
+            connection_id: connection_id.into(),
+            path: to_str,
+            action: "rename".into(),
+            old_path: Some(from_str),
+            parent_path: parent,
+            old_parent_path: old_parent,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -409,24 +474,22 @@ impl TransferManager {
                                             &event_tx_worker,
                                             &seq_worker,
                                             &hist_worker,
-                                            WsEvent::FileChange {
-                                                connection_id: job
-                                                    .destination_connection_id
-                                                    .clone(),
-                                                path: job.destination_path.clone(),
-                                                action: "create".into(),
-                                            },
+                                            WsEvent::file_change(
+                                                &job.destination_connection_id,
+                                                &job.destination_path,
+                                                "create",
+                                            ),
                                         );
                                         if job.transfer_type == TransferType::Move {
                                             Self::send_enveloped_event(
                                                 &event_tx_worker,
                                                 &seq_worker,
                                                 &hist_worker,
-                                                WsEvent::FileChange {
-                                                    connection_id: job.source_connection_id.clone(),
-                                                    path: job.source_path.clone(),
-                                                    action: "delete".into(),
-                                                },
+                                                WsEvent::file_change(
+                                                    &job.source_connection_id,
+                                                    &job.source_path,
+                                                    "delete",
+                                                ),
                                             );
                                         }
 

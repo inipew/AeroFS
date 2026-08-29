@@ -34,21 +34,15 @@ async fn test_ws_event_sequence_and_durable_replay() {
     let (state, _, _temp) = setup_test_context().await;
 
     // 1. Broadcast multiple events
-    state.transfer_manager.broadcast_event(WsEvent::FileChange {
-        connection_id: "local".into(),
-        path: "/file1.txt".into(),
-        action: "create".into(),
-    });
-    state.transfer_manager.broadcast_event(WsEvent::FileChange {
-        connection_id: "local".into(),
-        path: "/file2.txt".into(),
-        action: "write".into(),
-    });
-    state.transfer_manager.broadcast_event(WsEvent::FileChange {
-        connection_id: "local".into(),
-        path: "/file3.txt".into(),
-        action: "delete".into(),
-    });
+    state
+        .transfer_manager
+        .broadcast_event(WsEvent::file_change("local", "/file1.txt", "create"));
+    state
+        .transfer_manager
+        .broadcast_event(WsEvent::file_change("local", "/file2.txt", "write"));
+    state
+        .transfer_manager
+        .broadcast_event(WsEvent::file_change("local", "/file3.txt", "delete"));
 
     // 2. Fetch missed events since sequence 1
     let missed = match state.transfer_manager.get_events_since(1).await {

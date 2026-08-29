@@ -158,11 +158,11 @@ async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
 
     // 1. Broadcast > 550 events to push history beyond its 500-capacity buffer
     for i in 0..550 {
-        state.transfer_manager.broadcast_event(WsEvent::FileChange {
-            connection_id: "local".into(),
-            path: format!("/file_{}.txt", i),
-            action: "create".into(),
-        });
+        state.transfer_manager.broadcast_event(WsEvent::file_change(
+            "local",
+            format!("/file_{}.txt", i),
+            "create",
+        ));
     }
 
     // 2. Query sequence 1 (which has expired from the 500 buffer)

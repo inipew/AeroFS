@@ -39,11 +39,7 @@ impl FileSystemWatcher {
                             format!("/{}", path.to_string_lossy().replace('\\', "/"))
                         };
 
-                        let ws_event = WsEvent::FileChange {
-                            connection_id: conn_id.clone(),
-                            path: relative_str,
-                            action: action.to_string(),
-                        };
+                        let ws_event = WsEvent::file_change(&conn_id, &relative_str, action);
 
                         let envelope = crate::transfer::EventEnvelope {
                             id: uuid::Uuid::new_v4().to_string(),

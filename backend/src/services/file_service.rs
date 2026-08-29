@@ -322,11 +322,11 @@ impl FileService {
 
         state
             .transfer_manager
-            .broadcast_event(crate::transfer::WsEvent::FileChange {
-                connection_id: connection_id.to_string(),
-                path: vfs_path.path.clone(),
-                action: "create".to_string(),
-            });
+            .broadcast_event(crate::transfer::WsEvent::file_change(
+                connection_id,
+                &vfs_path.path,
+                "upload",
+            ));
 
         Ok(meta)
     }
@@ -529,11 +529,11 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::FileChange {
-            connection_id: connection_id.to_string(),
-            path: vfs_path.path.clone(),
-            action: "write".to_string(),
-        });
+        state.transfer_manager.broadcast_event(WsEvent::file_change(
+            connection_id,
+            &vfs_path.path,
+            "write",
+        ));
 
         Ok(meta)
     }
@@ -587,11 +587,11 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::FileChange {
-            connection_id: connection_id.to_string(),
-            path: vfs_path.path.clone(),
-            action: "create".to_string(),
-        });
+        state.transfer_manager.broadcast_event(WsEvent::file_change(
+            connection_id,
+            &vfs_path.path,
+            "create",
+        ));
 
         Ok(meta)
     }
@@ -609,43 +609,27 @@ impl FileService {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
         })?;
 
-        // 1. Deduplicate input paths to prevent duplicate task execution
-        let mut unique_paths: Vec<String> = paths
-            .into_iter()
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        // 2. Sort by depth descending (deepest paths first) to eliminate parent/child deletion races
-        unique_paths.sort_by(|a, b| {
-            b.matches('/')
-                .count()
-                .cmp(&a.matches('/').count())
-                .then_with(|| b.len().cmp(&a.len()))
-        });
-
-        let semaphore = Arc::new(Semaphore::new(8));
-        let mut tasks = JoinSet::new();
-
-        for p in unique_paths {
-            let provider = provider.clone();
-            let conn_id = connection_id.to_string();
-            let sem = semaphore.clone();
-            tasks.spawn(async move {
-                let _permit = sem.acquire().await;
-                let vfs_path = match VfsPath::new(&conn_id, &p) {
-                    Ok(v) => v,
-                    Err(e) => return (p, Err(e)),
-                };
-                let res = provider.delete(&vfs_path).await;
-                (p, res)
-            });
-        }
-
         let mut succeeded = Vec::new();
         let mut failed = Vec::new();
+
+        let mut tasks = JoinSet::new();
+        let sem = Arc::new(Semaphore::new(8));
+
+        for raw_path in paths {
+            let p_clone = provider.clone();
+            let conn_str = connection_id.to_string();
+            let sem_clone = sem.clone();
+
+            tasks.spawn(async move {
+                let _permit = sem_clone.acquire().await.unwrap();
+                let vfs_path = match VfsPath::new(&conn_str, &raw_path) {
+                    Ok(v) => v,
+                    Err(e) => return (raw_path, Err(e)),
+                };
+                let res = p_clone.delete(&vfs_path).await;
+                (raw_path, res)
+            });
+        }
 
         while let Some(join_res) = tasks.join_next().await {
             if let Ok((path, del_res)) = join_res {
@@ -669,11 +653,11 @@ impl FileService {
                         )
                         .await;
 
-                        state.transfer_manager.broadcast_event(WsEvent::FileChange {
-                            connection_id: connection_id.to_string(),
-                            path: path.clone(),
-                            action: "delete".to_string(),
-                        });
+                        state.transfer_manager.broadcast_event(WsEvent::file_change(
+                            connection_id,
+                            &path,
+                            "delete",
+                        ));
 
                         succeeded.push(path);
                     }
@@ -722,11 +706,11 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::FileChange {
-            connection_id: connection_id.to_string(),
-            path: vfs_path.path.clone(),
-            action: "delete".to_string(),
-        });
+        state.transfer_manager.broadcast_event(WsEvent::file_change(
+            connection_id,
+            &vfs_path.path,
+            "delete",
+        ));
 
         Ok(())
     }
@@ -773,11 +757,11 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::FileChange {
-            connection_id: connection_id.to_string(),
-            path: to_vfs.path.clone(),
-            action: "rename".to_string(),
-        });
+        state.transfer_manager.broadcast_event(WsEvent::file_rename(
+            connection_id,
+            &from_vfs.path,
+            &to_vfs.path,
+        ));
 
         Ok(())
     }
@@ -817,6 +801,13 @@ impl FileService {
             Some(&format!("Mode changed to: {:04o}", mode)),
         )
         .await;
+
+        // Broadcast FileChange event for real-time inspector / panel refresh (Plan 58)
+        state.transfer_manager.broadcast_event(WsEvent::file_change(
+            connection_id,
+            &vfs_path.path,
+            "chmod",
+        ));
 
         Ok(())
     }
