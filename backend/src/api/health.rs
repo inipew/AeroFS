@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::state::{AppState, RuntimePhase};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -20,10 +20,11 @@ pub struct ReadinessResponse {
     pub database: String,
     pub storage_root: String,
     pub active_providers: usize,
+    pub phase: String,
     pub version: String,
 }
 
-/// Fast liveness probe
+/// Fast liveness probe — always 200 as long as the process is alive
 pub async fn health_live() -> impl IntoResponse {
     Json(LivenessResponse {
         status: "alive".to_string(),
@@ -32,10 +33,25 @@ pub async fn health_live() -> impl IntoResponse {
     })
 }
 
-/// Readiness probe checking DB, storage directory, and active providers
+/// Readiness probe: 503 when starting or shutting down, 200 when fully running
 pub async fn health_ready(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let phase = state.runtime.phase();
+
+    // Return 503 immediately if not in Running phase
+    if phase != RuntimePhase::Running {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "not_ready",
+                "phase": phase.as_str(),
+                "reasons": [format!("Runtime phase is '{}'", phase.as_str())],
+                "version": env!("CARGO_PKG_VERSION")
+            })),
+        ));
+    }
+
     // 1. Check Database connection
     let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
 
@@ -51,6 +67,7 @@ pub async fn health_ready(
             database: "connected".to_string(),
             storage_root: "accessible".to_string(),
             active_providers: providers_count,
+            phase: phase.as_str().to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }))
     } else {
@@ -65,6 +82,7 @@ pub async fn health_ready(
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
                 "status": "not_ready",
+                "phase": phase.as_str(),
                 "reasons": reasons,
                 "version": env!("CARGO_PKG_VERSION")
             })),
@@ -76,3 +94,4 @@ pub async fn health_ready(
 pub async fn health_check() -> impl IntoResponse {
     health_live().await
 }
+

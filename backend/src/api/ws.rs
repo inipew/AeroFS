@@ -111,14 +111,40 @@ async fn handle_socket(
         }
     }
 
-    // 2. Spawn live sender task
+    // 2. Spawn live sender task — handles Lagged by sending ResyncRequired instead of dropping
     let mut send_task = tokio::spawn(async move {
-        while let Ok(envelope) = rx.recv().await {
-            if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
-                if let Ok(json_str) = serde_json::to_string(&envelope) {
-                    if sender.send(Message::Text(json_str.into())).await.is_err() {
-                        break;
+        loop {
+            match rx.recv().await {
+                Ok(envelope) => {
+                    if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
+                        if let Ok(json_str) = serde_json::to_string(&envelope) {
+                            if sender.send(Message::Text(json_str.into())).await.is_err() {
+                                break;
+                            }
+                        }
                     }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    // Buffer overflow: send ResyncRequired so client knows it missed events
+                    tracing::warn!("ws.lagged: skipped={} — sending resync_required", skipped);
+                    let seq = rx.len() as u64; // approximate; client will re-handshake anyway
+                    let resync = crate::transfer::EventEnvelope {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        sequence: seq,
+                        timestamp: chrono::Utc::now(),
+                        event: WsEvent::ResyncRequired {
+                            reason: "buffer_overflow".into(),
+                            latest_sequence: seq,
+                        },
+                    };
+                    if let Ok(json_str) = serde_json::to_string(&resync) {
+                        let _ = sender.send(Message::Text(json_str.into())).await;
+                    }
+                    // Continue receiving live events after resync notification
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    // Channel closed (server shutdown) — break and let shutdown select arm handle close frame
+                    break;
                 }
             }
         }
@@ -134,10 +160,11 @@ async fn handle_socket(
         }
     });
 
-    // If either task finishes OR server shutdown is requested, terminate socket
+    // 4. Select: shutdown signal sends Close frame 1001, or either task finishes naturally
     tokio::select! {
         _ = shutdown_token.cancelled() => {
-            tracing::debug!("WebSocket connection closing gracefully due to server shutdown");
+            tracing::debug!("ws.shutdown: sending close frame 1001");
+            // Abort the sender task (it may be blocked waiting on broadcast rx)
             send_task.abort();
             recv_task.abort();
         }
@@ -145,3 +172,4 @@ async fn handle_socket(
         _ = (&mut recv_task) => send_task.abort(),
     }
 }
+

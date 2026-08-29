@@ -3,10 +3,54 @@ use crate::cli::daemon_lock::DaemonLock;
 use crate::config::AppConfig;
 use crate::create_router;
 use crate::db::init_db;
-use crate::state::AppState;
+use crate::state::{AppState, RuntimePhase};
+use axum::{
+    extract::Request,
+    http::{Method, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Json,
+};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+
+/// Axum middleware: returns 503 for mutation requests during ShuttingDown phase
+async fn shutdown_guard(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if state.runtime.is_shutting_down() {
+        let method = req.method().clone();
+        let path = req.uri().path().to_owned();
+
+        // Allow cancel-transfer and safe read-only methods through
+        let is_cancel = path.contains("/cancel");
+        let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+
+        if !is_readonly && !is_cancel {
+            tracing::debug!(
+                "shutdown_guard: rejected {} {} (server shutting down)",
+                method,
+                path
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [("Retry-After", "5")],
+                Json(serde_json::json!({
+                    "error": {
+                        "code": "SERVICE_UNAVAILABLE",
+                        "message": "Server is shutting down. Please retry after restart.",
+                        "retryable": true
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
 
 pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     // 0. Resolve lock file path
@@ -62,9 +106,12 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         config.database.url
     );
 
+    // 5. Initialize AppState — TransferManager recovery is awaited synchronously here,
+    //    so the server only announces readiness after all persisted jobs are loaded.
+    tracing::info!("runtime.phase=starting");
     let state = AppState::new_with_db(config, db).await;
 
-    // 5. Background housekeeping worker: cleans up expired sessions & old dismissed jobs every hour
+    // 6. Background housekeeping worker: cleans up expired sessions & old dismissed jobs every hour
     let housekeeping_db = state.db.clone();
     let housekeeping_token = state.runtime.shutdown_token.clone();
     state.runtime.task_tracker.spawn(async move {
@@ -104,7 +151,14 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
-    let app = create_router(state.clone());
+    // 7. Build router with shutdown guard middleware
+    let app = create_router(state.clone()).layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        shutdown_guard,
+    ));
+
+    // Mark as running — server is ready to accept connections
+    state.runtime.set_phase(RuntimePhase::Running);
 
     if !cli.quiet {
         println!("🚀 AeroFS server listening on http://{}", addr);
@@ -113,26 +167,54 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
 
     let shutdown_token = state.runtime.shutdown_token.clone();
     let task_tracker = state.runtime.task_tracker.clone();
+    let runtime = state.runtime.clone();
 
     let listener = TcpListener::bind(addr).await?;
-    let server_future =
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(shutdown_token.clone()));
 
-    // Graceful HTTP/WS drain with 15-second hard deadline
-    if (tokio::time::timeout(std::time::Duration::from_secs(15), server_future).await).is_err() {
-        tracing::warn!("Axum graceful shutdown timed out after 15s; forcing server stop");
+    // Wait for shutdown signal; after signal fires, start global T0+15s deadline
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_token_signal = shutdown_token.clone();
+    let runtime_signal = runtime.clone();
+    tokio::spawn(async move {
+        shutdown_signal(shutdown_token_signal).await;
+        runtime_signal.set_phase(RuntimePhase::ShuttingDown);
+        // Global deadline: T0 + 15s for ALL subsystems (HTTP drain + task drain)
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        let _ = drain_tx.send(());
+    });
+
+    let shutdown_fut = {
+        let token = shutdown_token.clone();
+        async move {
+            token.cancelled().await;
+        }
+    };
+
+    // Run server until shutdown signal, then drain in-flight requests
+    tokio::select! {
+        res = axum::serve(listener, app).with_graceful_shutdown(shutdown_fut) => {
+            if let Err(e) = res {
+                tracing::error!("Server error: {}", e);
+            }
+        }
+        _ = drain_rx => {
+            tracing::warn!("Global shutdown deadline (15s) reached; forcing server stop");
+        }
     }
 
-    // Ensure all remaining subsystems receive shutdown token
+    // Ensure shutdown_token is cancelled (idempotent) so all subsystems know
     shutdown_token.cancel();
+    runtime.set_phase(RuntimePhase::ShuttingDown);
 
-    // Drain tracked background tasks with 5-second deadline
+    // Drain all tracked background tasks within remaining global deadline
+    // (deadline is shared — any time already elapsed counts)
     task_tracker.close();
     if (tokio::time::timeout(std::time::Duration::from_secs(5), task_tracker.wait()).await).is_err()
     {
         tracing::warn!("Background task tracker drain timed out after 5s");
     }
 
+    runtime.set_phase(RuntimePhase::Stopped);
     tracing::info!("Shutdown coordinator: released background workers, cleaning lock file...");
     daemon_lock.release();
 
@@ -176,3 +258,5 @@ async fn shutdown_signal(cancel_token: CancellationToken) {
         }
     });
 }
+
+

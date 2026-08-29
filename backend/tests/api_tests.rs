@@ -2,7 +2,7 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
-use backend::{config::AppConfig, create_router, db::init_db, AppState};
+use backend::{config::AppConfig, create_router, db::init_db, state::RuntimePhase, AppState};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -19,10 +19,13 @@ async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
 
     let db = init_db(&config.database.url).await.unwrap();
     let state = AppState::new_with_db(config, db).await;
+    // Mark as running so health_ready returns 200 (mirrors what run_server() does)
+    state.runtime.set_phase(RuntimePhase::Running);
     let app = create_router(state);
 
     (app, temp)
 }
+
 
 #[tokio::test]
 async fn test_auth_and_file_api_flow() {

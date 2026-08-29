@@ -92,6 +92,7 @@ impl RetryPolicy {
             AppError::ChecksumMismatch(_) => true,
             AppError::Vfs(vfs_err) => Self::is_vfs_retryable(vfs_err),
             AppError::Conflict(_) => false,
+            AppError::ServiceUnavailable(_) => true,
             AppError::Internal(anyhow_err) => Self::is_anyhow_retryable(anyhow_err),
         }
     }

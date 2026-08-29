@@ -5,16 +5,49 @@ use crate::services::connection_service::ConnectionService;
 use crate::transfer::TransferManager;
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-/// Application-wide runtime context managing cancellation and background task tracking
+/// Lifecycle phase of the runtime
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RuntimePhase {
+    Starting = 0,
+    Running = 1,
+    ShuttingDown = 2,
+    Stopped = 3,
+}
+
+impl RuntimePhase {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => RuntimePhase::Starting,
+            1 => RuntimePhase::Running,
+            2 => RuntimePhase::ShuttingDown,
+            3 => RuntimePhase::Stopped,
+            _ => RuntimePhase::Stopped,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuntimePhase::Starting => "starting",
+            RuntimePhase::Running => "running",
+            RuntimePhase::ShuttingDown => "shutting_down",
+            RuntimePhase::Stopped => "stopped",
+        }
+    }
+}
+
+/// Application-wide runtime context managing lifecycle phase, cancellation, and background task tracking
 #[derive(Clone)]
 pub struct AppRuntime {
     pub shutdown_token: CancellationToken,
     pub task_tracker: TaskTracker,
+    phase: Arc<AtomicU8>,
 }
 
 impl Default for AppRuntime {
@@ -22,7 +55,24 @@ impl Default for AppRuntime {
         Self {
             shutdown_token: CancellationToken::new(),
             task_tracker: TaskTracker::new(),
+            phase: Arc::new(AtomicU8::new(RuntimePhase::Starting as u8)),
         }
+    }
+}
+
+impl AppRuntime {
+    pub fn phase(&self) -> RuntimePhase {
+        RuntimePhase::from_u8(self.phase.load(Ordering::Acquire))
+    }
+
+    pub fn set_phase(&self, p: RuntimePhase) {
+        tracing::info!("runtime.phase={}", p.as_str());
+        self.phase.store(p as u8, Ordering::Release);
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        let p = self.phase();
+        p == RuntimePhase::ShuttingDown || p == RuntimePhase::Stopped
     }
 }
 
@@ -45,14 +95,22 @@ impl AppState {
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
         let credentials = Arc::new(CredentialStore::new(&config.security.session_secret));
         let registry = Arc::new(ProviderRegistry::new());
+        let runtime = AppRuntime::default();
+
+        // TransferManager receives shutdown_token + task_tracker so its internal tasks
+        // (recovery + scheduler) are tracked and respond to cancellation.
+        // Recovery is awaited synchronously so server only announces readiness after jobs are loaded.
         let transfer_manager = TransferManager::new(
             registry.providers_map(),
             db.clone(),
             config.limits.max_concurrent_transfers,
-        );
+            runtime.shutdown_token.clone(),
+            &runtime.task_tracker,
+        )
+        .await;
+
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());
-        let runtime = AppRuntime::default();
 
         let state = Self {
             config: Arc::new(config),
@@ -149,3 +207,4 @@ impl AppState {
         self.registry.clear_connection_error(connection_id).await;
     }
 }
+

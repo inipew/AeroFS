@@ -282,13 +282,23 @@ pub struct TransferManager {
     max_concurrent_workers: Arc<AtomicUsize>,
     max_retry_attempts: Arc<AtomicUsize>,
     worker_semaphore: Arc<tokio::sync::Semaphore>,
+    is_accepting_jobs: Arc<std::sync::atomic::AtomicBool>,
 }
 
+
 impl TransferManager {
-    pub fn new(
+    /// Create and initialize the TransferManager.
+    /// Recovery is performed synchronously (awaited) before returning, so the server
+    /// only announces readiness after all persisted jobs are loaded into memory.
+    /// The scheduler and recovery tasks are registered in `task_tracker` so they respond
+    /// to `shutdown_token` and are drained cleanly on shutdown.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new(
         providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         db: DbPool,
         max_concurrent_workers: usize,
+        shutdown_token: CancellationToken,
+        task_tracker: &tokio_util::task::TaskTracker,
     ) -> Self {
         let (queue_tx, queue_rx) = mpsc::channel::<String>(200);
         let (event_tx, _) = broadcast::channel::<EventEnvelope>(400);
@@ -303,6 +313,7 @@ impl TransferManager {
             Arc::new(AtomicUsize::new(clamped_workers));
         let max_retry_attempts_arc = Arc::new(AtomicUsize::new(3));
         let worker_semaphore = Arc::new(tokio::sync::Semaphore::new(clamped_workers));
+        let is_accepting_jobs = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let jobs_clone = Arc::clone(&jobs);
         let cancel_tokens_clone = Arc::clone(&cancel_tokens);
@@ -312,10 +323,11 @@ impl TransferManager {
         let sequence_counter_clone = Arc::clone(&sequence_counter);
         let event_history_clone = Arc::clone(&event_history);
 
-        // 1. Initial startup recovery: Load jobs from SQLite into memory (bound to non-dismissed / recent active)
-        let db_init = db.clone();
-        let jobs_init = Arc::clone(&jobs);
-        tokio::spawn(async move {
+        // 1. Synchronous startup recovery: Load jobs from SQLite into memory
+        // Awaited directly so server readiness is announced only after recovery completes.
+        {
+            let db_init = db.clone();
+            let jobs_init = Arc::clone(&jobs);
             if let Ok(saved_jobs) = Self::load_jobs_from_db(&db_init).await {
                 let mut map = jobs_init.write().await;
                 for mut job in saved_jobs {
@@ -334,20 +346,51 @@ impl TransferManager {
                     map.insert(job.id.clone(), job);
                 }
             }
-        });
+            tracing::info!("transfer.recovery: completed");
+        }
 
-        // 2. Multi-Worker Concurrent Transfer Scheduler with native Tokio Semaphore
+        // 2. Multi-Worker Concurrent Transfer Scheduler — registered in task_tracker
+        // so it is drained properly on shutdown. Scheduler stops accepting new work when
+        // shutdown_token fires.
         let queue_rx_shared = Arc::new(Mutex::new(queue_rx));
         let retries_clone = Arc::clone(&max_retry_attempts_arc);
         let worker_semaphore_task = Arc::clone(&worker_semaphore);
+        let is_accepting_clone = Arc::clone(&is_accepting_jobs);
+        let scheduler_token = shutdown_token.clone();
 
-        tokio::spawn(async move {
+        task_tracker.spawn(async move {
+            tracing::debug!("transfer.scheduler.start");
             let mut rx = queue_rx_shared.lock().await;
-            while let Some(job_id) = rx.recv().await {
-                // Acquire permit natively from semaphore
-                let permit = match worker_semaphore_task.clone().acquire_owned().await {
-                    Ok(p) => p,
-                    Err(_) => break,
+            loop {
+                // Acquire a permit or stop if shutdown is requested
+                let permit = tokio::select! {
+                    _ = scheduler_token.cancelled() => {
+                        tracing::info!("transfer.scheduler.stop: shutdown requested");
+                        // Stop accepting new jobs
+                        is_accepting_clone.store(false, std::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                    result = worker_semaphore_task.clone().acquire_owned() => {
+                        match result {
+                            Ok(p) => p,
+                            Err(_) => break, // semaphore closed
+                        }
+                    }
+                };
+
+                // Wait for next job or shutdown
+                let job_id = tokio::select! {
+                    _ = scheduler_token.cancelled() => {
+                        tracing::info!("transfer.scheduler.stop: shutdown requested");
+                        is_accepting_clone.store(false, std::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                    maybe_id = rx.recv() => {
+                        match maybe_id {
+                            Some(id) => id,
+                            None => break, // channel closed
+                        }
+                    }
                 };
 
                 let jobs_worker = Arc::clone(&jobs_clone);
@@ -536,6 +579,7 @@ impl TransferManager {
             max_concurrent_workers: max_concurrent_workers_arc,
             max_retry_attempts: max_retry_attempts_arc,
             worker_semaphore,
+            is_accepting_jobs,
         }
     }
 
@@ -636,6 +680,11 @@ impl TransferManager {
         destination_connection_id: String,
         destination_path: String,
     ) -> Result<String, String> {
+        // Reject new jobs during shutdown to prevent half-lifecycle transfers
+        if !self.is_accepting_jobs.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Server is shutting down; no new transfers accepted".to_string());
+        }
+
         let id = format!("job_{}", &Uuid::new_v4().to_string()[..8]);
         let now = Utc::now();
 

@@ -45,6 +45,9 @@ pub enum AppError {
     #[error("Insufficient storage: {0}")]
     InsufficientStorage(String),
 
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("Checksum mismatch: {0}")]
     ChecksumMismatch(String),
 
@@ -307,6 +310,14 @@ impl IntoResponse for AppError {
                 ErrorCategory::RateLimited,
                 true,
                 Some("retry_after_backoff".to_string()),
+                msg.clone(),
+            ),
+            AppError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                ErrorCategory::Internal,
+                true,
+                Some("retry_after_server_restart".to_string()),
                 msg.clone(),
             ),
             AppError::Vfs(VfsError::Timeout(msg)) => (
