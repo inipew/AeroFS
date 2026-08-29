@@ -339,6 +339,7 @@ impl TransferManager {
                     if job.status == TransferStatus::Running {
                         job.status = TransferStatus::Interrupted;
                         job.error_message = Some("Transfer interrupted by server restart".into());
+                        tracing::info!("transfer.interrupted: job_id={}", job.id);
                         let _ = Self::save_job_to_db(&db_init, &job).await;
                     } else if job.status == TransferStatus::Queued {
                         let _ = queue_tx_clone.send(job.id.clone()).await;
@@ -636,6 +637,10 @@ impl TransferManager {
 
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
         self.event_tx.subscribe()
+    }
+
+    pub fn current_sequence(&self) -> u64 {
+        self.sequence_counter.load(Ordering::SeqCst)
     }
 
     pub async fn get_events_since(&self, since_seq: u64) -> ReplayResult {
@@ -1736,6 +1741,12 @@ impl TransferManager {
         }
 
         let mut reader = if resume_offset > 0 {
+            tracing::info!(
+                "transfer.resume: job_id={} offset={} total={}",
+                job.id,
+                resume_offset,
+                total_bytes
+            );
             src_fs
                 .read_range(
                     &src_vfs,

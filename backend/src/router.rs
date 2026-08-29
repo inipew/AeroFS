@@ -9,7 +9,7 @@ use axum::{
         HeaderName, HeaderValue, Method,
     },
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -37,6 +37,45 @@ async fn security_headers_middleware(request: axum::extract::Request, next: Next
 
     response
 }
+
+/// Middleware: returns 503 Service Unavailable for mutation requests during ShuttingDown phase
+async fn shutdown_guard(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if state.runtime.is_shutting_down() {
+        let method = req.method().clone();
+        let path = req.uri().path().to_owned();
+
+        // Allow cancel-transfer, auth logout, and safe read-only methods through
+        let is_cancel = path.contains("/cancel");
+        let is_logout = path.contains("/logout");
+        let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+
+        if !is_readonly && !is_cancel && !is_logout {
+            tracing::debug!(
+                "shutdown_guard: rejected {} {} (server shutting down)",
+                method,
+                path
+            );
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                [("Retry-After", "5")],
+                axum::Json(serde_json::json!({
+                    "error": {
+                        "code": "SERVICE_UNAVAILABLE",
+                        "message": "Server is shutting down. Please retry after restart.",
+                        "retryable": true
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
 
 pub fn create_router(state: AppState) -> Router {
     let is_dev = std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into())
@@ -251,5 +290,9 @@ pub fn create_router(state: AppState) -> Router {
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            shutdown_guard,
+        ))
         .with_state(state)
 }

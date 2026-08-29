@@ -150,3 +150,128 @@ async fn test_daemon_lock_lifecycle_acquire_and_release() {
     let lock3 = lock3.unwrap();
     lock3.release();
 }
+
+#[tokio::test]
+async fn test_runtime_phase_transitions_and_health_readiness() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use backend::state::RuntimePhase;
+    use tower::ServiceExt;
+
+    let (state, _temp) = setup_test_context().await;
+    let app = create_router(state.clone());
+
+    // 1. Initial state is Starting -> /health/ready returns 503
+    assert_eq!(state.runtime.phase(), RuntimePhase::Starting);
+    let req = Request::builder()
+        .uri("/health/ready")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // 2. Set phase to Running -> /health/ready returns 200
+    state.runtime.set_phase(RuntimePhase::Running);
+    assert_eq!(state.runtime.phase(), RuntimePhase::Running);
+    let req = Request::builder()
+        .uri("/health/ready")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. Set phase to ShuttingDown -> /health/ready returns 503
+    state.runtime.set_phase(RuntimePhase::ShuttingDown);
+    assert!(state.runtime.is_shutting_down());
+    let req = Request::builder()
+        .uri("/health/ready")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_shutdown_guard_rejects_mutations_with_503() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use backend::state::RuntimePhase;
+    use tower::ServiceExt;
+
+    let (state, _temp) = setup_test_context().await;
+    let app = create_router(state.clone());
+
+    // In Running phase, GET request works
+    state.runtime.set_phase(RuntimePhase::Running);
+    let req = Request::builder()
+        .uri("/health/live")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Transition to ShuttingDown phase
+    state.runtime.set_phase(RuntimePhase::ShuttingDown);
+
+    // POST mutation should be rejected with 503 and Retry-After header
+    let mutation_req = Request::builder()
+        .uri("/api/v1/connections")
+        .method("POST")
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.clone().oneshot(mutation_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(resp.headers().get("Retry-After").unwrap(), "5");
+
+    // Read-only GET request should still be allowed through
+    let readonly_req = Request::builder()
+        .uri("/health/live")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(readonly_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_transfer_submit_job_rejected_during_shutdown() {
+    use backend::state::RuntimePhase;
+    use backend::transfer::TransferType;
+
+    let (state, _temp) = setup_test_context().await;
+    state.runtime.set_phase(RuntimePhase::Running);
+
+    // Cancel shutdown token which instructs scheduler and manager to stop accepting jobs
+    state.runtime.shutdown_token.cancel();
+    // Allow brief moment for scheduler select arm to observe cancellation
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Submitting a job now must be rejected
+    let res = state
+        .transfer_manager
+        .submit_job(
+            None,
+            "test_shutdown_job".to_string(),
+            TransferType::Copy,
+            "local".to_string(),
+            "/src.txt".to_string(),
+            "local".to_string(),
+            "/dst.txt".to_string(),
+        )
+        .await;
+
+    assert!(
+        res.is_err(),
+        "submit_job must be rejected when server is shutting down"
+    );
+    assert!(
+        res.unwrap_err().contains("shutting down"),
+        "Error message should explain server is shutting down"
+    );
+}
+

@@ -4,53 +4,11 @@ use crate::config::AppConfig;
 use crate::create_router;
 use crate::db::init_db;
 use crate::state::{AppState, RuntimePhase};
-use axum::{
-    extract::Request,
-    http::{Method, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-    Json,
-};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-
-/// Axum middleware: returns 503 for mutation requests during ShuttingDown phase
-async fn shutdown_guard(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    if state.runtime.is_shutting_down() {
-        let method = req.method().clone();
-        let path = req.uri().path().to_owned();
-
-        // Allow cancel-transfer and safe read-only methods through
-        let is_cancel = path.contains("/cancel");
-        let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
-
-        if !is_readonly && !is_cancel {
-            tracing::debug!(
-                "shutdown_guard: rejected {} {} (server shutting down)",
-                method,
-                path
-            );
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                [("Retry-After", "5")],
-                Json(serde_json::json!({
-                    "error": {
-                        "code": "SERVICE_UNAVAILABLE",
-                        "message": "Server is shutting down. Please retry after restart.",
-                        "retryable": true
-                    }
-                })),
-            )
-                .into_response();
-        }
-    }
-    next.run(req).await
-}
 
 pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     // 0. Resolve lock file path
@@ -151,13 +109,10 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         }
     });
 
-    // 7. Build router with shutdown guard middleware
-    let app = create_router(state.clone()).layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        shutdown_guard,
-    ));
+    // 7. Build router (includes shutdown_guard, security headers, CORS, etc.)
+    let app = create_router(state.clone());
 
-    // Mark as running — server is ready to accept connections
+    // Mark runtime phase as Running — ready to accept connections
     state.runtime.set_phase(RuntimePhase::Running);
 
     if !cli.quiet {
@@ -166,20 +121,31 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     tracing::info!("🚀 AeroFS server listening on http://{}", addr);
 
     let shutdown_token = state.runtime.shutdown_token.clone();
+    let force_shutdown_token = state.runtime.force_shutdown_token.clone();
     let task_tracker = state.runtime.task_tracker.clone();
     let runtime = state.runtime.clone();
 
     let listener = TcpListener::bind(addr).await?;
 
-    // Wait for shutdown signal; after signal fires, start global T0+15s deadline
+    // Record shutdown trigger time and enforce single global T0 + 15s deadline
+    let shutdown_start_time = Arc::new(Mutex::new(None::<std::time::Instant>));
+    let shutdown_start_time_clone = Arc::clone(&shutdown_start_time);
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown_token_signal = shutdown_token.clone();
     let runtime_signal = runtime.clone();
+    let force_token_signal = force_shutdown_token.clone();
+
     tokio::spawn(async move {
         shutdown_signal(shutdown_token_signal).await;
         runtime_signal.set_phase(RuntimePhase::ShuttingDown);
-        // Global deadline: T0 + 15s for ALL subsystems (HTTP drain + task drain)
+        tracing::info!("runtime.phase=shutdown_requested");
+        {
+            let mut t = shutdown_start_time_clone.lock().await;
+            *t = Some(std::time::Instant::now());
+        }
+        // Global deadline: T0 + 15s for ALL subsystems (HTTP drain + background tasks)
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        force_token_signal.cancel();
         let _ = drain_tx.send(());
     });
 
@@ -198,24 +164,36 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
             }
         }
         _ = drain_rx => {
-            tracing::warn!("Global shutdown deadline (15s) reached; forcing server stop");
+            tracing::warn!("runtime.phase=force_shutdown: Global shutdown deadline (15s) reached; forcing server stop");
         }
     }
 
-    // Ensure shutdown_token is cancelled (idempotent) so all subsystems know
+    tracing::info!("runtime.phase=draining");
+
+    // Ensure shutdown_token is cancelled (idempotent)
     shutdown_token.cancel();
     runtime.set_phase(RuntimePhase::ShuttingDown);
 
-    // Drain all tracked background tasks within remaining global deadline
-    // (deadline is shared — any time already elapsed counts)
+    // Drain all tracked background tasks strictly within remaining time of global 15s deadline
     task_tracker.close();
-    if (tokio::time::timeout(std::time::Duration::from_secs(5), task_tracker.wait()).await).is_err()
-    {
-        tracing::warn!("Background task tracker drain timed out after 5s");
+    let elapsed = {
+        let t = shutdown_start_time.lock().await;
+        t.map(|start| start.elapsed()).unwrap_or_default()
+    };
+    let global_limit = std::time::Duration::from_secs(15);
+    let remaining_time = global_limit.saturating_sub(elapsed);
+    let tracker_timeout = remaining_time.min(std::time::Duration::from_secs(5));
+
+    if !tracker_timeout.is_zero() {
+        if (tokio::time::timeout(tracker_timeout, task_tracker.wait()).await).is_err() {
+            tracing::warn!("Background task tracker drain timed out within remaining grace window");
+        }
+    } else {
+        tracing::warn!("Global shutdown deadline already exhausted; skipping extended background drain");
     }
 
     runtime.set_phase(RuntimePhase::Stopped);
-    tracing::info!("Shutdown coordinator: released background workers, cleaning lock file...");
+    tracing::info!("runtime.phase=stopped: released background workers, cleaning lock file...");
     daemon_lock.release();
 
     Ok(())
@@ -258,5 +236,6 @@ async fn shutdown_signal(cancel_token: CancellationToken) {
         }
     });
 }
+
 
 

@@ -61,6 +61,7 @@ async fn handle_socket(
     let is_admin = user.is_admin;
     let user_id = user.id.clone();
     let db = state.db.clone();
+    tracing::info!("ws.connected: user_id={}", user_id);
 
     // Pre-load in-memory authorized connection snapshot to eliminate high-frequency DB queries (P1.15)
     let mut authorized_conns = HashSet::new();
@@ -86,6 +87,7 @@ async fn handle_socket(
                     if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
                         if let Ok(json_str) = serde_json::to_string(&envelope) {
                             if sender.send(Message::Text(json_str.into())).await.is_err() {
+                                tracing::info!("ws.closed: user_id={}", user_id);
                                 return;
                             }
                         }
@@ -104,6 +106,7 @@ async fn handle_socket(
                 };
                 if let Ok(json_str) = serde_json::to_string(&resync_envelope) {
                     if sender.send(Message::Text(json_str.into())).await.is_err() {
+                        tracing::info!("ws.closed: user_id={}", user_id);
                         return;
                     }
                 }
@@ -111,40 +114,56 @@ async fn handle_socket(
         }
     }
 
-    // 2. Spawn live sender task — handles Lagged by sending ResyncRequired instead of dropping
+    // 2. Spawn live sender task — handles Lagged by sending ResyncRequired instead of dropping,
+    //    and sends Close frame 1001 when server shutdown is requested
+    let shutdown_token_send = shutdown_token.clone();
+    let user_id_send = user_id.clone();
+    let transfer_mgr = state.transfer_manager.clone();
     let mut send_task = tokio::spawn(async move {
         loop {
-            match rx.recv().await {
-                Ok(envelope) => {
-                    if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
-                        if let Ok(json_str) = serde_json::to_string(&envelope) {
-                            if sender.send(Message::Text(json_str.into())).await.is_err() {
-                                break;
+            tokio::select! {
+                _ = shutdown_token_send.cancelled() => {
+                    tracing::info!("ws.shutdown: sending close frame 1001 to user={}", user_id_send);
+                    let _ = sender.send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::AWAY, // 1001
+                        reason: "server shutting down".into(),
+                    }))).await;
+                    break;
+                }
+                envelope_res = rx.recv() => {
+                    match envelope_res {
+                        Ok(envelope) => {
+                            if is_event_authorized(&envelope.event, is_admin, &authorized_conns) {
+                                if let Ok(json_str) = serde_json::to_string(&envelope) {
+                                    if sender.send(Message::Text(json_str.into())).await.is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            let latest_sequence = transfer_mgr.current_sequence();
+                            tracing::warn!("ws.lagged: user={} skipped={} latest_sequence={}", user_id_send, skipped, latest_sequence);
+                            tracing::info!("ws.resync: latest_sequence={}", latest_sequence);
+                            let resync = crate::transfer::EventEnvelope {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                sequence: latest_sequence,
+                                timestamp: chrono::Utc::now(),
+                                event: WsEvent::ResyncRequired {
+                                    reason: "buffer_overflow".into(),
+                                    latest_sequence,
+                                },
+                            };
+                            if let Ok(json_str) = serde_json::to_string(&resync) {
+                                let _ = sender.send(Message::Text(json_str.into())).await;
+                            }
+                            // Continue receiving live events after resync notification
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            // Channel closed (server shutdown)
+                            break;
+                        }
                     }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    // Buffer overflow: send ResyncRequired so client knows it missed events
-                    tracing::warn!("ws.lagged: skipped={} — sending resync_required", skipped);
-                    let seq = rx.len() as u64; // approximate; client will re-handshake anyway
-                    let resync = crate::transfer::EventEnvelope {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        sequence: seq,
-                        timestamp: chrono::Utc::now(),
-                        event: WsEvent::ResyncRequired {
-                            reason: "buffer_overflow".into(),
-                            latest_sequence: seq,
-                        },
-                    };
-                    if let Ok(json_str) = serde_json::to_string(&resync) {
-                        let _ = sender.send(Message::Text(json_str.into())).await;
-                    }
-                    // Continue receiving live events after resync notification
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    // Channel closed (server shutdown) — break and let shutdown select arm handle close frame
-                    break;
                 }
             }
         }
@@ -160,16 +179,17 @@ async fn handle_socket(
         }
     });
 
-    // 4. Select: shutdown signal sends Close frame 1001, or either task finishes naturally
+    // 4. Select: shutdown signal gives send_task a short grace to flush close frame, or either task finishes
     tokio::select! {
         _ = shutdown_token.cancelled() => {
-            tracing::debug!("ws.shutdown: sending close frame 1001");
-            // Abort the sender task (it may be blocked waiting on broadcast rx)
-            send_task.abort();
+            // Allow send_task up to 1 second to transmit the 1001 Close frame
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(1000), &mut send_task).await;
             recv_task.abort();
         }
         _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => send_task.abort(),
     }
+
+    tracing::info!("ws.closed: user_id={}", user_id);
 }
 

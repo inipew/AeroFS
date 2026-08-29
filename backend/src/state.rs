@@ -46,6 +46,7 @@ impl RuntimePhase {
 #[derive(Clone)]
 pub struct AppRuntime {
     pub shutdown_token: CancellationToken,
+    pub force_shutdown_token: CancellationToken,
     pub task_tracker: TaskTracker,
     phase: Arc<AtomicU8>,
 }
@@ -54,6 +55,7 @@ impl Default for AppRuntime {
     fn default() -> Self {
         Self {
             shutdown_token: CancellationToken::new(),
+            force_shutdown_token: CancellationToken::new(),
             task_tracker: TaskTracker::new(),
             phase: Arc::new(AtomicU8::new(RuntimePhase::Starting as u8)),
         }
