@@ -62,8 +62,8 @@ async fn test_realtime_cancellation_with_token() {
     let cancel_res = TransferService::cancel_transfer(&state, &admin, &job_id).await;
     assert!(cancel_res.is_ok());
 
-    // 4. Wait for cancellation to settle
     let mut cancelled = false;
+    let mut last_status = None;
     for _ in 0..150 {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let jobs = state
@@ -71,6 +71,7 @@ async fn test_realtime_cancellation_with_token() {
             .list_jobs(Some(&admin.id), true, true)
             .await;
         if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
+            last_status = Some(j.status);
             if j.status == TransferStatus::Cancelled {
                 cancelled = true;
                 break;
@@ -78,7 +79,7 @@ async fn test_realtime_cancellation_with_token() {
         }
     }
 
-    assert!(cancelled, "Transfer job should transition to Cancelled");
+    assert!(cancelled, "Transfer job should transition to Cancelled, last status: {:?}", last_status);
 
     // 5. Verify staging hidden .aerofs-part file is cleaned up
     let part_path = format!("/.dest_cancel_test.dat.aerofs-part-{}", job_id);

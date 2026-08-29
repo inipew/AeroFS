@@ -3,6 +3,7 @@ import { ref, computed, reactive } from 'vue';
 import { useQueryClient } from '@tanstack/vue-query';
 import { listFilesApi } from '../api/files';
 import { subscribeFileChanges } from '../services/fileChangeBus';
+import { realtimeClient } from '../transport/websocket';
 import { useTransferStore } from './transferStore';
 import { useUiStore } from './uiStore';
 import { normalizePath, parentPath } from '../utils/path';
@@ -881,9 +882,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     });
   }
 
-  // Realtime Filesystem Event Invalidation (Plan 41 + Plan 58)
+  // Realtime Filesystem Event Invalidation (Plan 41 + Plan 58 + Plan 59)
   subscribeFileChanges((event) => {
     handleFileChangeEvent(event);
+  });
+
+  // Re-synchronize visible panels upon server buffer expiration or visibility resumption
+  realtimeClient.onResyncRequired(() => {
+    try {
+      queryClient?.invalidateQueries({ queryKey: ['directory'] });
+      queryClient?.invalidateQueries({ queryKey: ['metadata'] });
+    } catch {}
+    fetchPanelEntries('left');
+    if (isDualPane.value) {
+      fetchPanelEntries('right');
+    }
   });
 
   return {

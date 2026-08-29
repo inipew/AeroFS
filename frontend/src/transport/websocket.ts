@@ -28,9 +28,11 @@ export class RealtimeClient {
   private resyncListeners: Set<RealtimeListener<ResyncRequiredEvent>> = new Set();
   private statusListeners: Set<RealtimeListener<boolean>> = new Set();
 
+  private visibilityHandler: (() => void) | null = null;
+
   constructor() {
     if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => {
+      this.visibilityHandler = () => {
         if (document.visibilityState === 'visible') {
           if (!this.isConnected) {
             this.connect();
@@ -41,8 +43,31 @@ export class RealtimeClient {
             );
           }
         }
-      });
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
     }
+  }
+
+  public start(): void {
+    this.connect();
+  }
+
+  public stop(): void {
+    this.disconnect();
+  }
+
+  public dispose(): void {
+    this.disconnect();
+    if (typeof document !== 'undefined' && this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+    this.progressListeners.clear();
+    this.completedListeners.clear();
+    this.failedListeners.clear();
+    this.fileChangeListeners.clear();
+    this.resyncListeners.clear();
+    this.statusListeners.clear();
   }
 
   public connect(): void {
