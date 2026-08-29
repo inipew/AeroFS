@@ -212,7 +212,7 @@
 
     <!-- Pinned Drop Overlay (Clean subtle dashed surface) -->
     <div
-      v-if="isDragOver"
+      v-if="isDragOver && !hoveredFolderDrop"
       :class="[
         'absolute inset-x-4 bottom-4 z-30 bg-blue-500/10 backdrop-blur-xs border-2 border-dashed border-blue-500 rounded-3xl flex items-center justify-center pointer-events-none transition-[opacity,background-color,border-color] duration-standard ease-spring',
         workspaceStore.isDualPane ? 'top-14' : 'top-4'
@@ -346,7 +346,7 @@
                       @dblclick="handleEntryDoubleClick(getGridItemAt(vRow.index, colIdx - 1)!)"
                       @contextmenu="openContextMenu($event, getGridItemAt(vRow.index, colIdx - 1)!)"
                       @dragover.stop.prevent="handleFolderDragOver($event, getGridItemAt(vRow.index, colIdx - 1)!)"
-                      @dragleave.stop="handleFolderDragLeave(getGridItemAt(vRow.index, colIdx - 1)!)"
+                      @dragleave.stop="handleFolderDragLeave($event, getGridItemAt(vRow.index, colIdx - 1)!)"
                       @drop.stop.prevent="handleDrop($event, getGridItemAt(vRow.index, colIdx - 1)!)"
                       :class="[
                         'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
@@ -569,7 +569,7 @@
                   @dblclick="handleEntryDoubleClick(displayedEntries[vRow.index])"
                   @contextmenu="openContextMenu($event, displayedEntries[vRow.index])"
                   @dragover.stop.prevent="displayedEntries[vRow.index]?.kind === 'directory' ? handleFolderDragOver($event, displayedEntries[vRow.index]) : null"
-                  @dragleave.stop="displayedEntries[vRow.index]?.kind === 'directory' ? handleFolderDragLeave(displayedEntries[vRow.index]) : null"
+                  @dragleave.stop="displayedEntries[vRow.index]?.kind === 'directory' ? handleFolderDragLeave($event, displayedEntries[vRow.index]) : null"
                   @drop.stop.prevent="displayedEntries[vRow.index]?.kind === 'directory' ? handleDrop($event, displayedEntries[vRow.index]) : null"
                   :class="[
                     'cursor-pointer transition group',
@@ -1298,10 +1298,16 @@ function handleDragEnter(e: DragEvent) {
 
 function handleDragLeave(e: DragEvent) {
   e.preventDefault();
+  const currentTarget = e.currentTarget as HTMLElement | null;
+  const relatedTarget = e.relatedTarget as HTMLElement | null;
+  if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+    return;
+  }
   dragEnterCounter--;
-  if (dragEnterCounter <= 0) {
+  if (dragEnterCounter <= 0 || !relatedTarget || (panelContentRef.value && !panelContentRef.value.contains(relatedTarget))) {
     dragEnterCounter = 0;
     isDragOver.value = false;
+    hoveredFolderDrop.value = null;
   }
 }
 
@@ -1315,7 +1321,12 @@ function handleFolderDragOver(e: DragEvent, folder: FileEntry) {
   }
 }
 
-function handleFolderDragLeave(folder: FileEntry) {
+function handleFolderDragLeave(e: DragEvent, folder: FileEntry) {
+  const currentTarget = e.currentTarget as HTMLElement | null;
+  const relatedTarget = e.relatedTarget as HTMLElement | null;
+  if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+    return;
+  }
   if (hoveredFolderDrop.value === folder.path) {
     hoveredFolderDrop.value = null;
   }
@@ -1745,13 +1756,23 @@ function handleOutsideClick(e: MouseEvent) {
   }
 }
 
+const onGlobalDragEnd = () => {
+  dragEnterCounter = 0;
+  isDragOver.value = false;
+  hoveredFolderDrop.value = null;
+};
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown);
   window.addEventListener('click', handleOutsideClick);
+  window.addEventListener('dragend', onGlobalDragEnd);
+  window.addEventListener('drop', onGlobalDragEnd);
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('click', handleOutsideClick);
+  window.removeEventListener('dragend', onGlobalDragEnd);
+  window.removeEventListener('drop', onGlobalDragEnd);
 });
 </script>
