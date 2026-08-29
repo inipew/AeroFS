@@ -178,7 +178,9 @@ pub fn build_sftp_operator_with_config(
     if let Some(auth_method) = auth {
         match auth_method {
             SftpAuth::Password { password: _ } => {
-                // SFTP password authentication is delegated to system openssh client
+                return Err(VfsError::NotSupported(
+                    "SFTP password authentication is not natively supported by OpenDAL; please configure an SSH private key path or SSH agent.".into(),
+                ));
             }
             SftpAuth::PrivateKey { key, passphrase: _ } => {
                 if !key.trim().is_empty() {

@@ -14,11 +14,15 @@ pub fn map_opendal_error(err: opendal::Error, context: &str) -> VfsError {
         ErrorKind::NotADirectory => VfsError::NotADirectory(msg),
         ErrorKind::ConfigInvalid => VfsError::InvalidPath(msg),
         _ => {
-            let err_str = err.to_string().to_lowercase();
-            if err_str.contains("timeout") || err_str.contains("timed out") {
-                VfsError::Timeout(msg)
+            if err.is_temporary() {
+                VfsError::ConnectionError(msg)
             } else {
-                VfsError::IoError(msg)
+                let err_str = err.to_string().to_lowercase();
+                if err_str.contains("timeout") || err_str.contains("timed out") {
+                    VfsError::Timeout(msg)
+                } else {
+                    VfsError::IoError(msg)
+                }
             }
         }
     }

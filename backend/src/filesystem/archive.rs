@@ -194,7 +194,8 @@ pub async fn compress_zip(
         .map_err(|e| VfsError::IoError(format!("Failed to create temp zip file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
 
-    let files_to_pack = collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
+    let files_to_pack =
+        collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
 
     {
         let file = std::fs::File::create(&temp_path)
@@ -431,7 +432,8 @@ pub async fn compress_targz(
         .map_err(|e| VfsError::IoError(format!("Failed to create temp targz file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
 
-    let files_to_pack = collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
+    let files_to_pack =
+        collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
 
     {
         let file = std::fs::File::create(&temp_path)
@@ -452,11 +454,7 @@ pub async fn compress_targz(
             header.set_cksum();
 
             tar_builder
-                .append_data(
-                    &mut header,
-                    &rel_path,
-                    Cursor::new(content),
-                )
+                .append_data(&mut header, &rel_path, Cursor::new(content))
                 .map_err(|e| VfsError::IoError(format!("Tar append error: {}", e)))?;
         }
 

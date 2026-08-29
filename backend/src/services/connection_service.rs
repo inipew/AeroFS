@@ -65,7 +65,11 @@ impl ConnectionService {
             tracing::error!("Failed to create local root dir {:?}: {}", local_root, e);
         }
         let local_cfg = state.config.storage.get_provider_config("local");
-        match ProviderFactory::build_local_with_config("local", local_root.clone(), Some(&local_cfg)) {
+        match ProviderFactory::build_local_with_config(
+            "local",
+            local_root.clone(),
+            Some(&local_cfg),
+        ) {
             Ok(local_fs) => {
                 state.registry.register("local".to_string(), local_fs).await;
                 tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
@@ -137,7 +141,11 @@ impl ConnectionService {
                 updated_at: Utc::now(),
             };
             let provider_cfg = state.config.storage.get_provider_config(&provider_type);
-            match ProviderFactory::build_with_config(&conn, decrypted_secret.as_deref(), Some(&provider_cfg)) {
+            match ProviderFactory::build_with_config(
+                &conn,
+                decrypted_secret.as_deref(),
+                Some(&provider_cfg),
+            ) {
                 Ok(fs) => {
                     state.registry.register(id.clone(), fs).await;
                     tracing::info!(
@@ -375,8 +383,12 @@ impl ConnectionService {
 
         // Build live provider FIRST before saving (fail-closed)
         let provider_cfg = state.config.storage.get_provider_config(provider_str);
-        let fs = ProviderFactory::build_with_config(&conn, payload.secret.as_deref(), Some(&provider_cfg))
-            .map_err(|e| AppError::BadRequest(format!("Failed to build provider: {}", e)))?;
+        let fs = ProviderFactory::build_with_config(
+            &conn,
+            payload.secret.as_deref(),
+            Some(&provider_cfg),
+        )
+        .map_err(|e| AppError::BadRequest(format!("Failed to build provider: {}", e)))?;
 
         // Save connection to DB in transaction
         let mut tx = state

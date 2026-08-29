@@ -418,11 +418,6 @@ impl FileSystem for OpenDalFileSystem {
 
         match self.operator.rename(&from_path, &to_path).await {
             Ok(_) => Ok(()),
-            Err(e) if e.kind() == ErrorKind::Unsupported => {
-                self.copy(from, to).await?;
-                self.delete(from).await?;
-                Ok(())
-            }
             Err(e) => Err(map_opendal_error(
                 e,
                 &format!("Failed to rename '{}' to '{}'", from.path, to.path),
@@ -433,7 +428,11 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, from = %from.path, to = %to.path))]
     async fn copy(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError> {
         let meta = self.stat(from).await?;
-        let existing_dst_perms = self.stat(to).await.ok().and_then(|m| m.permissions);
+        let existing_dst_perms = if self.capabilities().permissions {
+            self.stat(to).await.ok().and_then(|m| m.permissions)
+        } else {
+            None
+        };
 
         if meta.kind == FileKind::Directory {
             self.create_dir(to).await?;
@@ -449,31 +448,26 @@ impl FileSystem for OpenDalFileSystem {
             if let Some(ref perms) = meta.permissions {
                 let _ = self.set_permissions(to, perms).await;
             }
-            return Ok(());
-        }
+        } else {
+            let from_path = self.to_operator_path(from)?;
+            let to_path = self.to_operator_path(to)?;
+            self.operator
+                .copy(&from_path, &to_path)
+                .await
+                .map_err(|e| {
+                    map_opendal_error(
+                        e,
+                        &format!("Failed to copy '{}' to '{}'", from.path, to.path),
+                    )
+                })?;
 
-        let from_path = self.to_operator_path(from)?;
-        let to_path = self.to_operator_path(to)?;
-
-        match self.operator.copy(&from_path, &to_path).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == ErrorKind::Unsupported => {
-                let stream = self.read_stream(from).await?;
-                self.write_stream(to, stream).await?;
+            if self.capabilities().permissions {
+                let perms_to_apply = existing_dst_perms.or(meta.permissions);
+                if let Some(ref perms) = perms_to_apply {
+                    let _ = self.set_permissions(to, perms).await;
+                }
             }
-            Err(e) => {
-                return Err(map_opendal_error(
-                    e,
-                    &format!("Failed to copy '{}' to '{}'", from.path, to.path),
-                ));
-            }
         }
-
-        // Apply permission inheritance / preservation
-        if let Some(ref perms) = existing_dst_perms.or(meta.permissions) {
-            let _ = self.set_permissions(to, perms).await;
-        }
-
         Ok(())
     }
 }

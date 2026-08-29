@@ -61,7 +61,9 @@ impl AppState {
                 local_root,
                 Some(&local_cfg),
             ) {
-                self.registry.register("local".to_string(), local_fs.clone()).await;
+                self.registry
+                    .register("local".to_string(), local_fs.clone())
+                    .await;
                 return Some(local_fs);
             }
         }

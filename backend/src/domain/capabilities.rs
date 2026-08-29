@@ -32,6 +32,10 @@ impl ChecksumCapabilities {
         }
     }
 
+    pub fn none() -> Self {
+        Self::default()
+    }
+
     pub fn has_any(&self) -> bool {
         self.md5 || self.crc32 || self.crc32c || self.sha1 || self.sha256
     }
@@ -63,6 +67,9 @@ pub struct Capabilities {
     pub resumable_read: bool,
     pub multipart_write: bool,
     pub resumable_write: bool,
+    pub write_can_append: bool,
+    pub write_can_empty: bool,
+    pub write_can_multi: bool,
 
     // Object Storage & Acceleration
     pub presign_read: bool,
@@ -73,11 +80,14 @@ pub struct Capabilities {
     pub atomic_write: bool,
     pub atomic_rename: bool,
     pub server_side_copy: bool,
+    pub native_copy: bool,
     pub symlink: bool,
     pub permissions: bool,
     pub watch: bool,
     pub checksum: bool,
+    pub native_checksum: bool,
     pub checksums: ChecksumCapabilities,
+    pub computed_checksums: ChecksumCapabilities,
 }
 
 impl Capabilities {
@@ -96,23 +106,29 @@ impl Capabilities {
             move_: true,
             upload: true,
             download: true,
-            resume_upload: true,
+            resume_upload: false,
             resume_download: true,
             range_read: true,
             resumable_read: true,
             multipart_write: false,
-            resumable_write: true,
+            resumable_write: false,
+            write_can_append: true,
+            write_can_empty: true,
+            write_can_multi: false,
             presign_read: false,
             presign_write: false,
             conditional_write: false,
             atomic_write: true,
             atomic_rename: true,
-            server_side_copy: true,
+            server_side_copy: false,
+            native_copy: true,
             symlink: true,
             permissions: true,
             watch: true,
             checksum: true,
-            checksums: ChecksumCapabilities::all(),
+            native_checksum: false,
+            checksums: ChecksumCapabilities::none(),
+            computed_checksums: ChecksumCapabilities::all(),
         }
     }
 

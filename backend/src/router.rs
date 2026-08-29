@@ -149,6 +149,10 @@ pub fn create_router(state: AppState) -> Router {
             "/{id}/files/presign/upload",
             post(files::presign_upload_file),
         )
+        .route(
+            "/{id}/files/presign/complete",
+            post(files::presign_complete_upload),
+        )
         .route("/{id}/storage-info", get(files::get_storage_info))
         .route("/{id}/upload", post(files::upload_file))
         .route("/{id}/archive/compress", post(archive::compress_files))

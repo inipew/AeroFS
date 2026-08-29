@@ -48,7 +48,7 @@ async fn setup_app() -> (axum::Router, String, tempfile::TempDir) {
 async fn test_remote_connections_crud_and_test() {
     let (app, cookie, _temp) = setup_app().await;
 
-    // 1. Create a remote SFTP connection
+    // 1. Create a remote SFTP connection with private key authentication
     let create_sftp_req = Request::builder()
         .uri("/api/v1/connections")
         .method("POST")
@@ -61,7 +61,7 @@ async fn test_remote_connections_crud_and_test() {
                 "host": "127.0.0.1",
                 "port": 22,
                 "username": "root",
-                "secret": "sftp_super_secret_password",
+                "private_key": "/home/user/.ssh/id_rsa",
                 "base_path": "/var/www"
             })
             .to_string(),

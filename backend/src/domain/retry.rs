@@ -69,14 +69,46 @@ impl RetryPolicy {
                 | crate::errors::VfsError::ChecksumMismatch(_) => true,
             },
             AppError::Conflict(_) => false,
-            AppError::Internal(anyhow_err) => {
-                let msg = anyhow_err.to_string().to_lowercase();
-                !msg.contains("cancelled")
-                    && !msg.contains("not found")
-                    && !msg.contains("permission denied")
-                    && !msg.contains("forbidden")
-            }
+            AppError::Internal(anyhow_err) => Self::is_anyhow_retryable(anyhow_err),
         }
+    }
+
+    pub fn is_vfs_retryable(vfs_err: &crate::errors::VfsError) -> bool {
+        match vfs_err {
+            crate::errors::VfsError::NotFound(_)
+            | crate::errors::VfsError::PermissionDenied(_)
+            | crate::errors::VfsError::AlreadyExists(_)
+            | crate::errors::VfsError::InvalidPath(_)
+            | crate::errors::VfsError::NotADirectory(_)
+            | crate::errors::VfsError::NotAFile(_)
+            | crate::errors::VfsError::DirectoryNotEmpty(_)
+            | crate::errors::VfsError::NotSupported(_)
+            | crate::errors::VfsError::QuotaExceeded(_)
+            | crate::errors::VfsError::InsufficientStorage(_)
+            | crate::errors::VfsError::Security(_) => false,
+            crate::errors::VfsError::ConnectionError(_)
+            | crate::errors::VfsError::IoError(_)
+            | crate::errors::VfsError::RateLimited(_)
+            | crate::errors::VfsError::Timeout(_)
+            | crate::errors::VfsError::ChecksumMismatch(_) => true,
+        }
+    }
+
+    pub fn is_anyhow_retryable(err: &anyhow::Error) -> bool {
+        if let Some(vfs_err) = err.downcast_ref::<crate::errors::VfsError>() {
+            return Self::is_vfs_retryable(vfs_err);
+        }
+        if let Some(app_err) = err.downcast_ref::<crate::errors::AppError>() {
+            return RetryPolicy::default().is_retryable(app_err);
+        }
+        let msg = err.to_string().to_lowercase();
+        !(msg.contains("cancelled")
+            || msg.contains("not found")
+            || msg.contains("permission denied")
+            || msg.contains("forbidden")
+            || msg.contains("unsupported")
+            || msg.contains("invalid path")
+            || msg.contains("already exists"))
     }
 
     pub fn compute_backoff(&self, attempt: usize) -> Duration {

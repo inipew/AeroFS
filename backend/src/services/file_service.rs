@@ -83,10 +83,10 @@ impl FileService {
             {
                 if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&decoded) {
                     val["offset"].as_u64().unwrap_or(0) as usize
-                } else if let Ok(offset_num) = String::from_utf8_lossy(&decoded).parse::<usize>() {
-                    offset_num
                 } else {
-                    0
+                    String::from_utf8_lossy(&decoded)
+                        .parse::<usize>()
+                        .unwrap_or_default()
                 }
             } else {
                 cursor_str.parse::<usize>().unwrap_or(0)
@@ -95,7 +95,9 @@ impl FileService {
             0
         };
 
-        let page_limit = limit_opt.unwrap_or(state.config.limits.max_directory_entries);
+        let page_limit = limit_opt
+            .unwrap_or(state.config.limits.max_directory_entries)
+            .clamp(1, 1000);
         let mut stream = provider.list_stream(&vfs_path).await?;
         let mut filtered_entries = Vec::new();
         let mut current_idx = 0;
@@ -105,7 +107,10 @@ impl FileService {
             let entry = res?;
 
             // Early filter: skip internal staging files and hidden files if not requested
-            if entry.name.contains(".aerofs-part-") {
+            if entry.name.contains(".aerofs-part-")
+                || entry.name.contains(".aerofs.part")
+                || entry.name.contains(".aerofs.tmp")
+            {
                 continue;
             }
             if !show_hidden && entry.is_hidden {
@@ -178,6 +183,7 @@ impl FileService {
             connection_id: connection_id.to_string(),
             entries: filtered_entries,
             total_count,
+            has_more,
             next_cursor,
         })
     }
@@ -250,6 +256,49 @@ impl FileService {
         )
         .await;
         Ok(url)
+    }
+
+    /// Complete and verify a client-side direct pre-signed upload
+    pub async fn complete_presigned_upload(
+        state: &AppState,
+        user: &AuthenticatedUser,
+        connection_id: &str,
+        raw_path: &str,
+    ) -> Result<FileMetadata, AppError> {
+        check_permission(&state.db, user, connection_id, PermissionAction::Write).await?;
+        let provider = state.get_provider(connection_id).await.ok_or_else(|| {
+            VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+        })?;
+        let vfs_path = VfsPath::new(connection_id, raw_path)?;
+        let meta = provider.stat(&vfs_path).await.map_err(|e| match e {
+            VfsError::NotFound(_) => AppError::NotFound(format!(
+                "Uploaded file not found at target path '{}'",
+                vfs_path.path
+            )),
+            other => AppError::from(other),
+        })?;
+
+        record_audit_log(
+            &state.db,
+            Some(&user.id),
+            "presign_upload_complete",
+            Some(connection_id),
+            Some(raw_path),
+            "success",
+            None,
+            Some(&format!("size={}", meta.size)),
+        )
+        .await;
+
+        state
+            .transfer_manager
+            .broadcast_event(crate::transfer::WsEvent::FileChange {
+                connection_id: connection_id.to_string(),
+                path: vfs_path.path.clone(),
+                action: "create".to_string(),
+            });
+
+        Ok(meta)
     }
 
     /// Retrieve file metadata

@@ -11,11 +11,17 @@ pub fn map_opendal_capabilities_for_scheme(cap: opendal::Capability, scheme: &st
         permissions,
         symlink,
         server_side_copy,
+        native_copy,
+        native_checksum,
         checksums,
+        computed_checksums,
         presign_read,
         presign_write,
         conditional_write,
         multipart_write,
+        write_can_append,
+        write_can_empty,
+        write_can_multi,
         atomic_rename,
         atomic_write,
     ) = match scheme {
@@ -27,53 +33,73 @@ pub fn map_opendal_capabilities_for_scheme(cap: opendal::Capability, scheme: &st
             (
                 perms,
                 cfg!(unix),
-                true, // local fs supports instant copy
+                false, // local fs is not cloud server-side copy
+                true,  // local fs supports native fast copy
+                false, // local files do not have server metadata checksums
+                ChecksumCapabilities::none(),
                 ChecksumCapabilities::all(),
                 false,
                 false,
                 false,
                 false,
-                false,
-                false,
-            )
-        }
-        "s3" => {
-            (
-                false,
-                false,
-                cap.copy, // S3 natively supports Server-Side Copy (CopyObject)
-                ChecksumCapabilities::s3_default(),
-                true,  // S3 supports presigned GET
-                true,  // S3 supports presigned PUT
-                true,  // S3 supports If-Match / If-None-Match conditional operations
-                true,  // S3 supports multipart upload
-                false, // S3 does not have POSIX atomic rename
-                false,
-            )
-        }
-        "sftp" => {
-            (
-                true, // SFTP supports remote POSIX file permissions
-                false,
-                false,
-                ChecksumCapabilities::default(),
-                false,
-                false,
-                false,
-                false,
+                cap.write_can_append,
+                cap.write_can_empty,
+                cap.write_can_multi,
                 cap.rename,
-                false,
+                true,
             )
         }
+        "s3" => (
+            false,
+            false,
+            cap.copy, // S3 natively supports Server-Side Copy (CopyObject)
+            false,
+            true, // S3 metadata contains ETag / server-side hashes
+            ChecksumCapabilities::s3_default(),
+            ChecksumCapabilities::all(),
+            cap.presign_read,
+            cap.presign_write,
+            cap.write_with_if_match || cap.write_with_if_none_match || cap.write_with_if_not_exists,
+            cap.write_can_multi,
+            cap.write_can_append,
+            cap.write_can_empty,
+            cap.write_can_multi,
+            false, // S3 does not have POSIX atomic rename
+            false,
+        ),
+        "sftp" => (
+            true, // SFTP supports remote POSIX file permissions
+            false,
+            false,
+            false,
+            false,
+            ChecksumCapabilities::none(),
+            ChecksumCapabilities::all(),
+            false,
+            false,
+            false,
+            false,
+            cap.write_can_append,
+            cap.write_can_empty,
+            cap.write_can_multi,
+            cap.rename,
+            false,
+        ),
         "ftp" => (
             false,
             false,
             false,
-            ChecksumCapabilities::default(),
+            false,
+            false,
+            ChecksumCapabilities::none(),
+            ChecksumCapabilities::all(),
             false,
             false,
             false,
             false,
+            cap.write_can_append,
+            cap.write_can_empty,
+            cap.write_can_multi,
             cap.rename,
             false,
         ),
@@ -81,17 +107,23 @@ pub fn map_opendal_capabilities_for_scheme(cap: opendal::Capability, scheme: &st
             false,
             false,
             cap.copy,
-            ChecksumCapabilities::default(),
             false,
             false,
-            false,
-            false,
+            ChecksumCapabilities::none(),
+            ChecksumCapabilities::all(),
+            cap.presign_read,
+            cap.presign_write,
+            cap.write_with_if_match,
+            cap.write_can_multi,
+            cap.write_can_append,
+            cap.write_can_empty,
+            cap.write_can_multi,
             cap.rename,
             false,
         ),
     };
 
-    let has_checksum = checksums.has_any();
+    let has_checksum = checksums.has_any() || computed_checksums.has_any();
 
     Capabilities {
         list: cap.list,
@@ -102,26 +134,32 @@ pub fn map_opendal_capabilities_for_scheme(cap: opendal::Capability, scheme: &st
         create_dir: cap.create_dir,
         delete: cap.delete,
         rename: cap.rename,
-        copy: cap.copy || server_side_copy,
+        copy: cap.copy || server_side_copy || native_copy,
         move_: cap.rename,
         upload: cap.write,
         download: cap.read,
         resume_upload: false,
-        resume_download: false,
+        resume_download: cap.read,
         range_read: cap.read,
         resumable_read: cap.read,
         multipart_write,
-        resumable_write: multipart_write,
+        resumable_write: write_can_append,
+        write_can_append,
+        write_can_empty,
+        write_can_multi,
         presign_read,
         presign_write,
         conditional_write,
         atomic_write,
         atomic_rename,
         server_side_copy,
+        native_copy,
         symlink,
         permissions,
         watch: false,
         checksum: has_checksum,
+        native_checksum,
         checksums,
+        computed_checksums,
     }
 }

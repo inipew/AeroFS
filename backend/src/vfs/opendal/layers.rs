@@ -18,9 +18,13 @@ pub fn apply_common_layers(op: Operator, config: &ProviderStorageConfig) -> Oper
         .with_io_timeout(Duration::from_secs(config.io_timeout_secs.max(10)));
     op = op.layer(timeout_layer);
 
-    // 2. Retry Layer for transient network/I/O retries
+    // 2. Retry Layer for transient network/I/O retries with configured max attempts
     if config.retry_attempts > 0 {
-        op = op.layer(RetryLayer::new());
+        op = op.layer(
+            RetryLayer::new()
+                .with_max_times(config.retry_attempts)
+                .with_jitter(),
+        );
     }
 
     // 3. Concurrency Limit Layer (0 = unbounded / skip layer for local FS)

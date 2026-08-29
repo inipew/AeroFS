@@ -322,13 +322,11 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                     true,
                 )
                 .unwrap_or(false);
-            if should_fix && !args.dry_run {
-                if let Ok(_) = std::fs::create_dir_all(root) {
-                    repairs_applied.push(format!(
-                        "Created storage root directory: {}",
-                        root.display()
-                    ));
-                }
+            if should_fix && !args.dry_run && std::fs::create_dir_all(root).is_ok() {
+                repairs_applied.push(format!(
+                    "Created storage root directory: {}",
+                    root.display()
+                ));
             }
         }
     }
@@ -351,10 +349,8 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                         true,
                     )
                     .unwrap_or(false);
-                if should_fix && !args.dry_run {
-                    if let Ok(_) = std::fs::create_dir_all(temp) {
-                        repairs_applied.push(format!("Created temp directory: {}", temp.display()));
-                    }
+                if should_fix && !args.dry_run && std::fs::create_dir_all(temp).is_ok() {
+                    repairs_applied.push(format!("Created temp directory: {}", temp.display()));
                 }
             }
         } else {

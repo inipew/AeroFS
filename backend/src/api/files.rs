@@ -1,5 +1,7 @@
 use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
-use crate::domain::{parse_single_byte_range, ByteRange, FileKind, RangeError, VfsPath};
+use crate::domain::{
+    parse_single_byte_range, ByteRange, FileKind, FileMetadata, RangeError, VfsPath,
+};
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
 use axum::{
@@ -166,6 +168,19 @@ pub async fn presign_upload_file(
         url,
         expires_in_seconds: expire_secs,
     }))
+}
+
+/// Complete and verify a direct pre-signed upload
+pub async fn presign_complete_upload(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(connection_id): Path<String>,
+    Json(payload): Json<PresignRequest>,
+) -> Result<Json<FileMetadata>, AppError> {
+    let meta = FileService::complete_presigned_upload(&state, &user, &connection_id, &payload.path)
+        .await?;
+
+    Ok(Json(meta))
 }
 
 /// Get detailed metadata for a file or directory
@@ -554,8 +569,12 @@ pub async fn upload_file(
                 &connection_id,
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
-            let part_path =
-                VfsPath::new(&connection_id, format!("{}.aerofs.part", target_path.path))?;
+            let use_staging = provider.capabilities().atomic_rename;
+            let write_target = if use_staging {
+                VfsPath::new(&connection_id, format!("{}.aerofs.part", target_path.path))?
+            } else {
+                target_path.clone()
+            };
 
             let target_perms = crate::domain::resolve_destination_permissions(
                 &provider,
@@ -583,10 +602,10 @@ pub async fn upload_file(
             let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
             let write_handle = tokio::spawn({
                 let provider = provider.clone();
-                let part_path = part_path.clone();
+                let write_target = write_target.clone();
                 async move {
                     provider
-                        .write_stream(&part_path, Box::new(duplex_reader))
+                        .write_stream(&write_target, Box::new(duplex_reader))
                         .await
                 }
             });
@@ -622,7 +641,7 @@ pub async fn upload_file(
 
             if let Some(err) = stream_err {
                 let _ = write_handle.await;
-                let _ = provider.delete(&part_path).await;
+                let _ = provider.delete(&write_target).await;
                 return Err(err);
             }
 
@@ -631,27 +650,28 @@ pub async fn upload_file(
             })?;
 
             if let Err(e) = write_res {
-                let _ = provider.delete(&part_path).await;
+                let _ = provider.delete(&write_target).await;
                 return Err(AppError::from(e));
             }
 
-            // If target already existed or parent perms found, apply to .part before promoting
+            // If target already existed or parent perms found, apply to target
             if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&part_path, perms).await;
+                let _ = provider.set_permissions(&write_target, perms).await;
             }
 
-            // Stream completed cleanly -> promote .aerofs.part to final target
-            if let Err(rename_err) = provider.rename(&part_path, &target_path).await {
-                // If direct rename fails, attempt fallback copy + cleanup
-                if let Err(copy_err) = provider.copy(&part_path, &target_path).await {
-                    let _ = provider.delete(&part_path).await;
-                    return Err(AppError::Internal(anyhow::anyhow!(
-                        "Failed finalizing uploaded file: rename error ({}), copy error ({})",
-                        rename_err,
-                        copy_err
-                    )));
+            // If staging was used, promote .aerofs.part to final target
+            if use_staging {
+                if let Err(rename_err) = provider.rename(&write_target, &target_path).await {
+                    if let Err(copy_err) = provider.copy(&write_target, &target_path).await {
+                        let _ = provider.delete(&write_target).await;
+                        return Err(AppError::Internal(anyhow::anyhow!(
+                            "Failed finalizing uploaded file: rename error ({}), copy error ({})",
+                            rename_err,
+                            copy_err
+                        )));
+                    }
+                    let _ = provider.delete(&write_target).await;
                 }
-                let _ = provider.delete(&part_path).await;
             }
 
             if let Some(ref perms) = target_perms {
