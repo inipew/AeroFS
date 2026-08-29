@@ -5,7 +5,7 @@ use crate::services::share_service::{CreateShareRequest, ShareService};
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -82,15 +82,13 @@ pub async fn public_get_share(
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
-        mime_type
-            .parse()
-            .unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+        HeaderValue::from_str(&mime_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        format!("inline; filename=\"{}\"", metadata.name)
-            .parse()
-            .unwrap_or_else(|_| "inline".parse().unwrap()),
+        HeaderValue::from_str(&format!("inline; filename=\"{}\"", metadata.name))
+            .unwrap_or_else(|_| HeaderValue::from_static("inline")),
     );
 
     Ok((headers, data))

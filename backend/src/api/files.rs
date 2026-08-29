@@ -9,7 +9,7 @@ use axum::{
     extract::{Multipart, Path, Query, State},
     http::{
         header::{self, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED},
-        HeaderMap, StatusCode,
+        HeaderMap, HeaderValue, StatusCode,
     },
     response::IntoResponse,
     Json,
@@ -237,17 +237,25 @@ pub async fn get_file_content(
         .unwrap_or_else(|| "application/octet-stream".to_string());
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-    resp_headers.insert(CONTENT_TYPE, mime.parse().unwrap());
-    resp_headers.insert(ETAG, meta.etag.parse().unwrap());
+    resp_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    resp_headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&mime).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+    resp_headers.insert(
+        ETAG,
+        HeaderValue::from_str(&meta.etag).unwrap_or_else(|_| HeaderValue::from_static("\"\"")),
+    );
     resp_headers.insert(
         header::CACHE_CONTROL,
-        "no-store, no-cache, must-revalidate".parse().unwrap(),
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
     );
-    resp_headers.insert(header::PRAGMA, "no-cache".parse().unwrap());
+    resp_headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
 
     if let Some(mtime) = meta.modified_at {
-        resp_headers.insert(LAST_MODIFIED, mtime.to_rfc2822().parse().unwrap());
+        if let Ok(mtime_val) = HeaderValue::from_str(&mtime.to_rfc2822()) {
+            resp_headers.insert(LAST_MODIFIED, mtime_val);
+        }
     }
 
     // Security Sandbox: Isolate inline HTML/SVG/JS preview from host origin (XSS mitigation)
@@ -261,11 +269,11 @@ pub async fn get_file_content(
     if is_active_content && !query.download.unwrap_or(false) {
         resp_headers.insert(
             header::HeaderName::from_static("content-security-policy"),
-            "default-src 'none'; sandbox".parse().unwrap(),
+            HeaderValue::from_static("default-src 'none'; sandbox"),
         );
         resp_headers.insert(
             header::HeaderName::from_static("x-content-type-options"),
-            "nosniff".parse().unwrap(),
+            HeaderValue::from_static("nosniff"),
         );
     }
 
@@ -285,7 +293,9 @@ pub async fn get_file_content(
             "attachment; filename=\"{}\"; filename*=UTF-8''{}",
             fallback, encoded_utf8
         );
-        resp_headers.insert(CONTENT_DISPOSITION, disposition.parse().unwrap());
+        if let Ok(disp_val) = HeaderValue::from_str(&disposition) {
+            resp_headers.insert(CONTENT_DISPOSITION, disp_val);
+        }
 
         crate::auth::record_audit_log(
             &state.db,
@@ -322,11 +332,10 @@ pub async fn get_file_content(
                     .await?;
                 let body = Body::from_stream(ReaderStream::new(stream));
 
-                resp_headers.insert(CONTENT_LENGTH, chunk_len.to_string().parse().unwrap());
-                resp_headers.insert(
-                    header::CONTENT_RANGE,
-                    byte_range.content_range_header().parse().unwrap(),
-                );
+                resp_headers.insert(CONTENT_LENGTH, HeaderValue::from(chunk_len));
+                if let Ok(cr_val) = HeaderValue::from_str(&byte_range.content_range_header()) {
+                    resp_headers.insert(header::CONTENT_RANGE, cr_val);
+                }
                 return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body));
             }
             Err(RangeError::MultiRangeNotSupported)
@@ -334,11 +343,10 @@ pub async fn get_file_content(
             | Err(RangeError::InvalidFormat(_)) => {
                 // 416 Range Not Satisfiable
                 let mut unsat_headers = HeaderMap::new();
-                unsat_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-                unsat_headers.insert(
-                    header::CONTENT_RANGE,
-                    ByteRange::unsatisfiable_header(file_size).parse().unwrap(),
-                );
+                unsat_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+                if let Ok(cr_val) = HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size)) {
+                    unsat_headers.insert(header::CONTENT_RANGE, cr_val);
+                }
                 return Ok((
                     StatusCode::RANGE_NOT_SATISFIABLE,
                     unsat_headers,
@@ -351,7 +359,7 @@ pub async fn get_file_content(
     // Default full stream (200 OK)
     let stream = provider.read_stream(&vfs_path).await?;
     let body = Body::from_stream(ReaderStream::new(stream));
-    resp_headers.insert(CONTENT_LENGTH, file_size.to_string().parse().unwrap());
+    resp_headers.insert(CONTENT_LENGTH, HeaderValue::from(file_size));
 
     Ok((StatusCode::OK, resp_headers, body))
 }
@@ -387,8 +395,8 @@ pub async fn update_file_content(
     .await?;
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert("access-control-expose-headers", "ETag".parse().unwrap());
-    if let Ok(val) = meta.etag.parse() {
+    resp_headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("ETag"));
+    if let Ok(val) = HeaderValue::from_str(&meta.etag) {
         resp_headers.insert(header::ETAG, val);
     }
 

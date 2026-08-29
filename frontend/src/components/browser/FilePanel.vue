@@ -1529,6 +1529,16 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
       return;
     }
 
+    // Prevent dropping a folder into itself or its descendant subfolder
+    for (const filePath of data.paths) {
+      if (data.sourceConnectionId === panel.value.connectionId) {
+        if (targetDir === filePath || targetDir.startsWith(filePath + '/')) {
+          uiStore.showToast('Cannot copy or move a folder into itself or its subfolder', 'error');
+          return;
+        }
+      }
+    }
+
     const isMove = e.shiftKey || (data.sourceConnectionId === panel.value.connectionId && !e.ctrlKey && !e.altKey);
     const opType: 'copy' | 'move' = isMove ? 'move' : 'copy';
     const opLabel = isMove ? 'Move' : 'Copy';
@@ -1537,32 +1547,34 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
       let fileName = filePath.split('/').pop() || 'file';
       let targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
 
-      // Check if target directory already has an entry with the same name
-      const alreadyExists = panel.value.entries.some((e: FileEntry) => e.name === fileName);
-      if (alreadyExists) {
-        const resolution = await transferStore.requestConflict(fileName, filePath, targetPath);
-        if (resolution === 'cancel') {
-          break;
-        }
-        if (resolution === 'skip') {
-          continue;
-        }
-        if (resolution === 'keep_both') {
-          const dotIdx = fileName.lastIndexOf('.');
-          let count = 1;
-          let candidateName = dotIdx > 0
-            ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
-            : `${fileName} (${count})`;
-
-          while (panel.value.entries.some((e: FileEntry) => e.name === candidateName)) {
-            count++;
-            candidateName = dotIdx > 0
+      // Check if current panel directory already has an entry with the same name
+      if (targetDir === panel.value.path) {
+        const alreadyExists = panel.value.entries.some((e: FileEntry) => e.name === fileName);
+        if (alreadyExists) {
+          const resolution = await transferStore.requestConflict(fileName, filePath, targetPath);
+          if (resolution === 'cancel') {
+            break;
+          }
+          if (resolution === 'skip') {
+            continue;
+          }
+          if (resolution === 'keep_both') {
+            const dotIdx = fileName.lastIndexOf('.');
+            let count = 1;
+            let candidateName = dotIdx > 0
               ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
               : `${fileName} (${count})`;
-          }
 
-          fileName = candidateName;
-          targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
+            while (panel.value.entries.some((e: FileEntry) => e.name === candidateName)) {
+              count++;
+              candidateName = dotIdx > 0
+                ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+                : `${fileName} (${count})`;
+            }
+
+            fileName = candidateName;
+            targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
+          }
         }
       }
 

@@ -621,7 +621,15 @@ impl FileService {
             let sem_clone = sem.clone();
 
             tasks.spawn(async move {
-                let _permit = sem_clone.acquire().await.unwrap();
+                let _permit = match sem_clone.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return (
+                            raw_path,
+                            Err(crate::errors::VfsError::IoError("Semaphore closed during shutdown".to_string())),
+                        )
+                    }
+                };
                 let vfs_path = match VfsPath::new(&conn_str, &raw_path) {
                     Ok(v) => v,
                     Err(e) => return (raw_path, Err(e)),
