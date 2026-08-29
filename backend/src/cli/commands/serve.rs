@@ -3,12 +3,9 @@ use crate::cli::daemon_lock::DaemonLock;
 use crate::config::AppConfig;
 use crate::create_router;
 use crate::db::init_db;
-use crate::state::{AppState, RuntimePhase};
+use crate::state::{AppRuntime, AppState, RuntimePhase, ShutdownReason};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     // 0. Resolve lock file path
@@ -112,7 +109,8 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     // 7. Build router (includes shutdown_guard, security headers, CORS, etc.)
     let app = create_router(state.clone());
 
-    // Mark runtime phase as Running — ready to accept connections
+    // 8. Bind TCP listener FIRST, and only mark phase as Running after listener is successfully bound
+    let listener = TcpListener::bind(addr).await?;
     state.runtime.set_phase(RuntimePhase::Running);
 
     if !cli.quiet {
@@ -125,27 +123,33 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     let task_tracker = state.runtime.task_tracker.clone();
     let runtime = state.runtime.clone();
 
-    let listener = TcpListener::bind(addr).await?;
-
-    // Record shutdown trigger time and enforce single global T0 + 15s deadline
-    let shutdown_start_time = Arc::new(Mutex::new(None::<std::time::Instant>));
-    let shutdown_start_time_clone = Arc::clone(&shutdown_start_time);
-    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown_token_signal = shutdown_token.clone();
+    // Spawn signal listener that triggers request_shutdown(reason)
     let runtime_signal = runtime.clone();
-    let force_token_signal = force_shutdown_token.clone();
-
     tokio::spawn(async move {
-        shutdown_signal(shutdown_token_signal).await;
-        runtime_signal.set_phase(RuntimePhase::ShuttingDown);
-        tracing::info!("runtime.phase=shutdown_requested");
-        {
-            let mut t = shutdown_start_time_clone.lock().await;
-            *t = Some(std::time::Instant::now());
-        }
-        // Global deadline: T0 + 15s for ALL subsystems (HTTP drain + background tasks)
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-        force_token_signal.cancel();
+        shutdown_signal(runtime_signal).await;
+    });
+
+    // Wait until shutdown is requested (either via signal or internal cancellation)
+    shutdown_token.cancelled().await;
+
+    // Single-owner Shutdown Coordinator begins
+    let shutdown_start_time = std::time::Instant::now();
+    let global_limit = std::time::Duration::from_secs(15);
+    let shutdown_reason = runtime
+        .shutdown_reason()
+        .map(|r| r.as_str())
+        .unwrap_or("internal");
+    tracing::info!(
+        "runtime.phase=draining: reason={} global_deadline=15s",
+        shutdown_reason
+    );
+
+    // Drain in-flight Axum requests with 15s deadline
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+    let force_token_clone = force_shutdown_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(global_limit).await;
+        force_token_clone.cancel();
         let _ = drain_tx.send(());
     });
 
@@ -156,7 +160,6 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         }
     };
 
-    // Run server until shutdown signal, then drain in-flight requests
     tokio::select! {
         res = axum::serve(listener, app).with_graceful_shutdown(shutdown_fut) => {
             if let Err(e) = res {
@@ -168,19 +171,9 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
-    tracing::info!("runtime.phase=draining");
-
-    // Ensure shutdown_token is cancelled (idempotent)
-    shutdown_token.cancel();
-    runtime.set_phase(RuntimePhase::ShuttingDown);
-
     // Drain all tracked background tasks strictly within remaining time of global 15s deadline
     task_tracker.close();
-    let elapsed = {
-        let t = shutdown_start_time.lock().await;
-        t.map(|start| start.elapsed()).unwrap_or_default()
-    };
-    let global_limit = std::time::Duration::from_secs(15);
+    let elapsed = shutdown_start_time.elapsed();
     let remaining_time = global_limit.saturating_sub(elapsed);
     let tracker_timeout = remaining_time.min(std::time::Duration::from_secs(5));
 
@@ -199,11 +192,12 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal(cancel_token: CancellationToken) {
+async fn shutdown_signal(runtime: AppRuntime) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
             .expect("failed to install Ctrl+C handler");
+        ShutdownReason::CtrlC
     };
 
     #[cfg(unix)]
@@ -212,21 +206,24 @@ async fn shutdown_signal(cancel_token: CancellationToken) {
             .expect("failed to install signal handler")
             .recv()
             .await;
+        ShutdownReason::Sigterm
     };
 
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let terminate = std::future::pending::<ShutdownReason>();
 
-    tokio::select! {
-        _ = ctrl_c => {
+    let reason = tokio::select! {
+        r = ctrl_c => {
             tracing::info!("Received Ctrl+C (SIGINT) shutdown signal. Starting graceful shutdown...");
+            r
         },
-        _ = terminate => {
+        r = terminate => {
             tracing::info!("Received SIGTERM shutdown signal. Starting graceful shutdown...");
+            r
         },
-    }
+    };
 
-    cancel_token.cancel();
+    runtime.request_shutdown(reason);
 
     // Install secondary Ctrl-C handler for immediate forced exit
     tokio::spawn(async move {

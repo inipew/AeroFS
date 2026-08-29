@@ -275,3 +275,76 @@ async fn test_transfer_submit_job_rejected_during_shutdown() {
     );
 }
 
+#[tokio::test]
+async fn test_shutdown_guard_exact_path_classification() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use backend::state::RuntimePhase;
+    use tower::ServiceExt;
+
+    let (state, _temp) = setup_test_context().await;
+    let app = create_router(state.clone());
+
+    // Enter ShuttingDown phase
+    state.runtime.set_phase(RuntimePhase::ShuttingDown);
+
+    // 1. False positive cancel substring: `/api/v1/files/cancelled-dir` MUST be rejected with 503
+    let fake_cancel_req = Request::builder()
+        .uri("/api/v1/files/cancelled-dir")
+        .method("POST")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(fake_cancel_req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Substring /cancel in non-transfer path must be rejected during shutdown"
+    );
+
+    // 2. Real transfer cancel: `/api/v1/transfers/job_abc123/cancel` MUST pass shutdown guard (and hit handler -> not 503)
+    let real_cancel_req = Request::builder()
+        .uri("/api/v1/transfers/job_abc123/cancel")
+        .method("POST")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(real_cancel_req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Transfer cancel endpoint must be allowed through during shutdown"
+    );
+
+    // 3. Real auth logout: `/api/v1/auth/logout` MUST pass shutdown guard (and hit handler -> not 503)
+    let logout_req = Request::builder()
+        .uri("/api/v1/auth/logout")
+        .method("POST")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(logout_req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Auth logout endpoint must be allowed through during shutdown"
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_reason_and_single_owner_coordinator() {
+    use backend::state::{RuntimePhase, ShutdownReason};
+
+    let (state, _temp) = setup_test_context().await;
+    assert_eq!(state.runtime.phase(), RuntimePhase::Starting);
+    assert_eq!(state.runtime.shutdown_reason(), None);
+
+    // Request shutdown with Sigterm
+    state.runtime.request_shutdown(ShutdownReason::Sigterm);
+
+    assert_eq!(state.runtime.phase(), RuntimePhase::ShuttingDown);
+    assert_eq!(
+        state.runtime.shutdown_reason(),
+        Some(ShutdownReason::Sigterm)
+    );
+    assert!(state.runtime.shutdown_token.is_cancelled());
+}
+
+

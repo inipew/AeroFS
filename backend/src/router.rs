@@ -46,14 +46,20 @@ async fn shutdown_guard(
 ) -> Response {
     if state.runtime.is_shutting_down() {
         let method = req.method().clone();
-        let path = req.uri().path().to_owned();
+        let path = req.uri().path();
 
-        // Allow cancel-transfer, auth logout, and safe read-only methods through
-        let is_cancel = path.contains("/cancel");
-        let is_logout = path.contains("/logout");
+        // Safe read-only methods are always allowed
         let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
 
-        if !is_readonly && !is_cancel && !is_logout {
+        // Allowed mutation endpoints during shutdown drain:
+        // 1. POST /api/v1/transfers/{id}/cancel (allows canceling in-flight jobs)
+        // 2. POST /api/v1/auth/logout (allows logging out session cleanly)
+        let is_transfer_cancel = method == Method::POST
+            && path.starts_with("/api/v1/transfers/")
+            && path.ends_with("/cancel");
+        let is_auth_logout = method == Method::POST && path == "/api/v1/auth/logout";
+
+        if !is_readonly && !is_transfer_cancel && !is_auth_logout {
             tracing::debug!(
                 "shutdown_guard: rejected {} {} (server shutting down)",
                 method,
@@ -75,6 +81,7 @@ async fn shutdown_guard(
     }
     next.run(req).await
 }
+
 
 
 pub fn create_router(state: AppState) -> Router {

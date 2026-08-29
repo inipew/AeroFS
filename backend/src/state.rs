@@ -42,6 +42,37 @@ impl RuntimePhase {
     }
 }
 
+/// The reason why shutdown was initiated
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ShutdownReason {
+    CtrlC = 1,
+    Sigterm = 2,
+    Internal = 3,
+    Manual = 4,
+}
+
+impl ShutdownReason {
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(ShutdownReason::CtrlC),
+            2 => Some(ShutdownReason::Sigterm),
+            3 => Some(ShutdownReason::Internal),
+            4 => Some(ShutdownReason::Manual),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShutdownReason::CtrlC => "ctrl_c",
+            ShutdownReason::Sigterm => "sigterm",
+            ShutdownReason::Internal => "internal",
+            ShutdownReason::Manual => "manual",
+        }
+    }
+}
+
 /// Application-wide runtime context managing lifecycle phase, cancellation, and background task tracking
 #[derive(Clone)]
 pub struct AppRuntime {
@@ -49,6 +80,7 @@ pub struct AppRuntime {
     pub force_shutdown_token: CancellationToken,
     pub task_tracker: TaskTracker,
     phase: Arc<AtomicU8>,
+    shutdown_reason: Arc<AtomicU8>,
 }
 
 impl Default for AppRuntime {
@@ -58,6 +90,7 @@ impl Default for AppRuntime {
             force_shutdown_token: CancellationToken::new(),
             task_tracker: TaskTracker::new(),
             phase: Arc::new(AtomicU8::new(RuntimePhase::Starting as u8)),
+            shutdown_reason: Arc::new(AtomicU8::new(0)),
         }
     }
 }
@@ -75,6 +108,19 @@ impl AppRuntime {
     pub fn is_shutting_down(&self) -> bool {
         let p = self.phase();
         p == RuntimePhase::ShuttingDown || p == RuntimePhase::Stopped
+    }
+
+    pub fn shutdown_reason(&self) -> Option<ShutdownReason> {
+        ShutdownReason::from_u8(self.shutdown_reason.load(Ordering::Acquire))
+    }
+
+    pub fn request_shutdown(&self, reason: ShutdownReason) {
+        let reason_str = reason.as_str();
+        tracing::info!("runtime.shutdown_requested: reason={}", reason_str);
+        self.shutdown_reason
+            .store(reason as u8, Ordering::Release);
+        self.set_phase(RuntimePhase::ShuttingDown);
+        self.shutdown_token.cancel();
     }
 }
 
