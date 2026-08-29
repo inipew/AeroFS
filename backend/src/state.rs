@@ -15,6 +15,7 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub credentials: Arc<CredentialStore>,
     pub transfer_manager: TransferManager,
+    pub metadata_cache: Arc<crate::services::MetadataCache>,
     pub global_io_semaphore: Arc<Semaphore>,
     pub archive_semaphore: Arc<Semaphore>,
     pub search_semaphore: Arc<Semaphore>,
@@ -29,6 +30,7 @@ impl AppState {
             db.clone(),
             config.limits.max_concurrent_transfers,
         );
+        let metadata_cache = Arc::new(crate::services::MetadataCache::default());
 
         let state = Self {
             config: Arc::new(config),
@@ -36,6 +38,7 @@ impl AppState {
             registry,
             credentials,
             transfer_manager,
+            metadata_cache,
             global_io_semaphore: Arc::new(Semaphore::new(32)),
             archive_semaphore: Arc::new(Semaphore::new(4)),
             search_semaphore: Arc::new(Semaphore::new(8)),
@@ -66,6 +69,18 @@ impl AppState {
                     .await;
                 return Some(local_fs);
             }
+        }
+        None
+    }
+
+    /// Retrieve the unified StorageRuntime for a connection (with fail-safe local fallback)
+    pub async fn get_storage_runtime(&self, connection_id: &str) -> Option<Arc<crate::vfs::runtime::StorageRuntime>> {
+        if let Some(rt) = self.registry.get_runtime(connection_id).await {
+            return Some(rt);
+        }
+        // Ensure provider is initialized if local
+        if self.get_provider(connection_id).await.is_some() {
+            return self.registry.get_runtime(connection_id).await;
         }
         None
     }

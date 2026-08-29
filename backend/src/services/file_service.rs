@@ -182,7 +182,7 @@ impl FileService {
             path: vfs_path.path,
             connection_id: connection_id.to_string(),
             entries: filtered_entries,
-            total_count,
+            total_count: Some(total_count),
             has_more,
             next_cursor,
         })
@@ -258,12 +258,14 @@ impl FileService {
         Ok(url)
     }
 
-    /// Complete and verify a client-side direct pre-signed upload
+    /// Complete and verify a client-side direct pre-signed upload with validation and cache invalidation
     pub async fn complete_presigned_upload(
         state: &AppState,
         user: &AuthenticatedUser,
         connection_id: &str,
         raw_path: &str,
+        expected_size: Option<u64>,
+        expected_checksum: Option<&str>,
     ) -> Result<FileMetadata, AppError> {
         check_permission(&state.db, user, connection_id, PermissionAction::Write).await?;
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
@@ -278,6 +280,31 @@ impl FileService {
             other => AppError::from(other),
         })?;
 
+        // 1. Validate actual uploaded size if expected size was specified
+        if let Some(exp_size) = expected_size {
+            if meta.size != exp_size {
+                return Err(AppError::BadRequest(format!(
+                    "Uploaded file size mismatch: expected {} bytes, found {} bytes",
+                    exp_size, meta.size
+                )));
+            }
+        }
+
+        // 2. Validate checksum if expected checksum was specified
+        if let Some(exp_chk) = expected_checksum {
+            let clean_exp = exp_chk.trim().trim_matches('"');
+            let clean_etag = meta.etag.trim().trim_matches('"');
+            if !clean_etag.is_empty() && !clean_etag.eq_ignore_ascii_case(clean_exp) {
+                return Err(AppError::BadRequest(format!(
+                    "Uploaded file checksum mismatch: expected '{}', found '{}'",
+                    clean_exp, clean_etag
+                )));
+            }
+        }
+
+        // 3. Invalidate short-TTL metadata cache
+        state.metadata_cache.invalidate(connection_id, raw_path).await;
+
         record_audit_log(
             &state.db,
             Some(&user.id),
@@ -286,7 +313,7 @@ impl FileService {
             Some(raw_path),
             "success",
             None,
-            Some(&format!("size={}", meta.size)),
+            Some(&format!("size={}, etag={:?}", meta.size, meta.etag)),
         )
         .await;
 
@@ -301,7 +328,7 @@ impl FileService {
         Ok(meta)
     }
 
-    /// Retrieve file metadata
+    /// Retrieve file metadata with short-TTL cache
     pub async fn stat_file(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -310,12 +337,24 @@ impl FileService {
     ) -> Result<FileMetadata, AppError> {
         check_permission(&state.db, user, connection_id, PermissionAction::Read).await?;
 
+        // 1. Check in-memory metadata cache first
+        if let Some(cached) = state.metadata_cache.get(connection_id, raw_path).await {
+            return Ok(cached);
+        }
+
         let provider = state.get_provider(connection_id).await.ok_or_else(|| {
             VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
         })?;
 
         let vfs_path = VfsPath::new(connection_id, raw_path)?;
         let meta = provider.stat(&vfs_path).await?;
+
+        // 2. Populate metadata cache
+        state
+            .metadata_cache
+            .put(connection_id, raw_path, meta.clone())
+            .await;
+
         Ok(meta)
     }
 
@@ -474,6 +513,9 @@ impl FileService {
 
         let meta = provider.stat(&vfs_path).await?;
 
+        // Invalidate short-TTL metadata cache on write
+        state.metadata_cache.invalidate(connection_id, raw_path).await;
+
         // Audit log and real-time event
         record_audit_log(
             &state.db,
@@ -526,6 +568,9 @@ impl FileService {
         }
 
         let meta = provider.stat(&vfs_path).await?;
+
+        // Invalidate short-TTL metadata cache on mkdir
+        state.metadata_cache.invalidate(connection_id, raw_path).await;
 
         record_audit_log(
             &state.db,
@@ -603,6 +648,9 @@ impl FileService {
             if let Ok((path, del_res)) = join_res {
                 match del_res {
                     Ok(_) => {
+                        // Invalidate short-TTL metadata cache on delete
+                        state.metadata_cache.invalidate_prefix(connection_id, &path).await;
+
                         record_audit_log(
                             &state.db,
                             Some(&user.id),
@@ -650,6 +698,9 @@ impl FileService {
         let vfs_path = VfsPath::new(connection_id, raw_path)?;
         provider.delete(&vfs_path).await?;
 
+        // Invalidate short-TTL metadata cache
+        state.metadata_cache.invalidate_prefix(connection_id, raw_path).await;
+
         record_audit_log(
             &state.db,
             Some(&user.id),
@@ -691,6 +742,10 @@ impl FileService {
 
         provider.rename(&from_vfs, &to_vfs).await?;
 
+        // Invalidate both source and destination in metadata cache
+        state.metadata_cache.invalidate_prefix(connection_id, from_raw).await;
+        state.metadata_cache.invalidate_prefix(connection_id, to_raw).await;
+
         record_audit_log(
             &state.db,
             Some(&user.id),
@@ -729,6 +784,9 @@ impl FileService {
         let vfs_path = VfsPath::new(connection_id, raw_path)?;
         let mode_str = format!("{:04o}", mode);
         provider.set_permissions(&vfs_path, &mode_str).await?;
+
+        // Invalidate metadata cache on chmod
+        state.metadata_cache.invalidate(connection_id, raw_path).await;
 
         record_audit_log(
             &state.db,

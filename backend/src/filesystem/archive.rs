@@ -6,7 +6,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Cursor, Read};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Instant;
@@ -141,6 +141,7 @@ async fn collect_archive_files(
     use futures::StreamExt;
     let mut files = Vec::new();
 
+    const MAX_ARCHIVE_FILES: usize = 50_000;
     for rel in relative_paths {
         let full_vfs = if base_dir == "/" {
             VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
@@ -157,6 +158,13 @@ async fn collect_archive_files(
 
         let meta = provider.stat(&full_vfs).await?;
         if meta.kind == FileKind::File {
+            if files.len() >= MAX_ARCHIVE_FILES {
+                return Err(SecurityError::PathTraversal(format!(
+                    "Archive file count exceeded limit ({})",
+                    MAX_ARCHIVE_FILES
+                ))
+                .into());
+            }
             files.push((rel.trim_start_matches('/').to_string(), full_vfs));
         } else if meta.kind == FileKind::Directory {
             let mut stack = vec![(rel.trim_start_matches('/').to_string(), full_vfs)];
@@ -164,6 +172,13 @@ async fn collect_archive_files(
                 let mut stream = provider.list_stream(&parent_vfs).await?;
                 while let Some(res) = stream.next().await {
                     let entry = res?;
+                    if files.len() >= MAX_ARCHIVE_FILES {
+                        return Err(SecurityError::PathTraversal(format!(
+                            "Archive file count exceeded limit ({})",
+                            MAX_ARCHIVE_FILES
+                        ))
+                        .into());
+                    }
                     let child_rel = if parent_rel.is_empty() {
                         entry.name.clone()
                     } else {
@@ -438,30 +453,41 @@ pub async fn compress_targz(
     {
         let file = std::fs::File::create(&temp_path)
             .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
-        let enc = GzEncoder::new(file, Compression::default());
-        let mut tar_builder = tar::Builder::new(enc);
+        let mut enc = GzEncoder::new(file, Compression::default());
 
         for (rel_path, full_vfs) in files_to_pack {
-            let mut reader = provider.read_stream(&full_vfs).await?;
-            let mut content = Vec::new();
-            reader.read_to_end(&mut content).await.map_err(|e| {
-                VfsError::IoError(format!("Failed to read file {}: {}", full_vfs.path, e))
-            })?;
+            let meta = provider.stat(&full_vfs).await?;
+            let reader = provider.read_stream(&full_vfs).await?;
 
             let mut header = tar::Header::new_gnu();
-            header.set_size(content.len() as u64);
+            header
+                .set_path(&rel_path)
+                .map_err(|e| VfsError::IoError(format!("Tar path error: {}", e)))?;
+            header.set_size(meta.size);
             header.set_mode(0o644);
             header.set_cksum();
 
-            tar_builder
-                .append_data(&mut header, &rel_path, Cursor::new(content))
-                .map_err(|e| VfsError::IoError(format!("Tar append error: {}", e)))?;
+            // 1. Write standard GNU Tar 512-byte header
+            enc.write_all(header.as_bytes())
+                .map_err(|e| VfsError::IoError(format!("Tar header write error: {}", e)))?;
+
+            // 2. Stream content in 64 KiB chunks directly into gzip encoder without buffering in RAM
+            let written = stream_async_to_sync_writer(reader, &mut enc).await?;
+
+            // 3. Write 512-byte block padding if required
+            let padding = (512 - (written % 512)) % 512;
+            if padding > 0 {
+                enc.write_all(&[0u8; 512][..padding as usize])
+                    .map_err(|e| VfsError::IoError(format!("Tar padding write error: {}", e)))?;
+            }
         }
 
-        tar_builder
-            .into_inner()
-            .map_err(|e| VfsError::IoError(format!("Tar finish error: {}", e)))?
-            .finish()
+        // 4. Write TAR end-of-archive marker (two 512-byte zero blocks)
+        enc.write_all(&[0u8; 1024])
+            .map_err(|e| VfsError::IoError(format!("Tar trailer write error: {}", e)))?;
+
+        // 5. Finalize Gzip compression stream
+        enc.finish()
             .map_err(|e| VfsError::IoError(format!("Gzip finish error: {}", e)))?;
     }
 

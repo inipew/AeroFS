@@ -36,7 +36,8 @@ export interface DirectoryListing {
   path: string;
   connection_id: string;
   entries: FileEntry[];
-  total_count: number;
+  total_count?: number;
+  has_more?: boolean;
   next_cursor?: string;
 }
 

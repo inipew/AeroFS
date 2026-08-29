@@ -249,6 +249,8 @@ async fn test_presign_upload_completion_endpoint() {
         &admin,
         "local",
         "/presigned_uploaded_file.bin",
+        Some(5),
+        None,
     )
     .await
     .unwrap();
@@ -258,7 +260,7 @@ async fn test_presign_upload_completion_endpoint() {
 
     // Non-existent path fails stat check
     let err_res =
-        FileService::complete_presigned_upload(&state, &admin, "local", "/non_existent_file.bin")
+        FileService::complete_presigned_upload(&state, &admin, "local", "/non_existent_file.bin", None, None)
             .await;
     assert!(err_res.is_err());
 }

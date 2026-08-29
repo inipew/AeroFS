@@ -62,7 +62,8 @@ pub struct DirectoryListing {
     pub path: String,
     pub connection_id: String,
     pub entries: Vec<FileEntry>,
-    pub total_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_count: Option<usize>,
     #[serde(default)]
     pub has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

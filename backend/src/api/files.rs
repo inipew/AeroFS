@@ -56,6 +56,8 @@ pub struct PathQuery {
 pub struct PresignRequest {
     pub path: String,
     pub expire_seconds: Option<u64>,
+    pub expected_size: Option<u64>,
+    pub expected_checksum: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -177,8 +179,15 @@ pub async fn presign_complete_upload(
     Path(connection_id): Path<String>,
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<FileMetadata>, AppError> {
-    let meta = FileService::complete_presigned_upload(&state, &user, &connection_id, &payload.path)
-        .await?;
+    let meta = FileService::complete_presigned_upload(
+        &state,
+        &user,
+        &connection_id,
+        &payload.path,
+        payload.expected_size,
+        payload.expected_checksum.as_deref(),
+    )
+    .await?;
 
     Ok(Json(meta))
 }
