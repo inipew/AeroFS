@@ -281,7 +281,7 @@ pub struct TransferManager {
     db: DbPool,
     max_concurrent_workers: Arc<AtomicUsize>,
     max_retry_attempts: Arc<AtomicUsize>,
-    worker_notify: Arc<tokio::sync::Notify>,
+    worker_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl TransferManager {
@@ -298,10 +298,11 @@ impl TransferManager {
             Arc::new(RwLock::new(HashMap::new()));
         let sequence_counter = Arc::new(AtomicU64::new(1));
         let event_history = Arc::new(RwLock::new(VecDeque::with_capacity(500)));
+        let clamped_workers = max_concurrent_workers.clamp(1, 64);
         let max_concurrent_workers_arc =
-            Arc::new(AtomicUsize::new(max_concurrent_workers.clamp(1, 64)));
+            Arc::new(AtomicUsize::new(clamped_workers));
         let max_retry_attempts_arc = Arc::new(AtomicUsize::new(3));
-        let worker_notify = Arc::new(tokio::sync::Notify::new());
+        let worker_semaphore = Arc::new(tokio::sync::Semaphore::new(clamped_workers));
 
         let jobs_clone = Arc::clone(&jobs);
         let cancel_tokens_clone = Arc::clone(&cancel_tokens);
@@ -335,24 +336,19 @@ impl TransferManager {
             }
         });
 
-        // 2. Multi-Worker Concurrent Transfer Scheduler (Dynamic bounded dispatcher)
+        // 2. Multi-Worker Concurrent Transfer Scheduler with native Tokio Semaphore
         let queue_rx_shared = Arc::new(Mutex::new(queue_rx));
-        let active_workers = Arc::new(AtomicUsize::new(0));
-        let max_workers_clone = Arc::clone(&max_concurrent_workers_arc);
         let retries_clone = Arc::clone(&max_retry_attempts_arc);
-        let worker_notify_clone = Arc::clone(&worker_notify);
+        let worker_semaphore_task = Arc::clone(&worker_semaphore);
 
         tokio::spawn(async move {
             let mut rx = queue_rx_shared.lock().await;
             while let Some(job_id) = rx.recv().await {
-                // Wait until active_workers < max_concurrent
-                while active_workers.load(Ordering::SeqCst)
-                    >= max_workers_clone.load(Ordering::SeqCst)
-                {
-                    worker_notify_clone.notified().await;
-                }
-
-                active_workers.fetch_add(1, Ordering::SeqCst);
+                // Acquire permit natively from semaphore
+                let permit = match worker_semaphore_task.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
 
                 let jobs_worker = Arc::clone(&jobs_clone);
                 let cancel_tokens_worker = Arc::clone(&cancel_tokens_clone);
@@ -361,11 +357,10 @@ impl TransferManager {
                 let seq_worker = Arc::clone(&sequence_counter_clone);
                 let hist_worker = Arc::clone(&event_history_clone);
                 let db_worker = db_clone.clone();
-                let active_workers_task = Arc::clone(&active_workers);
-                let notify_task = Arc::clone(&worker_notify_clone);
                 let retries_task = Arc::clone(&retries_clone);
 
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let cancel_token = {
                         let mut tokens = cancel_tokens_worker.write().await;
                         tokens
@@ -526,9 +521,6 @@ impl TransferManager {
 
                     // Clean up cancellation token
                     cancel_tokens_worker.write().await.remove(&job_id);
-
-                    active_workers_task.fetch_sub(1, Ordering::SeqCst);
-                    notify_task.notify_waiters();
                 });
             }
         });
@@ -543,17 +535,19 @@ impl TransferManager {
             db,
             max_concurrent_workers: max_concurrent_workers_arc,
             max_retry_attempts: max_retry_attempts_arc,
-            worker_notify,
+            worker_semaphore,
         }
     }
 
     /// Dynamically update transfer concurrency worker limit and max retry count without restart (P1 #16 & #17)
     pub fn update_limits(&self, max_concurrent: usize, max_retries: usize) {
-        self.max_concurrent_workers
-            .store(max_concurrent.clamp(1, 64), Ordering::SeqCst);
+        let clamped_workers = max_concurrent.clamp(1, 64);
+        let old_workers = self.max_concurrent_workers.swap(clamped_workers, Ordering::SeqCst);
+        if clamped_workers > old_workers {
+            self.worker_semaphore.add_permits(clamped_workers - old_workers);
+        }
         self.max_retry_attempts
             .store(max_retries.clamp(1, 10), Ordering::SeqCst);
-        self.worker_notify.notify_waiters();
     }
 
     pub fn set_max_concurrent_transfers(&self, max_concurrent: usize) {
@@ -1172,40 +1166,72 @@ impl TransferManager {
         let strategy = TransferPlanner::plan_transfer(job, &src_fs, &dst_fs, &src_vfs, &dst_vfs);
 
         match strategy {
-            TransferStrategy::NativeRename => match src_fs.rename(&src_vfs, &dst_vfs).await {
-                Ok(_) => {
-                    job.transferred_bytes = meta.size;
-                    job.total_bytes = meta.size;
-                    job.phase = TransferPhase::Completed;
-                    job.speed_bytes_per_sec = 0;
-                    job.eta_seconds = Some(0);
-                    job.updated_at = Utc::now();
-                    return Ok(());
+            TransferStrategy::NativeRename => {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
                 }
-                Err(e) => {
-                    tracing::warn!("Native rename fallback on same-connection move ({}), streaming copy+delete", e);
-                }
-            },
-            TransferStrategy::ServerSideCopy => match src_fs.copy(&src_vfs, &dst_vfs).await {
-                Ok(_) => {
-                    if job.transfer_type == TransferType::Move {
-                        src_fs.delete(&src_vfs).await.map_err(|e| {
-                            anyhow::anyhow!("Cleanup source failed during server-side move: {}", e)
-                        })?;
+                let rename_fut = src_fs.rename(&src_vfs, &dst_vfs);
+                let rename_res = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
                     }
-                    job.transferred_bytes = meta.size;
-                    job.total_bytes = meta.size;
-                    job.checksum = Some(meta.etag.clone());
-                    job.phase = TransferPhase::Completed;
-                    job.speed_bytes_per_sec = 0;
-                    job.eta_seconds = Some(0);
-                    job.updated_at = Utc::now();
-                    return Ok(());
+                    res = rename_fut => res,
+                };
+                match rename_res {
+                    Ok(_) => {
+                        if cancel_token.is_cancelled() {
+                            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                        }
+                        job.transferred_bytes = meta.size;
+                        job.total_bytes = meta.size;
+                        job.phase = TransferPhase::Completed;
+                        job.speed_bytes_per_sec = 0;
+                        job.eta_seconds = Some(0);
+                        job.updated_at = Utc::now();
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Native rename fallback on same-connection move ({}), streaming copy+delete", e);
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("Server-side copy fallback ({}), streaming data", e);
+            }
+            TransferStrategy::ServerSideCopy => {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow::anyhow!("Transfer cancelled by user"));
                 }
-            },
+                let copy_fut = src_fs.copy(&src_vfs, &dst_vfs);
+                let copy_res = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        let _ = dst_fs.delete(&dst_vfs).await;
+                        return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                    }
+                    res = copy_fut => res,
+                };
+                match copy_res {
+                    Ok(_) => {
+                        if cancel_token.is_cancelled() {
+                            let _ = dst_fs.delete(&dst_vfs).await;
+                            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                        }
+                        if job.transfer_type == TransferType::Move {
+                            src_fs.delete(&src_vfs).await.map_err(|e| {
+                                anyhow::anyhow!("Cleanup source failed during server-side move: {}", e)
+                            })?;
+                        }
+                        job.transferred_bytes = meta.size;
+                        job.total_bytes = meta.size;
+                        job.checksum = Some(meta.etag.clone());
+                        job.phase = TransferPhase::Completed;
+                        job.speed_bytes_per_sec = 0;
+                        job.eta_seconds = Some(0);
+                        job.updated_at = Utc::now();
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Server-side copy fallback ({}), streaming data", e);
+                    }
+                }
+            }
             TransferStrategy::Streaming => {}
         }
 

@@ -217,41 +217,45 @@
           @openArchiveViewer="handleOpenArchiveViewer"
         />
 
-        <!-- Dialogs & Modals -->
-        <CreateDialog />
-        <RenameDialog />
-        <DeleteDialog />
-        <UploadDialog />
-        <ConnectionDialog v-model="isConnDialogOpen" />
+        <!-- Dialogs & Modals (Lazy Loaded & Conditionally Mounted) -->
+        <CreateDialog v-if="uiStore.isCreateOpen" />
+        <RenameDialog v-if="uiStore.isRenameOpen" />
+        <DeleteDialog v-if="uiStore.isDeleteOpen" />
+        <UploadDialog v-if="uiStore.isUploadOpen" />
+        <ConnectionDialog v-if="isConnDialogOpen" v-model="isConnDialogOpen" />
         <ArchiveDialog
+          v-if="isArchiveDialogOpen"
           v-model="isArchiveDialogOpen"
           :connectionId="fileStore.currentConnectionId"
           :basePath="fileStore.currentPath"
           :selectedPaths="archiveSelectedPaths"
         />
         <ArchiveViewerModal
+          v-if="isArchiveViewerOpen"
           v-model="isArchiveViewerOpen"
           :connectionId="archiveViewerConnectionId"
           :archivePath="archiveViewerPath"
         />
-        <SearchModal v-model="isSearchDialogOpen" />
-        <SettingsModal v-model="isSettingsDialogOpen" />
-        <SharesModal v-model="isSharesDialogOpen" />
-        <TrashModal v-model="isTrashDialogOpen" />
-        <StarredModal v-model="isStarredDialogOpen" />
+        <SearchModal v-if="isSearchDialogOpen" v-model="isSearchDialogOpen" />
+        <SettingsModal v-if="isSettingsDialogOpen" v-model="isSettingsDialogOpen" />
+        <SharesModal v-if="isSharesDialogOpen" v-model="isSharesDialogOpen" />
+        <TrashModal v-if="isTrashDialogOpen" v-model="isTrashDialogOpen" />
+        <StarredModal v-if="isStarredDialogOpen" v-model="isStarredDialogOpen" />
         <PropertiesModal
+          v-if="isPropertiesDialogOpen"
           v-model="isPropertiesDialogOpen"
           :connectionId="propsTargetConnection"
           :path="propsTargetPath"
         />
         <CreateShareModal
+          v-if="isCreateShareDialogOpen"
           v-model="isCreateShareDialogOpen"
           :connectionId="shareTargetConnection"
           :path="shareTargetPath"
         />
-        <ConflictDialog />
-        <CodeEditorModal />
-        <MediaViewerModal />
+        <ConflictDialog v-if="transferStore.conflictState?.isOpen" />
+        <CodeEditorModal v-if="uiStore.isEditorOpen" />
+        <MediaViewerModal v-if="uiStore.isMediaViewerOpen" />
         <CommandPaletteModal
           @open-settings="isSettingsDialogOpen = true"
           @open-connection-dialog="isConnDialogOpen = true"
@@ -314,7 +318,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue';
 import FbIcon from './components/common/FbIcon.vue';
 import { useAuthStore } from './stores/authStore';
 import { useConnectionStore } from './stores/connectionStore';
@@ -328,30 +332,33 @@ import { PreviewResolver } from './services/previewResolver';
 import { getDynamicSettleDuration } from './motion/tokens';
 import type { FileEntry } from './types/vfs';
 
+// Core eager components
 import AppHeader from './components/layout/AppHeader.vue';
 import AppSidebar from './components/layout/AppSidebar.vue';
 import FilePanel from './components/browser/FilePanel.vue';
 import ContextMenu from './components/browser/ContextMenu.vue';
-import CommandPaletteModal from './components/dialogs/CommandPaletteModal.vue';
-import CreateDialog from './components/dialogs/CreateDialog.vue';
-import RenameDialog from './components/dialogs/RenameDialog.vue';
-import DeleteDialog from './components/dialogs/DeleteDialog.vue';
-import UploadDialog from './components/dialogs/UploadDialog.vue';
-import ConnectionDialog from './components/dialogs/ConnectionDialog.vue';
-import ArchiveDialog from './components/dialogs/ArchiveDialog.vue';
-import ArchiveViewerModal from './components/dialogs/ArchiveViewerModal.vue';
-import ConflictDialog from './components/dialogs/ConflictDialog.vue';
-import SearchModal from './components/dialogs/SearchModal.vue';
-import SettingsModal from './components/dialogs/SettingsModal.vue';
-import SharesModal from './components/dialogs/SharesModal.vue';
-import TrashModal from './components/dialogs/TrashModal.vue';
-import StarredModal from './components/dialogs/StarredModal.vue';
-import PropertiesModal from './components/dialogs/PropertiesModal.vue';
-import CreateShareModal from './components/dialogs/CreateShareModal.vue';
-import CodeEditorModal from './components/editor/CodeEditorModal.vue';
-import MediaViewerModal from './components/viewer/MediaViewerModal.vue';
-import TransferDrawer from './components/transfer/TransferDrawer.vue';
-import LoginModal from './components/auth/LoginModal.vue';
+
+// Async lazy-loaded dialogs & modals (Dynamic code splitting)
+const LoginModal = defineAsyncComponent(() => import('./components/auth/LoginModal.vue'));
+const CommandPaletteModal = defineAsyncComponent(() => import('./components/dialogs/CommandPaletteModal.vue'));
+const CreateDialog = defineAsyncComponent(() => import('./components/dialogs/CreateDialog.vue'));
+const RenameDialog = defineAsyncComponent(() => import('./components/dialogs/RenameDialog.vue'));
+const DeleteDialog = defineAsyncComponent(() => import('./components/dialogs/DeleteDialog.vue'));
+const UploadDialog = defineAsyncComponent(() => import('./components/dialogs/UploadDialog.vue'));
+const ConnectionDialog = defineAsyncComponent(() => import('./components/dialogs/ConnectionDialog.vue'));
+const ArchiveDialog = defineAsyncComponent(() => import('./components/dialogs/ArchiveDialog.vue'));
+const ArchiveViewerModal = defineAsyncComponent(() => import('./components/dialogs/ArchiveViewerModal.vue'));
+const ConflictDialog = defineAsyncComponent(() => import('./components/dialogs/ConflictDialog.vue'));
+const SearchModal = defineAsyncComponent(() => import('./components/dialogs/SearchModal.vue'));
+const SettingsModal = defineAsyncComponent(() => import('./components/dialogs/SettingsModal.vue'));
+const SharesModal = defineAsyncComponent(() => import('./components/dialogs/SharesModal.vue'));
+const TrashModal = defineAsyncComponent(() => import('./components/dialogs/TrashModal.vue'));
+const StarredModal = defineAsyncComponent(() => import('./components/dialogs/StarredModal.vue'));
+const PropertiesModal = defineAsyncComponent(() => import('./components/dialogs/PropertiesModal.vue'));
+const CreateShareModal = defineAsyncComponent(() => import('./components/dialogs/CreateShareModal.vue'));
+const CodeEditorModal = defineAsyncComponent(() => import('./components/editor/CodeEditorModal.vue'));
+const MediaViewerModal = defineAsyncComponent(() => import('./components/viewer/MediaViewerModal.vue'));
+const TransferDrawer = defineAsyncComponent(() => import('./components/transfer/TransferDrawer.vue'));
 
 const authStore = useAuthStore();
 const connStore = useConnectionStore();
