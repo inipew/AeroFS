@@ -114,13 +114,25 @@ impl AppRuntime {
         ShutdownReason::from_u8(self.shutdown_reason.load(Ordering::Acquire))
     }
 
-    pub fn request_shutdown(&self, reason: ShutdownReason) {
-        let reason_str = reason.as_str();
-        tracing::info!("runtime.shutdown_requested: reason={}", reason_str);
-        self.shutdown_reason
-            .store(reason as u8, Ordering::Release);
-        self.set_phase(RuntimePhase::ShuttingDown);
-        self.shutdown_token.cancel();
+    pub fn request_shutdown(&self, reason: ShutdownReason) -> bool {
+        // Atomic first-wins: only the first caller initiates shutdown and sets the canonical reason
+        if self
+            .shutdown_reason
+            .compare_exchange(0, reason as u8, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let reason_str = reason.as_str();
+            tracing::info!("runtime.shutdown_requested: reason={}", reason_str);
+            self.set_phase(RuntimePhase::ShuttingDown);
+            self.shutdown_token.cancel();
+            true
+        } else {
+            tracing::debug!(
+                "runtime.shutdown_requested ignored: already shutting down with reason={:?}",
+                self.shutdown_reason()
+            );
+            false
+        }
     }
 }
 

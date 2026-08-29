@@ -123,32 +123,31 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     let task_tracker = state.runtime.task_tracker.clone();
     let runtime = state.runtime.clone();
 
-    // Spawn signal listener that triggers request_shutdown(reason)
-    let runtime_signal = runtime.clone();
-    tokio::spawn(async move {
-        shutdown_signal(runtime_signal).await;
-    });
-
-    // Wait until shutdown is requested (either via signal or internal cancellation)
-    shutdown_token.cancelled().await;
-
-    // Single-owner Shutdown Coordinator begins
-    let shutdown_start_time = std::time::Instant::now();
-    let global_limit = std::time::Duration::from_secs(15);
-    let shutdown_reason = runtime
-        .shutdown_reason()
-        .map(|r| r.as_str())
-        .unwrap_or("internal");
-    tracing::info!(
-        "runtime.phase=draining: reason={} global_deadline=15s",
-        shutdown_reason
-    );
-
-    // Drain in-flight Axum requests with 15s deadline
+    // 1. Channel for hard deadline forced stop
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_start_time = std::sync::Arc::new(tokio::sync::Mutex::new(None::<std::time::Instant>));
+    let shutdown_start_time_clone = std::sync::Arc::clone(&shutdown_start_time);
     let force_token_clone = force_shutdown_token.clone();
+
+    // Spawn signal listener that triggers request_shutdown(reason) and starts 15s deadline
+    let runtime_signal = runtime.clone();
+    let shutdown_token_clone = shutdown_token.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(global_limit).await;
+        tokio::select! {
+            _ = shutdown_signal(runtime_signal.clone()) => {}
+            _ = shutdown_token_clone.cancelled() => {
+                // If cancelled directly/internally, ensure canonical reason and phase are recorded
+                runtime_signal.request_shutdown(ShutdownReason::Internal);
+            }
+        }
+
+        // Record start of shutdown and start 15s global hard deadline
+        {
+            let mut t = shutdown_start_time_clone.lock().await;
+            *t = Some(std::time::Instant::now());
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         force_token_clone.cancel();
         let _ = drain_tx.send(());
     });
@@ -160,6 +159,7 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         }
     };
 
+    // 2. Run Axum server continuously until shutdown is requested!
     tokio::select! {
         res = axum::serve(listener, app).with_graceful_shutdown(shutdown_fut) => {
             if let Err(e) = res {
@@ -171,11 +171,26 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // 3. Coordinator drains background tasks using entire remaining global 15s window
+    let elapsed = {
+        let t = shutdown_start_time.lock().await;
+        t.map(|start| start.elapsed()).unwrap_or_default()
+    };
+    let global_limit = std::time::Duration::from_secs(15);
+    let shutdown_reason = runtime
+        .shutdown_reason()
+        .map(|r| r.as_str())
+        .unwrap_or("internal");
+    tracing::info!(
+        "runtime.phase=draining: reason={} elapsed={:?}",
+        shutdown_reason,
+        elapsed
+    );
+
     // Drain all tracked background tasks strictly within remaining time of global 15s deadline
     task_tracker.close();
-    let elapsed = shutdown_start_time.elapsed();
     let remaining_time = global_limit.saturating_sub(elapsed);
-    let tracker_timeout = remaining_time.min(std::time::Duration::from_secs(5));
+    let tracker_timeout = remaining_time;
 
     if !tracker_timeout.is_zero() {
         if (tokio::time::timeout(tracker_timeout, task_tracker.wait()).await).is_err() {

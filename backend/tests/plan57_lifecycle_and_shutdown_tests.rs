@@ -347,4 +347,64 @@ async fn test_shutdown_reason_and_single_owner_coordinator() {
     assert!(state.runtime.shutdown_token.is_cancelled());
 }
 
+#[tokio::test]
+async fn test_first_shutdown_reason_wins_compare_exchange() {
+    use backend::state::{RuntimePhase, ShutdownReason};
+
+    let (state, _temp) = setup_test_context().await;
+
+    // First request: CtrlC -> must succeed
+    let first = state.runtime.request_shutdown(ShutdownReason::CtrlC);
+    assert!(first, "First shutdown request must return true");
+    assert_eq!(state.runtime.shutdown_reason(), Some(ShutdownReason::CtrlC));
+    assert_eq!(state.runtime.phase(), RuntimePhase::ShuttingDown);
+
+    // Second request: Sigterm -> must be ignored (first wins)
+    let second = state.runtime.request_shutdown(ShutdownReason::Sigterm);
+    assert!(!second, "Subsequent shutdown request must return false");
+    assert_eq!(
+        state.runtime.shutdown_reason(),
+        Some(ShutdownReason::CtrlC),
+        "Initial reason must be preserved"
+    );
+
+    // Third request: Internal -> must also be ignored
+    let third = state.runtime.request_shutdown(ShutdownReason::Internal);
+    assert!(!third);
+    assert_eq!(
+        state.runtime.shutdown_reason(),
+        Some(ShutdownReason::CtrlC)
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_guard_rejects_new_websocket_during_shutdown() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use backend::state::RuntimePhase;
+    use tower::ServiceExt;
+
+    let (state, _temp) = setup_test_context().await;
+    let app = create_router(state.clone());
+
+    // Transition to ShuttingDown phase
+    state.runtime.set_phase(RuntimePhase::ShuttingDown);
+
+    // Attempting to initiate a new WebSocket connection during shutdown drain must be rejected with 503
+    let ws_req = Request::builder()
+        .uri("/api/v1/ws")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(ws_req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "New WebSocket connection attempts during shutdown drain must be rejected with 503"
+    );
+    assert_eq!(resp.headers().get("Retry-After").unwrap(), "5");
+}
+
+
 

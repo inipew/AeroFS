@@ -48,8 +48,9 @@ async fn shutdown_guard(
         let method = req.method().clone();
         let path = req.uri().path();
 
-        // Safe read-only methods are always allowed
-        let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+        // Safe read-only methods are allowed during shutdown drain, EXCEPT new WebSocket upgrades
+        let is_ws_upgrade = path == "/api/v1/ws";
+        let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) && !is_ws_upgrade;
 
         // Allowed mutation endpoints during shutdown drain:
         // 1. POST /api/v1/transfers/{id}/cancel (allows canceling in-flight jobs)
