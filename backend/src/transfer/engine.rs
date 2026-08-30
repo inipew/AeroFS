@@ -354,8 +354,61 @@ impl TransferManager {
 
     /// Transitional accessor for manager-owned cancellation token (P0).
     /// Returns cloned token to avoid borrow coupling. Executor must not create its own token.
-    pub fn cancel_token(&self, job_id: &str) -> Option<CancellationToken> {
+    pub(crate) fn cancel_token(&self, job_id: &str) -> Option<CancellationToken> {
         self.cancel_tokens.try_read().ok()?.get(job_id).cloned()
+    }
+
+    /// Atomically try to enter Finalizing phase (Opsi X).
+    /// Returns Ok(true) if successfully transitioned to Finalizing and executor may rename;
+    /// Ok(false) if already cancelled / too late (Finalizing/Verifying/Completed) — executor must not rename.
+    /// All checks happen under single `jobs.write()` critical section (token + phase + status).
+    pub(crate) async fn try_enter_finalizing(&self, job_id: &str) -> Result<bool, crate::errors::AppError> {
+        use crate::transfer::{TransferPhase, TransferStatus};
+        // Check token without holding jobs lock to avoid deadlock, but re-check inside lock
+        let token_cancelled_early = self
+            .cancel_tokens
+            .try_read()
+            .ok()
+            .and_then(|m| m.get(job_id).map(|t| t.is_cancelled()))
+            .unwrap_or(false);
+        let mut map = self.jobs.write().await;
+        let job = map.get_mut(job_id).ok_or_else(|| {
+            crate::errors::AppError::NotFound(format!("Transfer job '{}' not found", job_id))
+        })?;
+        // Re-check token inside lock (closed race)
+        let token_cancelled = token_cancelled_early
+            || self
+                .cancel_tokens
+                .try_read()
+                .ok()
+                .and_then(|m| m.get(job_id).map(|t| t.is_cancelled()))
+                .unwrap_or(false);
+        if token_cancelled
+            || job.status == TransferStatus::Cancelled
+            || job.status == TransferStatus::CancellationRequested
+        {
+            return Ok(false);
+        }
+        if matches!(
+            job.phase,
+            TransferPhase::Finalizing | TransferPhase::Verifying | TransferPhase::Completed
+        ) {
+            return Ok(false);
+        }
+        if job.status != TransferStatus::Running {
+            return Ok(false);
+        }
+        job.phase = TransferPhase::Finalizing;
+        job.updated_at = chrono::Utc::now();
+        let job_clone = job.clone();
+        drop(map);
+        // Persist phase transition and emit event (best-effort)
+        let _ = Self::save_job_to_db(&self.db, &job_clone).await;
+        let _ = self
+            .event_journal
+            .append(crate::events::DomainEvent::transfer_progress(&job_clone), Some(job_id))
+            .await;
+        Ok(true)
     }
 
     /// Dynamically update transfer concurrency worker limit and max retry count without restart (P1 #16 & #17)
@@ -676,6 +729,16 @@ impl TransferManager {
                             )
                         }
                     }
+                }
+
+                // Opsi X: Finalizing is hard cancellation boundary — too late
+                if matches!(
+                    job.phase,
+                    crate::transfer::TransferPhase::Finalizing
+                        | crate::transfer::TransferPhase::Verifying
+                        | crate::transfer::TransferPhase::Completed
+                ) {
+                    return Ok(false);
                 }
 
                 let token = self.cancel_tokens.read().await.get(id).cloned();

@@ -98,15 +98,18 @@ impl UploadApplicationService {
             .await;
         let job_id = job.id.clone();
 
-        // 3b. Fetch manager-owned cancellation token (P0) — clone, never create new
+        // 3b. Fetch manager-owned cancellation token (P0) — clone, never create fallback
         let cancel_token = state
             .transfer_manager
             .cancel_token(&job_id)
-            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            .ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "Transfer cancellation token missing for job {}",
+                    job_id
+                ))
+            })?;
         // Race guard: cancel fired between create and executor start → abort with no commit
         if cancel_token.is_cancelled() {
-            // No staging file yet, but ensure job lifecycle respects cancellation
-            // Let cancel_job's status win; convert to cancelled error without overwriting with Failed
             return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled before start")));
         }
 
@@ -139,20 +142,18 @@ impl UploadApplicationService {
         )
         .await;
 
-        // 6. Cancellation-aware completion: if token is cancelled, do NOT overwrite Cancelled with Failed
-        let is_cancelled = cancel_token.is_cancelled()
-            || exec_result
+        // 6. Cancellation-aware completion: Opsi X — once Finalizing, commit wins even if token cancelled (too late)
+        let is_cancelled = exec_result
                 .as_ref()
                 .err()
                 .map(|e| e.to_string().contains("cancelled"))
-                .unwrap_or(false);
+                .unwrap_or(false)
+            || cancel_token.is_cancelled()
+                && exec_result.is_err();
         match exec_result {
             Ok(_) => {
-                // Check cancelled again before commit (handles cancel during last bytes)
-                if is_cancelled {
-                    // Executor already cleaned staging; ensure no commit happened
-                    return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
-                }
+                // Executor returned Ok → it successfully entered Finalizing and committed (rename succeeded)
+                // Even if token got cancelled during rename, Opsi X says VFS commit wins → Completed
                 // Post-success: cache invalidation (application concern, not transfer executor)
                 state
                     .metadata_cache
