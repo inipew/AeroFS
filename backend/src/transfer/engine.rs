@@ -725,6 +725,7 @@ impl TransferManager {
 
     /// Create an inline Upload transfer job owned by TransferEngine (Upload-as-Transfer).
     /// Does NOT queue — caller executes inline and must call `complete_inline_job` / `fail_inline_job`.
+    /// Prefer `create_inline_upload_job_with_plan` (single source of truth via TransferPlan).
     pub async fn create_inline_upload_job(
         &self,
         user_id: Option<String>,
@@ -771,6 +772,33 @@ impl TransferManager {
         let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
         let _ = Self::save_job_to_db(&self.db, &job).await;
         job
+    }
+
+    /// Create inline upload job from a unified TransferPlan (P0 single source of truth).
+    pub async fn create_inline_upload_job_with_plan(
+        &self,
+        user_id: Option<String>,
+        name: String,
+        dest_connection_id: String,
+        dest_path: String,
+        total_bytes: Option<u64>,
+        plan: crate::transfer::plan::TransferPlan,
+    ) -> TransferJob {
+        self.create_inline_upload_job(
+            user_id,
+            name,
+            dest_connection_id,
+            dest_path,
+            total_bytes,
+            plan.staging,
+            plan.execution_mode,
+        )
+        .await
+    }
+
+    /// Helper: canonical staging target for an upload job (unified naming).
+    pub fn upload_staging_target(&self, target: &crate::domain::VfsPath, job_id: &str, plan: &crate::transfer::plan::TransferPlan) -> Option<crate::domain::VfsPath> {
+        plan.staging_path(target, job_id)
     }
 
     pub async fn update_inline_progress(&self, job_id: &str, transferred: u64, total: u64, speed: u64, eta: Option<u64>) {
@@ -1877,26 +1905,19 @@ impl TransferManager {
             let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
         }
 
-        // 2. Determine target path (use staging .part file ONLY if destination supports atomic rename)
-        let use_staging = dst_fs.capabilities().atomic_rename;
-        let parent = std::path::Path::new(&dst_vfs.path)
-            .parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or("");
-        let filename = std::path::Path::new(&dst_vfs.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
-        let staging_path = if parent.is_empty() || parent == "/" {
-            format!("/.{}.aerofs-part-{}", filename, job.id)
-        } else {
-            format!(
-                "{}/.{}.aerofs-part-{}",
-                parent.trim_end_matches('/'),
-                filename,
-                job.id
-            )
-        };
+        // 2. Determine staging via TransferPlan / job.staging (single source of truth).
+        // Engine must NOT re-decide via capabilities; job.staging comes from TransferPlanner::plan_upload.
+        let use_staging = matches!(job.staging, crate::transfer::TransferStaging::LocalTemp);
+        // Canonical staging path via TransferPlan helper — unified naming `.<filename>.aerofs-part-<job_id>`
+        let staging_path = crate::transfer::plan::TransferPlan {
+            execution_mode: job.execution_mode,
+            staging: job.staging,
+            commit: crate::domain::CommitSemantics::AtomicRename,
+            use_staging_file: use_staging,
+        }
+        .staging_path(&dst_vfs, &job.id)
+        .map(|v| v.path)
+        .unwrap_or_default();
         let write_target_vfs = if use_staging {
             VfsPath::new(&job.destination_connection_id, staging_path.clone())?
         } else {

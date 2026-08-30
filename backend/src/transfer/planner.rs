@@ -1,4 +1,6 @@
 use crate::domain::VfsPath;
+use crate::domain::{Capabilities, CommitSemantics, WriteStrategy};
+use crate::transfer::plan::TransferPlan;
 use crate::transfer::{TransferExecutionMode, TransferJob, TransferStaging, TransferType};
 use crate::vfs::FileSystem;
 use std::sync::Arc;
@@ -56,6 +58,43 @@ impl TransferPlanner {
         match total_bytes {
             Some(n) if n > inline_threshold => TransferExecutionMode::Resumable,
             _ => TransferExecutionMode::Inline,
+        }
+    }
+
+    /// Unified planner: capabilities + size → TransferPlan (single source of truth).
+    /// Replaces separate calls to `upload_staging` + `upload_execution_mode` + `WriteStrategy::select`.
+    /// Engine must execute this plan without re-deciding via capabilities.
+    pub fn plan_upload(
+        capabilities: &Capabilities,
+        total_hint: Option<u64>,
+        inline_threshold: u64,
+        target_exists: bool,
+    ) -> TransferPlan {
+        let staging = Self::upload_staging(capabilities);
+        // For current HTTP multipart we always run Inline (stream is ephemeral).
+        // Resumable is reserved for future chunked/resumable endpoint.
+        let execution_mode_raw = Self::upload_execution_mode(total_hint, inline_threshold);
+        let execution_mode = match execution_mode_raw {
+            TransferExecutionMode::Resumable => TransferExecutionMode::Inline,
+            m => m,
+        };
+        let write_strategy = WriteStrategy::select(capabilities, target_exists);
+        let use_staging_file = matches!(write_strategy.semantics, CommitSemantics::AtomicRename);
+        // ProviderTemp (atomic_write without rename) does not need a .part file — direct atomic put.
+        let effective_staging = if use_staging_file {
+            staging
+        } else if staging == TransferStaging::LocalTemp {
+            // Capabilities say atomic_rename but WriteStrategy says Direct — reconcile to None
+            // This happens only if we mis-aligned; prefer WriteStrategy decision.
+            TransferStaging::None
+        } else {
+            staging
+        };
+        TransferPlan {
+            execution_mode,
+            staging: effective_staging,
+            commit: write_strategy.semantics,
+            use_staging_file,
         }
     }
 }

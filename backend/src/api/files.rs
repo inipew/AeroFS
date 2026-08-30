@@ -552,7 +552,8 @@ pub async fn copy_entry(
 
 /// Streaming multipart upload — now owned by TransferEngine (Upload-as-Transfer)
 /// Wire contract unchanged: POST /connections/{id}/files/upload -> {success,message}
-/// Internally: UploadApplicationService → TransferJob (Upload/Inline) → VFS with staging as impl detail
+/// Internally: HTTP handler (thin) → UploadApplicationService::execute_inline_stream → TransferEngine → VFS
+/// Handler no longer knows staging/duplex/write_stream/rename — all via TransferPlan + service.
 pub async fn upload_file(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -566,6 +567,7 @@ pub async fn upload_file(
 
     let mut dest_dir = "/".to_string();
     let mut uploaded_files = Vec::new();
+    let max_upload_bytes = state.config.limits.max_upload_size;
 
     while let Some(mut field) = multipart
         .next_field()
@@ -586,167 +588,22 @@ pub async fn upload_file(
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
 
-            let _upload_guard = state
-                .upload_locks
-                .try_acquire(&connection_id, &target_path.path)
-                .await?;
-
-            // Transfer staging as implementation detail — selected via capabilities
-            let staging = crate::application::UploadApplicationService::select_staging(&provider.capabilities());
-            let use_staging = matches!(staging, crate::transfer::TransferStaging::LocalTemp | crate::transfer::TransferStaging::ProviderTemp);
-            // WriteStrategy still used for safe_overwrite semantics fallback
-            let target_exists = provider.stat(&target_path).await.is_ok();
-            let _strategy = crate::domain::WriteStrategy::select(&provider.capabilities(), target_exists);
-
-            let write_target = if use_staging {
-                VfsPath::new(&connection_id, format!("{}.aerofs.part", target_path.path))?
-            } else {
-                target_path.clone()
-            };
-
-            let target_perms = crate::domain::resolve_destination_permissions(
-                &provider,
-                &target_path,
-                false,
-                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
-            )
-            .await;
-
-            if connection_id == "local" {
-                if let Some(free_bytes) =
-                    get_available_disk_space(&state.config.filesystem.default_local_root)
-                {
-                    if free_bytes < 10 * 1024 * 1024 {
-                        return Err(AppError::InsufficientStorage(format!(
-                            "Local filesystem storage full: only {} MB free",
-                            free_bytes / (1024 * 1024)
-                        )));
-                    }
-                }
-            }
-
-            // Create TransferJob owned by TransferEngine — visible in Drawer, WS progress, audit, retry
-            let upload_job = crate::application::UploadApplicationService::begin_inline_upload(
+            // Delegate full lifecycle to UploadApplicationService (thin handler).
+            // Total hint is None for multipart without Content-Length; progress uses indeterminate (total=0).
+            let uploaded_path = crate::application::UploadApplicationService::execute_inline_stream(
                 &state,
-                Some(user.id.clone()),
+                &user.id,
                 &connection_id,
-                &target_path.path,
+                &provider,
+                target_path,
                 &clean_name,
                 None,
+                max_upload_bytes,
+                &mut field,
             )
             .await?;
 
-            let cancel_token = tokio_util::sync::CancellationToken::new();
-            let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
-            let write_handle = tokio::spawn({
-                let provider = provider.clone();
-                let write_target = write_target.clone();
-                let cancel_token = cancel_token.clone();
-                async move {
-                    tokio::select! {
-                        res = provider.write_stream(&write_target, Box::new(duplex_reader)) => res,
-                        _ = cancel_token.cancelled() => Err(VfsError::IoError("Upload cancelled by client".into())),
-                    }
-                }
-            });
-
-            use tokio::io::AsyncWriteExt;
-            let max_upload_bytes = state.config.limits.max_upload_size;
-            let mut uploaded_bytes = 0u64;
-            let mut stream_err: Option<AppError> = None;
-            let start_time = std::time::Instant::now();
-            let mut last_emit = std::time::Instant::now();
-            let job_id = upload_job.id.clone();
-
-            while let Some(chunk) = match field.chunk().await {
-                Ok(c) => c,
-                Err(e) => {
-                    stream_err = Some(AppError::BadRequest(format!("Upload stream error: {}", e)));
-                    None
-                }
-            } {
-                uploaded_bytes += chunk.len() as u64;
-                if uploaded_bytes > max_upload_bytes {
-                    stream_err = Some(AppError::PayloadTooLarge(format!(
-                        "Uploaded file exceeded maximum upload size limit of {} bytes",
-                        max_upload_bytes
-                    )));
-                    break;
-                }
-                if let Err(e) = duplex_writer.write_all(&chunk).await {
-                    stream_err = Some(AppError::Internal(anyhow::anyhow!(
-                        "Failed writing upload chunk: {}",
-                        e
-                    )));
-                    break;
-                }
-                // Progress every 100ms — Transfer semantics
-                if last_emit.elapsed().as_millis() >= 100 {
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let speed = if elapsed > 0.05 { (uploaded_bytes as f64 / elapsed) as u64 } else { 0 };
-                    state.transfer_manager.update_inline_progress(&job_id, uploaded_bytes, uploaded_bytes, speed, None).await;
-                    last_emit = std::time::Instant::now();
-                }
-            }
-            drop(duplex_writer);
-
-            if let Some(err) = stream_err {
-                cancel_token.cancel();
-                let _ = write_handle.await;
-                if use_staging || !target_exists {
-                    let _ = provider.delete(&write_target).await;
-                }
-                state.transfer_manager.fail_inline_job(&job_id, err.to_string()).await;
-                return Err(err);
-            }
-
-            let write_res = write_handle.await.map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e))
-            })?;
-
-            if let Err(e) = write_res {
-                if use_staging || !target_exists {
-                    let _ = provider.delete(&write_target).await;
-                }
-                let msg = e.to_string();
-                state.transfer_manager.fail_inline_job(&job_id, msg.clone()).await;
-                return Err(AppError::from(e));
-            }
-
-            if use_staging {
-                if let Err(rename_err) = provider.rename(&write_target, &target_path).await {
-                    let _ = provider.delete(&write_target).await;
-                    let msg = format!("Failed to promote staging file to final destination '{}': {}", target_path.path, rename_err);
-                    state.transfer_manager.fail_inline_job(&job_id, msg.clone()).await;
-                    return Err(AppError::Internal(anyhow::anyhow!(msg)));
-                }
-            }
-
-            if let Some(ref perms) = target_perms {
-                let _ = provider.set_permissions(&target_path, perms).await;
-            }
-
-            state
-                .metadata_cache
-                .invalidate(&connection_id, &target_path.path)
-                .await;
-
-            crate::auth::record_audit_log(
-                &state.db,
-                Some(&user.id),
-                "FILE_UPLOAD",
-                Some(&connection_id),
-                Some(&target_path.path),
-                "SUCCESS",
-                None,
-                Some(&format!("Uploaded: {} via Transfer {}", target_path.path, job_id)),
-            )
-            .await;
-
-            // Mark Transfer completed — broadcasts file_change + transfer_completed + completion channel
-            state.transfer_manager.complete_inline_job(&job_id, None).await;
-
-            uploaded_files.push(target_path.path);
+            uploaded_files.push(uploaded_path);
         }
     }
 
