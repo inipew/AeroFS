@@ -2,10 +2,13 @@ use super::planner::{TransferPlanner, TransferStrategy};
 use crate::db::DbPool;
 use crate::domain::VfsPath;
 pub use crate::events::EventEnvelope;
+pub use crate::transfer::model::{
+    TransferExecutionMode, TransferJob, TransferPhase, TransferStaging, TransferStatus,
+    TransferType,
+};
 use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
 use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::collections::HashMap;
@@ -15,267 +18,10 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 pub type WsEvent = DomainEvent;
 pub type ReplayResult = ReplayOutcome;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferType {
-    Copy,
-    Move,
-    Upload,
-    Sync,
-}
-
-impl TransferType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TransferType::Copy => "copy",
-            TransferType::Move => "move",
-            TransferType::Upload => "upload",
-            TransferType::Sync => "sync",
-        }
-    }
-
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "move" => TransferType::Move,
-            "upload" => TransferType::Upload,
-            "sync" => TransferType::Sync,
-            _ => TransferType::Copy,
-        }
-    }
-}
-
-impl std::str::FromStr for TransferType {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(TransferType::from_str(s))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferStatus {
-    Queued,
-    Running,
-    CancellationRequested,
-    Cancelled,
-    Interrupted,
-    Completed,
-    Failed,
-}
-
-impl TransferStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TransferStatus::Queued => "queued",
-            TransferStatus::Running => "running",
-            TransferStatus::CancellationRequested => "cancellation_requested",
-            TransferStatus::Cancelled => "cancelled",
-            TransferStatus::Interrupted => "interrupted",
-            TransferStatus::Completed => "completed",
-            TransferStatus::Failed => "failed",
-        }
-    }
-
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "running" => TransferStatus::Running,
-            "cancellation_requested" => TransferStatus::CancellationRequested,
-            "cancelled" => TransferStatus::Cancelled,
-            "interrupted" => TransferStatus::Interrupted,
-            "completed" => TransferStatus::Completed,
-            "failed" => TransferStatus::Failed,
-            _ => TransferStatus::Queued,
-        }
-    }
-}
-
-impl std::str::FromStr for TransferStatus {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(TransferStatus::from_str(s))
-    }
-}
-
-impl TransferStatus {
-    pub fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Failed | Self::Cancelled | Self::Interrupted
-        )
-    }
-    pub fn is_active(self) -> bool {
-        matches!(
-            self,
-            Self::Queued | Self::Running | Self::CancellationRequested
-        )
-    }
-    pub fn can_transition_to(self, next: Self) -> bool {
-        match (self, next) {
-            (Self::Queued, Self::Running)
-            | (Self::Queued, Self::Cancelled)
-            | (Self::Running, Self::CancellationRequested)
-            | (Self::Running, Self::Completed)
-            | (Self::Running, Self::Failed)
-            | (Self::Running, Self::Interrupted)
-            | (Self::CancellationRequested, Self::Cancelled)
-            | (Self::Interrupted, Self::Queued)
-            | (Self::Failed, Self::Queued) => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferPhase {
-    Preparing,
-    Transferring,
-    Finalizing,
-    Verifying,
-    CleaningUp,
-    Completed,
-}
-
-impl TransferPhase {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TransferPhase::Preparing => "preparing",
-            TransferPhase::Transferring => "transferring",
-            TransferPhase::Finalizing => "finalizing",
-            TransferPhase::Verifying => "verifying",
-            TransferPhase::CleaningUp => "cleaning_up",
-            TransferPhase::Completed => "completed",
-        }
-    }
-
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "transferring" => TransferPhase::Transferring,
-            "finalizing" => TransferPhase::Finalizing,
-            "verifying" => TransferPhase::Verifying,
-            "cleaning_up" => TransferPhase::CleaningUp,
-            "completed" => TransferPhase::Completed,
-            _ => TransferPhase::Preparing,
-        }
-    }
-}
-
-impl std::str::FromStr for TransferPhase {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(TransferPhase::from_str(s))
-    }
-}
-
-/// Execution mode for a transfer — Inline vs Background vs Resumable (§Upload-as-Transfer)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferExecutionMode {
-    #[default]
-    Inline,
-    Background,
-    Resumable,
-}
-
-impl TransferExecutionMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Inline => "inline",
-            Self::Background => "background",
-            Self::Resumable => "resumable",
-        }
-    }
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "background" => Self::Background,
-            "resumable" => Self::Resumable,
-            _ => Self::Inline,
-        }
-    }
-}
-impl std::str::FromStr for TransferExecutionMode {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from_str(s))
-    }
-}
-
-/// Staging strategy — implementation detail of TransferEngine, not a separate subsystem
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TransferStaging {
-    #[default]
-    None,
-    LocalTemp,
-    ProviderTemp,
-}
-
-impl TransferStaging {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::LocalTemp => "local_temp",
-            Self::ProviderTemp => "provider_temp",
-        }
-    }
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "local_temp" => Self::LocalTemp,
-            "provider_temp" => Self::ProviderTemp,
-            _ => Self::None,
-        }
-    }
-}
-impl std::str::FromStr for TransferStaging {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from_str(s))
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct TransferJob {
-    pub id: String,
-    pub user_id: Option<String>,
-    pub name: String,
-    pub transfer_type: TransferType,
-    pub source_connection_id: String,
-    pub source_path: String,
-    pub destination_connection_id: String,
-    pub destination_path: String,
-    pub status: TransferStatus,
-    pub phase: TransferPhase,
-    /// Execution mode — Inline (sync HTTP), Background (queued), Resumable (checkpointed)
-    #[serde(default)]
-    pub execution_mode: TransferExecutionMode,
-    /// Staging strategy — implementation detail of TransferEngine
-    #[serde(default)]
-    pub staging: TransferStaging,
-    pub transferred_bytes: u64,
-    pub total_bytes: u64,
-    pub speed_bytes_per_sec: u64,
-    pub eta_seconds: Option<u64>,
-    pub checksum: Option<String>,
-    pub error_message: Option<String>,
-    pub dismissed_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
 
 
 #[derive(Clone)]
@@ -1907,17 +1653,22 @@ impl TransferManager {
 
         // 2. Determine staging via TransferPlan / job.staging (single source of truth).
         // Engine must NOT re-decide via capabilities; job.staging comes from TransferPlanner::plan_upload.
-        let use_staging = matches!(job.staging, crate::transfer::TransferStaging::LocalTemp);
-        // Canonical staging path via TransferPlan helper — unified naming `.<filename>.aerofs-part-<job_id>`
-        let staging_path = crate::transfer::plan::TransferPlan {
+        let tmp_plan = crate::transfer::plan::TransferPlan {
             execution_mode: job.execution_mode,
             staging: job.staging,
-            commit: crate::domain::CommitSemantics::AtomicRename,
-            use_staging_file: use_staging,
-        }
-        .staging_path(&dst_vfs, &job.id)
-        .map(|v| v.path)
-        .unwrap_or_default();
+            commit: if job.staging == crate::transfer::TransferStaging::LocalTemp {
+                crate::domain::CommitSemantics::AtomicRename
+            } else if job.staging == crate::transfer::TransferStaging::ProviderTemp {
+                crate::domain::CommitSemantics::AtomicObjectPut
+            } else {
+                crate::domain::CommitSemantics::DirectWrite
+            },
+        };
+        let use_staging = tmp_plan.uses_staging();
+        let staging_path = tmp_plan
+            .staging_path(&dst_vfs, &job.id)
+            .map(|v| v.path)
+            .unwrap_or_default();
         let write_target_vfs = if use_staging {
             VfsPath::new(&job.destination_connection_id, staging_path.clone())?
         } else {

@@ -60,32 +60,49 @@ impl TransferPlanner {
             _ => TransferExecutionMode::Inline,
         }
     }
+}
 
-    /// Unified planner: capabilities + size → TransferPlan (single source of truth).
+/// Upload constraints — transport capability for planner (honest domain model).
+/// `supports_resume` = false for current HTTP multipart (stream ephemeral).
+/// Resumable is reserved for future chunked/resumable endpoint.
+#[derive(Debug, Clone, Copy)]
+pub struct UploadConstraints {
+    pub total_hint: Option<u64>,
+    pub supports_resume: bool,
+}
+
+impl UploadConstraints {
+    pub fn inline(total_hint: Option<u64>) -> Self {
+        Self {
+            total_hint,
+            supports_resume: false,
+        }
+    }
+}
+
+impl TransferPlanner {
+    /// Unified planner: capabilities + constraints → TransferPlan (single source of truth).
     /// Replaces separate calls to `upload_staging` + `upload_execution_mode` + `WriteStrategy::select`.
     /// Engine must execute this plan without re-deciding via capabilities.
     pub fn plan_upload(
         capabilities: &Capabilities,
-        total_hint: Option<u64>,
+        constraints: UploadConstraints,
         inline_threshold: u64,
         target_exists: bool,
     ) -> TransferPlan {
         let staging = Self::upload_staging(capabilities);
-        // For current HTTP multipart we always run Inline (stream is ephemeral).
-        // Resumable is reserved for future chunked/resumable endpoint.
-        let execution_mode_raw = Self::upload_execution_mode(total_hint, inline_threshold);
-        let execution_mode = match execution_mode_raw {
-            TransferExecutionMode::Resumable => TransferExecutionMode::Inline,
-            m => m,
+        // Honest execution mode: only Resumable if transport supports it AND size exceeds threshold.
+        let execution_mode = if constraints.supports_resume {
+            Self::upload_execution_mode(constraints.total_hint, inline_threshold)
+        } else {
+            TransferExecutionMode::Inline
         };
         let write_strategy = WriteStrategy::select(capabilities, target_exists);
-        let use_staging_file = matches!(write_strategy.semantics, CommitSemantics::AtomicRename);
-        // ProviderTemp (atomic_write without rename) does not need a .part file — direct atomic put.
-        let effective_staging = if use_staging_file {
-            staging
-        } else if staging == TransferStaging::LocalTemp {
-            // Capabilities say atomic_rename but WriteStrategy says Direct — reconcile to None
-            // This happens only if we mis-aligned; prefer WriteStrategy decision.
+        // Validity of (staging, commit) is guarded here; uses_staging() is staging != None.
+        // If commit is not AtomicRename, staging file is not required — reconcile.
+        let effective_staging = if write_strategy.semantics != CommitSemantics::AtomicRename
+            && staging == TransferStaging::LocalTemp
+        {
             TransferStaging::None
         } else {
             staging
@@ -94,7 +111,21 @@ impl TransferPlanner {
             execution_mode,
             staging: effective_staging,
             commit: write_strategy.semantics,
-            use_staging_file,
         }
+    }
+
+    /// Legacy shim for callers still passing raw total_hint (multipart inline).
+    pub fn plan_upload_inline(
+        capabilities: &Capabilities,
+        total_hint: Option<u64>,
+        inline_threshold: u64,
+        target_exists: bool,
+    ) -> TransferPlan {
+        Self::plan_upload(
+            capabilities,
+            UploadConstraints::inline(total_hint),
+            inline_threshold,
+            target_exists,
+        )
     }
 }
