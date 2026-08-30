@@ -231,6 +231,8 @@ async fn test_transfer_visibility_and_interrupted_status() {
         transfer_type: TransferType::Copy,
         status: TransferStatus::Interrupted,
         phase: TransferPhase::Finalizing,
+        execution_mode: Default::default(),
+        staging: Default::default(),
         source_connection_id: "local".into(),
         source_path: "/source".into(),
         destination_connection_id: "remote_s3".into(),

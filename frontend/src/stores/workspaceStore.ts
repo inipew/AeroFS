@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed, reactive } from 'vue';
+import { ref, computed, reactive, watch } from 'vue';
 import { useQueryClient } from '@tanstack/vue-query';
 import { listFilesApi } from '../api/files';
 import { subscribeFileChanges } from '../services/fileChangeBus';
@@ -8,6 +8,9 @@ import { useTransferStore } from './transferStore';
 import { useUiStore } from './uiStore';
 import { normalizePath, parentPath } from '../utils/path';
 import { isAbortError, normalizeApiError } from '../utils/errorNormalizer';
+import { PanelSession } from '../workspace/panelSession';
+import { invalidationBus } from '../workspace/invalidationBus';
+import { useConnectionStore } from './connectionStore';
 import type { FileEntry } from '../types/vfs';
 import type {
   PanelId,
@@ -146,18 +149,22 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
 }
 
 export const useWorkspaceStore = defineStore('workspace', () => {
-  // Load persistent session from localStorage (Pure versioned session)
+  // Load persistent session from localStorage (Pure versioned session) + history per panel (Phase6 P2)
   let initialLayout: WorkspaceLayout = 'single';
   let initialSplitRatio = 0.5;
   let initialLeftConn = 'local';
   let initialLeftPath = '/';
   let initialLeftView: 'grid' | 'list' = 'grid';
   let initialLeftHidden = false;
+  let initialLeftHistory: string[] | undefined;
+  let initialLeftHistoryIndex: number | undefined;
 
   let initialRightConn = 'local';
   let initialRightPath = '/';
   let initialRightView: 'grid' | 'list' = 'grid';
   let initialRightHidden = false;
+  let initialRightHistory: string[] | undefined;
+  let initialRightHistoryIndex: number | undefined;
 
   try {
     const rawV1 = localStorage.getItem('fb:workspace_v1');
@@ -171,12 +178,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           initialLeftPath = parsed.left.path || '/';
           initialLeftView = parsed.left.viewMode || 'grid';
           initialLeftHidden = !!parsed.left.showHidden;
+          initialLeftHistory = parsed.left.history;
+          initialLeftHistoryIndex = parsed.left.historyIndex;
         }
         if (parsed.right) {
           initialRightConn = parsed.right.connectionId || 'local';
           initialRightPath = parsed.right.path || '/';
           initialRightView = parsed.right.viewMode || 'grid';
           initialRightHidden = !!parsed.right.showHidden;
+          initialRightHistory = parsed.right.history;
+          initialRightHistoryIndex = parsed.right.historyIndex;
         }
       }
     } else {
@@ -194,10 +205,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const leftPanel = ref<Panel>(createPanel('left', initialLeftConn, initialLeftPath));
   leftPanel.value.view.viewMode = initialLeftView;
   leftPanel.value.view.showHidden = initialLeftHidden;
+  if (initialLeftHistory && initialLeftHistory.length > 0) {
+    leftPanel.value.navigation.history = initialLeftHistory;
+    leftPanel.value.navigation.historyIndex = Math.min(initialLeftHistoryIndex ?? initialLeftHistory.length - 1, initialLeftHistory.length - 1);
+  }
 
   const rightPanel = ref<Panel>(createPanel('right', initialRightConn, initialRightPath));
   rightPanel.value.view.viewMode = initialRightView;
   rightPanel.value.view.showHidden = initialRightHidden;
+  if (initialRightHistory && initialRightHistory.length > 0) {
+    rightPanel.value.navigation.history = initialRightHistory;
+    rightPanel.value.navigation.historyIndex = Math.min(initialRightHistoryIndex ?? initialRightHistory.length - 1, initialRightHistory.length - 1);
+  }
 
   const layout = ref<WorkspaceLayout>(initialLayout);
   const activePanelId = ref<PanelId>('left');
@@ -207,11 +226,46 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const splitRatio = ref<number>(initialSplitRatio);
   const clipboard = ref<WorkspaceClipboard | null>(null);
 
-  // Request sequencing generation counters and AbortControllers to avoid race conditions
+  // PanelSession formalized lifecycle (66.md §2, §5) — per-panel generation + abort
+  const leftSession = new PanelSession('left', initialLeftConn, initialLeftPath);
+  const rightSession = new PanelSession('right', initialRightConn, initialRightPath);
+  function sessionFor(panelId: PanelId): PanelSession { return panelId === 'left' ? leftSession : rightSession; }
+
+  // Legacy globals kept for backward compat but now delegated to PanelSession
   let leftRequestGen = 0;
   let rightRequestGen = 0;
-  let leftAbortController: AbortController | null = null;
-  let rightAbortController: AbortController | null = null;
+  function syncSessionWithPanel(panelId: PanelId): void {
+    const p = getPanel(panelId);
+    const s = sessionFor(panelId);
+    s.connectionId = p.location.connectionId;
+    s.path = p.location.path;
+    s.entries = p.runtime.entries.slice();
+    s.status = p.runtime.status;
+    s.error = p.runtime.error;
+  }
+
+  // Offline snapshot cache (66.md §16) — preserve last successful listing per dir
+  function snapshotKey(connId: string, path: string): string {
+    return `fb:snapshot:${connId}::${normalizePath(path)}`;
+  }
+  function saveSnapshot(connId: string, path: string, entries: FileEntry[]): void {
+    try {
+      const key = snapshotKey(connId, path);
+      const payload = JSON.stringify({ t: Date.now(), entries: entries.slice(0, 200) });
+      localStorage.setItem(key, payload);
+    } catch {}
+  }
+  function loadSnapshot(connId: string, path: string): FileEntry[] | null {
+    try {
+      const raw = localStorage.getItem(snapshotKey(connId, path));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed.entries || !Array.isArray(parsed.entries)) return null;
+      // Expire after 7 days
+      if (Date.now() - (parsed.t || 0) > 7 * 24 * 3600 * 1000) return null;
+      return parsed.entries as FileEntry[];
+    } catch { return null; }
+  }
 
   const isDualPane = computed<boolean>({
     get: () => layout.value === 'split',
@@ -254,6 +308,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         showHidden: leftPanel.value.view.showHidden,
         sortField: leftPanel.value.view.sortField,
         sortOrder: leftPanel.value.view.sortOrder,
+        history: leftPanel.value.navigation.history.slice(0, 50),
+        historyIndex: leftPanel.value.navigation.historyIndex,
       },
       right: {
         connectionId: rightPanel.value.location.connectionId,
@@ -262,6 +318,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         showHidden: rightPanel.value.view.showHidden,
         sortField: rightPanel.value.view.sortField,
         sortOrder: rightPanel.value.view.sortOrder,
+        history: rightPanel.value.navigation.history.slice(0, 50),
+        historyIndex: rightPanel.value.navigation.historyIndex,
       },
     };
     localStorage.setItem('fb:workspace_v1', JSON.stringify(persisted));
@@ -292,22 +350,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function abortPanel(panelId: PanelId) {
+    const sess = sessionFor(panelId);
+    sess.bumpGeneration();
     if (panelId === 'left') {
-      if (leftAbortController) {
-        leftAbortController.abort();
-        leftAbortController = null;
-      }
-      leftRequestGen++;
+      leftRequestGen = sess.generation;
     } else {
-      if (rightAbortController) {
-        rightAbortController.abort();
-        rightAbortController = null;
-      }
-      rightRequestGen++;
+      rightRequestGen = sess.generation;
     }
   }
 
   function cancelPendingInvalidations() {
+    invalidationBus.cancel();
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
@@ -316,15 +369,36 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function closePanel(panelId: PanelId) {
+    // Formalized lifecycle: mark closed, bump generation, abort, clear selection, release memory (66.md §4)
+    const sess = sessionFor(panelId);
+    sess.markClosed();
+    const panel = getPanel(panelId);
+    panel.selection.paths = [];
+    panel.selection.focusedPath = undefined;
     cancelPendingInvalidations();
     abortPanel(panelId);
     if (panelId === 'left') {
+      // Promote right to left — also promote session state for continuity
+      const rightSess = sessionFor('right');
+      // Reset left session to reflect promoted right's location (new view)
+      leftSession.connectionId = rightPanel.value.location.connectionId;
+      leftSession.path = rightPanel.value.location.path;
+      leftSession.closed = false;
+      leftSession.status = rightSess.status;
+      leftSession.entries = rightSess.entries.slice();
       abortPanel('right');
-      // Promote right panel to single left panel without deep cloning
       const oldRight = rightPanel.value;
       oldRight.id = 'left';
       leftPanel.value = oldRight;
       rightPanel.value = createPanel('right', 'local', '/');
+      // Reset right session to fresh
+      rightSession.closed = false;
+      rightSession.generation = 0;
+      rightSession.entries = [];
+      rightSession.status = 'idle';
+    } else {
+      // closing right — just clear its session
+      sess.dispose();
     }
     layout.value = 'single';
     activePanelId.value = 'left';
@@ -334,11 +408,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function swapPanels() {
     const uiStore = useUiStore();
     if (uiStore.isMobile) {
-      // On mobile, swapping means switching active panel viewport focus via GPU translate3d
       setActivePanel(activePanelId.value === 'left' ? 'right' : 'left');
       return;
     }
-
     cancelPendingInvalidations();
     abortPanel('left');
     abortPanel('right');
@@ -348,6 +420,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     oldRight.id = 'left';
     leftPanel.value = oldRight;
     rightPanel.value = oldLeft;
+    // Swap session state to keep generation tied to slot (66.md §29 isolation)
+    const tmpConn = leftSession.connectionId;
+    const tmpPath = leftSession.path;
+    leftSession.connectionId = rightSession.connectionId;
+    leftSession.path = rightSession.path;
+    rightSession.connectionId = tmpConn;
+    rightSession.path = tmpPath;
+    // Swap entries/status for continuity
+    const tmpEntries = leftSession.entries.slice();
+    leftSession.entries = rightSession.entries.slice();
+    rightSession.entries = tmpEntries;
     activePanelId.value = activePanelId.value === 'left' ? 'right' : 'left';
     saveState();
   }
@@ -374,22 +457,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     targetPath?: string
   ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
+    const sess = sessionFor(panelId);
     const queryPath = targetPath !== undefined ? targetPath : p.location.path;
 
+    // Reload preserves snapshot — status refreshing keeps old entries visible (66.md §6)
     p.runtime.status = p.runtime.initialized ? 'refreshing' : 'loading';
+    sess.status = p.runtime.status;
     p.runtime.error = null;
 
-    const currentGen = panelId === 'left' ? ++leftRequestGen : ++rightRequestGen;
-
-    // Abort previous in-flight request for this panel
+    // PanelSession owns generation + abort (66.md §5) — legacy counters synced for compat
+    const { generation: currentGen, signal } = sess.newRequest();
     if (panelId === 'left') {
-      if (leftAbortController) leftAbortController.abort();
-      leftAbortController = new AbortController();
+      leftRequestGen = currentGen;
     } else {
-      if (rightAbortController) rightAbortController.abort();
-      rightAbortController = new AbortController();
+      rightRequestGen = currentGen;
     }
-    const signal = (panelId === 'left' ? leftAbortController! : rightAbortController!).signal;
+    syncSessionWithPanel(panelId);
 
     try {
       const data = await listFilesApi(p.location.connectionId, {
@@ -400,8 +483,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         signal,
       });
 
-      // Discard stale out-of-order response
+      // Discard stale out-of-order response (generation guard + closed panel guard 66.md §5, §21)
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
+        return { ok: false, error: 'Stale response discarded' };
+      }
+      if (sess.isStale(currentGen)) {
         return { ok: false, error: 'Stale response discarded' };
       }
 
@@ -423,6 +509,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.runtime.lastError = undefined;
       p.runtime.lastLoadedAt = Date.now();
       p.runtime.initialized = true;
+      try { saveSnapshot(p.location.connectionId, data.path, data.entries); } catch {}
       return { ok: true, path: data.path };
     } catch (err: unknown) {
       if (isAbortError(err)) {
@@ -431,7 +518,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
         return { ok: false, error: 'Stale response discarded', aborted: true } as any;
       }
+      if (sess.isStale(currentGen)) {
+        return { ok: false, error: 'Stale response discarded', aborted: true } as any;
+      }
       const norm = normalizeApiError(err);
+      // Offline cached snapshot fallback (66.md §22) — show last cached if available
+      if (p.runtime.entries.length === 0) {
+        const cached = loadSnapshot(p.location.connectionId, queryPath);
+        if (cached && cached.length > 0) {
+          p.runtime.entries = cached;
+          p.runtime.status = 'offline';
+          p.runtime.error = norm.message;
+          p.runtime.lastError = norm.message;
+          return { ok: false, error: norm.message };
+        }
+      }
       p.runtime.status = p.runtime.entries.length > 0 ? 'degraded' : 'error';
       p.runtime.error = norm.message;
       p.runtime.lastError = norm.message;
@@ -849,11 +950,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveState();
   }
 
-  // Realtime Smart Debounced Invalidation (Plan 58)
+  // Realtime Smart Debounced Invalidation via InvalidationBus (66.md §18-20 + Plan 58)
+  // Bus coalesces 150ms and ensures targeted panel refresh only
+  const busUnsub = invalidationBus.subscribe((connId, dPath) => {
+    try {
+      queryClient?.invalidateQueries({ queryKey: ['directory', connId, dPath] });
+      queryClient?.invalidateQueries({ queryKey: ['metadata', connId] });
+    } catch {}
+    if (leftPanel.value.location.connectionId === connId && normalizePath(leftPanel.value.location.path) === dPath) {
+      fetchPanelEntries('left');
+    }
+    if (isDualPane.value && rightPanel.value.location.connectionId === connId && normalizePath(rightPanel.value.location.path) === dPath) {
+      fetchPanelEntries('right');
+    }
+  });
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  const pendingInvalidations = new Set<string>(); // "connId::dirPath"
+  const pendingInvalidations = new Set<string>(); // "connId::dirPath" — legacy kept for cancelPendingInvalidations
 
   function queueDirectoryInvalidation(connectionId: string, dirPath: string) {
+    // Delegate coalescing to InvalidationBus (targeted, per-panel §20)
+    invalidationBus.queue(connectionId, normalizePath(dirPath));
+    // Keep legacy set for cancelPendingInvalidations compatibility
     pendingInvalidations.add(`${connectionId}::${normalizePath(dirPath)}`);
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -920,8 +1037,66 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     ]);
   });
 
+  // Connection orphan detection (66.md §24-25) — panel becomes orphaned if connection removed/disabled
+  const connStoreRef = useConnectionStore();
+  watch(
+    () => connStoreRef.connections.map((c: any) => c.id),
+    (ids: string[]) => {
+      (['left', 'right'] as PanelId[]).forEach((pid) => {
+        const p = getPanel(pid);
+        const exists = p.connectionId === 'local' || ids.includes(p.connectionId);
+        if (!exists && p.runtime.status !== 'orphaned') {
+          p.runtime.status = 'orphaned';
+          p.runtime.error = 'Connection unavailable';
+        } else if (exists && p.runtime.status === 'orphaned') {
+          p.runtime.status = 'idle';
+          fetchPanelEntries(pid);
+        }
+      });
+    },
+    { deep: false }
+  );
+
+  // Global keyboard shortcuts (66.md §30) — file-manager like
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      // F5 or Ctrl+R → refresh active panel (prevent browser reload on F5)
+      if (e.key === 'F5' || (e.ctrlKey && e.key.toLowerCase() === 'r' && !e.shiftKey)) {
+        e.preventDefault();
+        refreshActive();
+        return;
+      }
+      if (e.altKey && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        goBack(activePanelId.value);
+        return;
+      }
+      if (e.altKey && e.key === 'ArrowRight') {
+        e.preventDefault();
+        goForward(activePanelId.value);
+        return;
+      }
+      if (e.ctrlKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('aerofs:open-address-bar', { detail: { panelId: activePanelId.value } }));
+        return;
+      }
+      if (e.key === 'Escape') {
+        const p = activePanel.value;
+        if (p.selection.paths.length > 0) {
+          p.selection.paths = [];
+        } else if (p.runtime.status === 'loading' || p.runtime.status === 'refreshing') {
+          abortPanel(activePanelId.value);
+        }
+      }
+    });
+  }
+
   function disposeWorkspace() {
     cancelPendingInvalidations();
+    busUnsub();
+    leftSession.dispose();
+    rightSession.dispose();
     abortPanel('left');
     abortPanel('right');
     unsubscribeFileChanges();

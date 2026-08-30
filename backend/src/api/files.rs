@@ -102,7 +102,7 @@ pub struct SuccessResponse {
     pub message: String,
 }
 
-use crate::services::FileService;
+// FileService facade remains for tests; handlers now use FileApplicationService directly
 
 /// List files and directories in a given path for a connection with streaming and pagination support
 pub async fn list_files(
@@ -135,19 +135,11 @@ pub async fn presign_download_file(
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<PresignResponse>, AppError> {
     let expire_secs = payload.expire_seconds.unwrap_or(3600);
-    let url = FileService::get_presigned_download_url(
-        &state,
-        &user,
-        &connection_id,
-        &payload.path,
-        Some(expire_secs),
-    )
-    .await?;
-
-    Ok(Json(PresignResponse {
-        url,
-        expires_in_seconds: expire_secs,
-    }))
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let url = crate::application::FileApplicationService::from_state(&state)
+        .presign_download_typed(&user.0, &conn, payload.path, Some(expire_secs))
+        .await?;
+    Ok(Json(PresignResponse { url, expires_in_seconds: expire_secs }))
 }
 
 /// Generate a pre-signed URL for direct browser-to-storage upload
@@ -158,19 +150,11 @@ pub async fn presign_upload_file(
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<PresignResponse>, AppError> {
     let expire_secs = payload.expire_seconds.unwrap_or(3600);
-    let url = FileService::get_presigned_upload_url(
-        &state,
-        &user,
-        &connection_id,
-        &payload.path,
-        Some(expire_secs),
-    )
-    .await?;
-
-    Ok(Json(PresignResponse {
-        url,
-        expires_in_seconds: expire_secs,
-    }))
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let url = crate::application::FileApplicationService::from_state(&state)
+        .presign_upload_typed(&user.0, &conn, payload.path, Some(expire_secs))
+        .await?;
+    Ok(Json(PresignResponse { url, expires_in_seconds: expire_secs }))
 }
 
 /// Complete and verify a direct pre-signed upload
@@ -180,16 +164,10 @@ pub async fn presign_complete_upload(
     Path(connection_id): Path<String>,
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<FileMetadata>, AppError> {
-    let meta = FileService::complete_presigned_upload(
-        &state,
-        &user,
-        &connection_id,
-        &payload.path,
-        payload.expected_size,
-        payload.expected_checksum.as_deref(),
-    )
-    .await?;
-
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = crate::application::FileApplicationService::from_state(&state)
+        .complete_presigned_typed(&user.0, &conn, payload.path, payload.expected_size, payload.expected_checksum)
+        .await?;
     Ok(Json(meta))
 }
 
@@ -200,7 +178,10 @@ pub async fn stat_file(
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let meta = FileService::stat_file(&state, &user, &connection_id, &query.path).await?;
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = crate::application::FileApplicationService::from_state(&state)
+        .stat_typed(&user.0, &conn, query.path)
+        .await?;
     Ok(Json(meta))
 }
 
@@ -388,15 +369,10 @@ pub async fn update_file_content(
         headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok())
     };
 
-    let meta = FileService::create_or_write_file(
-        &state,
-        &user,
-        &connection_id,
-        &payload.path,
-        payload.content.into_bytes(),
-        expected_etag,
-    )
-    .await?;
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = crate::application::FileApplicationService::from_state(&state)
+        .create_or_write_typed(&user.0, &conn, payload.path, payload.content.into_bytes(), expected_etag.map(|s| s.to_string()))
+        .await?;
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(
@@ -424,15 +400,10 @@ pub async fn create_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let meta = FileService::create_or_write_file(
-        &state,
-        &user,
-        &connection_id,
-        &payload.path,
-        Vec::new(),
-        None,
-    )
-    .await?;
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = crate::application::FileApplicationService::from_state(&state)
+        .create_or_write_typed(&user.0, &conn, payload.path, Vec::new(), None)
+        .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -450,7 +421,10 @@ pub async fn create_directory(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let meta = FileService::create_directory(&state, &user, &connection_id, &payload.path).await?;
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let meta = crate::application::FileApplicationService::from_state(&state)
+        .create_directory_typed(&user.0, &conn, payload.path)
+        .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -482,8 +456,10 @@ pub async fn delete_files(
     Path(connection_id): Path<String>,
     Json(payload): Json<DeleteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (succeeded, failed_items) =
-        FileService::delete_files(&state, &user, &connection_id, payload.paths).await?;
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let (succeeded, failed_items) = crate::application::FileApplicationService::from_state(&state)
+        .delete_files_typed(&user.0, &conn, payload.paths)
+        .await?;
 
     let failed: Vec<DeleteResultItem> = failed_items
         .into_iter()
@@ -516,12 +492,11 @@ pub async fn rename_entry(
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    FileService::rename_entry(&state, &user, &connection_id, &payload.from, &payload.to).await?;
-
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: format!("Renamed to: {}", payload.to),
-    }))
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    crate::application::FileApplicationService::from_state(&state)
+        .rename_typed(&user.0, &conn, payload.from.clone(), payload.to.clone())
+        .await?;
+    Ok(Json(SuccessResponse { success: true, message: format!("Renamed to: {}", payload.to) }))
 }
 
 /// Copy an entry
@@ -575,7 +550,9 @@ pub async fn copy_entry(
     }))
 }
 
-/// Streaming multipart upload with atomic .part staging
+/// Streaming multipart upload — now owned by TransferEngine (Upload-as-Transfer)
+/// Wire contract unchanged: POST /connections/{id}/files/upload -> {success,message}
+/// Internally: UploadApplicationService → TransferJob (Upload/Inline) → VFS with staging as impl detail
 pub async fn upload_file(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -609,17 +586,18 @@ pub async fn upload_file(
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
 
-            // 1. In-Flight upload path lock to prevent concurrent same-path race conditions
             let _upload_guard = state
                 .upload_locks
                 .try_acquire(&connection_id, &target_path.path)
                 .await?;
 
+            // Transfer staging as implementation detail — selected via capabilities
+            let staging = crate::application::UploadApplicationService::select_staging(&provider.capabilities());
+            let use_staging = matches!(staging, crate::transfer::TransferStaging::LocalTemp | crate::transfer::TransferStaging::ProviderTemp);
+            // WriteStrategy still used for safe_overwrite semantics fallback
             let target_exists = provider.stat(&target_path).await.is_ok();
-            let strategy =
-                crate::domain::WriteStrategy::select(&provider.capabilities(), target_exists);
+            let _strategy = crate::domain::WriteStrategy::select(&provider.capabilities(), target_exists);
 
-            let use_staging = strategy.semantics == crate::domain::CommitSemantics::AtomicRename;
             let write_target = if use_staging {
                 VfsPath::new(&connection_id, format!("{}.aerofs.part", target_path.path))?
             } else {
@@ -634,7 +612,6 @@ pub async fn upload_file(
             )
             .await;
 
-            // Free-space preflight: check host disk capacity for local storage
             if connection_id == "local" {
                 if let Some(free_bytes) =
                     get_available_disk_space(&state.config.filesystem.default_local_root)
@@ -648,7 +625,17 @@ pub async fn upload_file(
                 }
             }
 
-            // Bounded 64 KiB asynchronous duplex pipe with CancellationToken
+            // Create TransferJob owned by TransferEngine — visible in Drawer, WS progress, audit, retry
+            let upload_job = crate::application::UploadApplicationService::begin_inline_upload(
+                &state,
+                Some(user.id.clone()),
+                &connection_id,
+                &target_path.path,
+                &clean_name,
+                None,
+            )
+            .await?;
+
             let cancel_token = tokio_util::sync::CancellationToken::new();
             let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
             let write_handle = tokio::spawn({
@@ -666,7 +653,11 @@ pub async fn upload_file(
             use tokio::io::AsyncWriteExt;
             let max_upload_bytes = state.config.limits.max_upload_size;
             let mut uploaded_bytes = 0u64;
-            let mut stream_err = None;
+            let mut stream_err: Option<AppError> = None;
+            let start_time = std::time::Instant::now();
+            let mut last_emit = std::time::Instant::now();
+            let job_id = upload_job.id.clone();
+
             while let Some(chunk) = match field.chunk().await {
                 Ok(c) => c,
                 Err(e) => {
@@ -689,16 +680,23 @@ pub async fn upload_file(
                     )));
                     break;
                 }
+                // Progress every 100ms — Transfer semantics
+                if last_emit.elapsed().as_millis() >= 100 {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let speed = if elapsed > 0.05 { (uploaded_bytes as f64 / elapsed) as u64 } else { 0 };
+                    state.transfer_manager.update_inline_progress(&job_id, uploaded_bytes, uploaded_bytes, speed, None).await;
+                    last_emit = std::time::Instant::now();
+                }
             }
             drop(duplex_writer);
 
             if let Some(err) = stream_err {
                 cancel_token.cancel();
                 let _ = write_handle.await;
-                // Only delete write_target if staging was used or if target did NOT exist previously
                 if use_staging || !target_exists {
                     let _ = provider.delete(&write_target).await;
                 }
+                state.transfer_manager.fail_inline_job(&job_id, err.to_string()).await;
                 return Err(err);
             }
 
@@ -710,18 +708,17 @@ pub async fn upload_file(
                 if use_staging || !target_exists {
                     let _ = provider.delete(&write_target).await;
                 }
+                let msg = e.to_string();
+                state.transfer_manager.fail_inline_job(&job_id, msg.clone()).await;
                 return Err(AppError::from(e));
             }
 
-            // If staging was used, atomically promote .aerofs.part to final target
             if use_staging {
                 if let Err(rename_err) = provider.rename(&write_target, &target_path).await {
                     let _ = provider.delete(&write_target).await;
-                    return Err(AppError::Internal(anyhow::anyhow!(
-                        "Failed to promote staging file to final destination '{}': {}",
-                        target_path.path,
-                        rename_err
-                    )));
+                    let msg = format!("Failed to promote staging file to final destination '{}': {}", target_path.path, rename_err);
+                    state.transfer_manager.fail_inline_job(&job_id, msg.clone()).await;
+                    return Err(AppError::Internal(anyhow::anyhow!(msg)));
                 }
             }
 
@@ -729,7 +726,6 @@ pub async fn upload_file(
                 let _ = provider.set_permissions(&target_path, perms).await;
             }
 
-            // Invalidate metadata cache on upload completion
             state
                 .metadata_cache
                 .invalidate(&connection_id, &target_path.path)
@@ -743,18 +739,12 @@ pub async fn upload_file(
                 Some(&target_path.path),
                 "SUCCESS",
                 None,
-                Some(&format!("Uploaded: {}", target_path.path)),
+                Some(&format!("Uploaded: {} via Transfer {}", target_path.path, job_id)),
             )
             .await;
 
-            state
-                .transfer_manager
-                .broadcast_event(crate::transfer::WsEvent::file_change(
-                    &connection_id,
-                    &target_path.path,
-                    "upload",
-                ))
-                .await;
+            // Mark Transfer completed — broadcasts file_change + transfer_completed + completion channel
+            state.transfer_manager.complete_inline_job(&job_id, None).await;
 
             uploaded_files.push(target_path.path);
         }
@@ -773,14 +763,20 @@ pub async fn chmod_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<ChmodRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Delegated to application layer (typed, explicit ports)
+    let conn = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    if !payload.recursive.unwrap_or(false) {
+        crate::application::FileApplicationService::from_state(&state)
+            .chmod_typed(&user.0, &conn, payload.path.clone(), payload.mode)
+            .await?;
+        return Ok(Json(serde_json::json!({"success": true, "message": format!("Permissions updated for {}", payload.path)})));
+    }
+    // Recursive path keeps filesystem walk (Unix only) — permission already checked below
     check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
-
     let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
         VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
     })?;
-
     let vfs_path = VfsPath::new(&connection_id, &payload.path)?;
-
     let formatted_mode = format!("{:04o}", payload.mode);
     provider.set_permissions(&vfs_path, &formatted_mode).await?;
 

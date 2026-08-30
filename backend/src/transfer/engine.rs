@@ -179,6 +179,74 @@ impl std::str::FromStr for TransferPhase {
     }
 }
 
+/// Execution mode for a transfer — Inline vs Background vs Resumable (§Upload-as-Transfer)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferExecutionMode {
+    #[default]
+    Inline,
+    Background,
+    Resumable,
+}
+
+impl TransferExecutionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::Background => "background",
+            Self::Resumable => "resumable",
+        }
+    }
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "background" => Self::Background,
+            "resumable" => Self::Resumable,
+            _ => Self::Inline,
+        }
+    }
+}
+impl std::str::FromStr for TransferExecutionMode {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_str(s))
+    }
+}
+
+/// Staging strategy — implementation detail of TransferEngine, not a separate subsystem
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferStaging {
+    #[default]
+    None,
+    LocalTemp,
+    ProviderTemp,
+}
+
+impl TransferStaging {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::LocalTemp => "local_temp",
+            Self::ProviderTemp => "provider_temp",
+        }
+    }
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "local_temp" => Self::LocalTemp,
+            "provider_temp" => Self::ProviderTemp,
+            _ => Self::None,
+        }
+    }
+}
+impl std::str::FromStr for TransferStaging {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_str(s))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferJob {
     pub id: String,
@@ -191,6 +259,12 @@ pub struct TransferJob {
     pub destination_path: String,
     pub status: TransferStatus,
     pub phase: TransferPhase,
+    /// Execution mode — Inline (sync HTTP), Background (queued), Resumable (checkpointed)
+    #[serde(default)]
+    pub execution_mode: TransferExecutionMode,
+    /// Staging strategy — implementation detail of TransferEngine
+    #[serde(default)]
+    pub staging: TransferStaging,
     pub transferred_bytes: u64,
     pub total_bytes: u64,
     pub speed_bytes_per_sec: u64,
@@ -201,6 +275,8 @@ pub struct TransferJob {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+
 
 #[derive(Clone)]
 pub struct TransferManager {
@@ -607,6 +683,8 @@ impl TransferManager {
             destination_path,
             status: TransferStatus::Queued,
             phase: TransferPhase::Preparing,
+            execution_mode: TransferExecutionMode::Inline,
+            staging: TransferStaging::None,
             transferred_bytes: 0,
             total_bytes: 0,
             speed_bytes_per_sec: 0,
@@ -643,6 +721,113 @@ impl TransferManager {
             .map_err(|e| format!("Failed to queue transfer job: {}", e))?;
 
         Ok(id)
+    }
+
+    /// Create an inline Upload transfer job owned by TransferEngine (Upload-as-Transfer).
+    /// Does NOT queue — caller executes inline and must call `complete_inline_job` / `fail_inline_job`.
+    pub async fn create_inline_upload_job(
+        &self,
+        user_id: Option<String>,
+        name: String,
+        dest_connection_id: String,
+        dest_path: String,
+        total_bytes: Option<u64>,
+        staging: TransferStaging,
+        execution_mode: TransferExecutionMode,
+    ) -> TransferJob {
+        let id = format!("job_{}", &Uuid::new_v4().to_string()[..8]);
+        let now = Utc::now();
+        let job = TransferJob {
+            id: id.clone(),
+            user_id,
+            name,
+            transfer_type: TransferType::Upload,
+            source_connection_id: "upload".to_string(),
+            source_path: format!("upload://{}", id),
+            destination_connection_id: dest_connection_id,
+            destination_path: dest_path,
+            status: TransferStatus::Running,
+            phase: TransferPhase::Transferring,
+            execution_mode,
+            staging,
+            transferred_bytes: 0,
+            total_bytes: total_bytes.unwrap_or(0),
+            speed_bytes_per_sec: 0,
+            eta_seconds: None,
+            checksum: None,
+            error_message: None,
+            dismissed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        {
+            let mut tokens = self.cancel_tokens.write().await;
+            tokens.insert(id.clone(), CancellationToken::new());
+        }
+        {
+            let mut map = self.jobs.write().await;
+            map.insert(id.clone(), job.clone());
+        }
+        let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
+        let _ = Self::save_job_to_db(&self.db, &job).await;
+        job
+    }
+
+    pub async fn update_inline_progress(&self, job_id: &str, transferred: u64, total: u64, speed: u64, eta: Option<u64>) {
+        let mut map = self.jobs.write().await;
+        if let Some(j) = map.get_mut(job_id) {
+            j.transferred_bytes = transferred;
+            j.total_bytes = total;
+            j.speed_bytes_per_sec = speed;
+            j.eta_seconds = eta;
+            j.updated_at = Utc::now();
+            let job = j.clone();
+            drop(map);
+            let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
+            let _ = Self::save_job_to_db(&self.db, &job).await;
+        }
+    }
+
+    pub async fn complete_inline_job(&self, job_id: &str, checksum: Option<String>) {
+        let job_opt = {
+            let mut map = self.jobs.write().await;
+            if let Some(j) = map.get_mut(job_id) {
+                j.status = TransferStatus::Completed;
+                j.phase = TransferPhase::Completed;
+                j.speed_bytes_per_sec = 0;
+                j.eta_seconds = Some(0);
+                j.checksum = checksum.clone();
+                j.updated_at = Utc::now();
+                Some(j.clone())
+            } else { None }
+        };
+        if let Some(job) = job_opt {
+            let _ = Self::save_job_conditional_completed(&self.db, &job).await;
+            let _ = self.event_journal.append(DomainEvent::file_change(&job.destination_connection_id, &job.destination_path, "upload"), Some(&job.id)).await;
+            let _ = self.event_journal.append(DomainEvent::transfer_completed(&job), Some(&job.id)).await;
+            let _ = self.completion_tx.send((job.id.clone(), true));
+        }
+        self.cancel_tokens.write().await.remove(job_id);
+    }
+
+    pub async fn fail_inline_job(&self, job_id: &str, err: String) {
+        let job_opt = {
+            let mut map = self.jobs.write().await;
+            if let Some(j) = map.get_mut(job_id) {
+                j.status = TransferStatus::Failed;
+                j.error_message = Some(err.clone());
+                j.speed_bytes_per_sec = 0;
+                j.eta_seconds = None;
+                j.updated_at = Utc::now();
+                Some(j.clone())
+            } else { None }
+        };
+        if let Some(job) = job_opt {
+            let _ = Self::save_job_to_db(&self.db, &job).await;
+            let _ = self.event_journal.append(DomainEvent::transfer_failed(&job), Some(&job.id)).await;
+            let _ = self.completion_tx.send((job.id.clone(), false));
+        }
+        self.cancel_tokens.write().await.remove(job_id);
     }
 
     /// Retrieve list of transfer jobs filtered by authorization (P0 #4)
@@ -2146,6 +2331,8 @@ impl TransferManager {
                 .map(TransferPhase::from_str)
                 .unwrap_or(TransferPhase::Preparing);
 
+            let execution_mode: String = r.try_get("execution_mode").unwrap_or_else(|_| "inline".to_string());
+            let staging: String = r.try_get("staging").unwrap_or_else(|_| "none".to_string());
             jobs.push(TransferJob {
                 id,
                 user_id,
@@ -2157,6 +2344,8 @@ impl TransferManager {
                 destination_path,
                 status: TransferStatus::from_str(&status_str),
                 phase,
+                execution_mode: TransferExecutionMode::from_str(&execution_mode),
+                staging: TransferStaging::from_str(&staging),
                 transferred_bytes: transferred_bytes as u64,
                 total_bytes: total_bytes as u64,
                 speed_bytes_per_sec: speed_bytes_per_sec as u64,
@@ -2235,22 +2424,26 @@ impl TransferManager {
         Ok(())
     }
 
-    /// Save or update a transfer job in SQLite
+    /// Save or update a transfer job in SQLite (supports new execution_mode/staging columns with fallback)
     async fn save_job_to_db(db: &DbPool, job: &TransferJob) -> anyhow::Result<()> {
         let created_at = job.created_at.to_rfc3339();
         let updated_at = job.updated_at.to_rfc3339();
         let dismissed_at = job.dismissed_at.map(|d| d.to_rfc3339());
 
-        sqlx::query(
+        // Try new schema first; fallback to old schema if migration not yet applied (e.g. in-memory tests)
+        let res = sqlx::query(
             "INSERT INTO transfer_jobs (
                 id, user_id, name, transfer_type, source_connection_id, source_path,
                 destination_connection_id, destination_path, status, phase,
+                execution_mode, staging,
                 transferred_bytes, total_bytes, speed_bytes_per_sec,
                 eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 phase = excluded.phase,
+                execution_mode = excluded.execution_mode,
+                staging = excluded.staging,
                 transferred_bytes = excluded.transferred_bytes,
                 total_bytes = excluded.total_bytes,
                 speed_bytes_per_sec = excluded.speed_bytes_per_sec,
@@ -2270,6 +2463,8 @@ impl TransferManager {
         .bind(&job.destination_path)
         .bind(job.status.as_str())
         .bind(job.phase.as_str())
+        .bind(job.execution_mode.as_str())
+        .bind(job.staging.as_str())
         .bind(job.transferred_bytes as i64)
         .bind(job.total_bytes as i64)
         .bind(job.speed_bytes_per_sec as i64)
@@ -2280,7 +2475,55 @@ impl TransferManager {
         .bind(&created_at)
         .bind(&updated_at)
         .execute(db)
-        .await?;
+        .await;
+
+        if let Err(e) = res {
+            let msg = e.to_string();
+            if msg.contains("no column") || msg.contains("has no column") {
+                sqlx::query(
+                    "INSERT INTO transfer_jobs (
+                        id, user_id, name, transfer_type, source_connection_id, source_path,
+                        destination_connection_id, destination_path, status, phase,
+                        transferred_bytes, total_bytes, speed_bytes_per_sec,
+                        eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        status = excluded.status,
+                        phase = excluded.phase,
+                        transferred_bytes = excluded.transferred_bytes,
+                        total_bytes = excluded.total_bytes,
+                        speed_bytes_per_sec = excluded.speed_bytes_per_sec,
+                        eta_seconds = excluded.eta_seconds,
+                        checksum = excluded.checksum,
+                        error_message = excluded.error_message,
+                        dismissed_at = excluded.dismissed_at,
+                        updated_at = excluded.updated_at",
+                )
+                .bind(&job.id)
+                .bind(&job.user_id)
+                .bind(&job.name)
+                .bind(job.transfer_type.as_str())
+                .bind(&job.source_connection_id)
+                .bind(&job.source_path)
+                .bind(&job.destination_connection_id)
+                .bind(&job.destination_path)
+                .bind(job.status.as_str())
+                .bind(job.phase.as_str())
+                .bind(job.transferred_bytes as i64)
+                .bind(job.total_bytes as i64)
+                .bind(job.speed_bytes_per_sec as i64)
+                .bind(job.eta_seconds.map(|e| e as i64))
+                .bind(&job.checksum)
+                .bind(&job.error_message)
+                .bind(&dismissed_at)
+                .bind(&created_at)
+                .bind(&updated_at)
+                .execute(db)
+                .await?;
+            } else {
+                return Err(e.into());
+            }
+        }
 
         Ok(())
     }

@@ -4,7 +4,7 @@ pub mod planner;
 
 pub use checkpoint::TransferCheckpoint;
 pub use engine::{
-    EventEnvelope, ReplayResult, TransferJob, TransferManager, TransferPhase, TransferStatus,
-    TransferType, WsEvent,
+    EventEnvelope, ReplayResult, TransferExecutionMode, TransferJob, TransferManager,
+    TransferPhase, TransferStaging, TransferStatus, TransferType, WsEvent,
 };
 pub use planner::{TransferPlanner, TransferStrategy};

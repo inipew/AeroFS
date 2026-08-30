@@ -315,6 +315,8 @@ async fn test_transfer_to_non_atomic_rename_provider() {
         destination_path: "/dst_nonatomic.txt".to_string(),
         status: TransferStatus::Queued,
         phase: backend::transfer::TransferPhase::Preparing,
+        execution_mode: Default::default(),
+        staging: Default::default(),
         transferred_bytes: 0,
         total_bytes: src_content.len() as u64,
         speed_bytes_per_sec: 0,

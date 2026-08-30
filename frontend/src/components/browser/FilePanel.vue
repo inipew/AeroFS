@@ -90,6 +90,7 @@
           >
             <FbIcon :name="panel.connectionId === 'local' ? 'folder' : 'share'" size="13px" class="text-blue-500 shrink-0" />
             <span class="truncate max-w-[80px] sm:max-w-[120px]">{{ currentConnName }}</span>
+            <span :class="['w-2 h-2 rounded-full shrink-0 ml-1', connectionStatus==='connected'?'bg-emerald-500': connectionStatus==='orphaned'?'bg-red-500 ring-2 ring-red-200': connectionStatus==='offline'?'bg-gray-400':'bg-amber-500']" :title="String(connectionStatus)"></span>
           </button>
 
           <!-- Breadcrumb Segments -->
@@ -839,6 +840,12 @@ const currentConnName = computed(() => {
   const c = connStore.connections.find((x) => x.id === panel.value.connectionId);
   return c ? c.name : panel.value.connectionId;
 });
+const connectionStatus = computed(() => {
+  if (panel.value.status === 'orphaned') return 'orphaned';
+  const c = connStore.connections.find((x) => x.id === panel.value.connectionId) as any;
+  if (!c) return panel.value.connectionId === 'local' ? 'connected' : 'offline';
+  return c.status || 'connected';
+});
 
 async function copyPanelPath() {
   const p = panel.value.path || '/';
@@ -857,6 +864,13 @@ async function openAddressBar() {
   addressInputRef.value?.focus();
   addressInputRef.value?.select();
 }
+// Keyboard shortcut Ctrl+L → open address bar for this panel (66.md §30)
+let addrHandler: any = null;
+onMounted(() => {
+  addrHandler = (e: any) => { if (e.detail?.panelId === props.panelId) openAddressBar(); };
+  window.addEventListener('aerofs:open-address-bar', addrHandler);
+});
+onUnmounted(() => { if (addrHandler) window.removeEventListener('aerofs:open-address-bar', addrHandler); });
 
 async function submitAddressBar() {
   const target = addressInput.value.trim();

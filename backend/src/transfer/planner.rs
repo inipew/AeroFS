@@ -1,5 +1,5 @@
 use crate::domain::VfsPath;
-use crate::transfer::{TransferJob, TransferType};
+use crate::transfer::{TransferExecutionMode, TransferJob, TransferStaging, TransferType};
 use crate::vfs::FileSystem;
 use std::sync::Arc;
 
@@ -38,5 +38,24 @@ impl TransferPlanner {
         }
 
         TransferStrategy::Streaming
+    }
+
+    /// Select staging strategy for Upload based on provider capabilities — implementation detail of TransferEngine
+    pub fn upload_staging(capabilities: &crate::domain::Capabilities) -> TransferStaging {
+        if capabilities.atomic_rename {
+            TransferStaging::LocalTemp
+        } else if capabilities.atomic_write {
+            TransferStaging::ProviderTemp
+        } else {
+            TransferStaging::None
+        }
+    }
+
+    /// Select execution mode for Upload based on size & config — small inline, large resumable
+    pub fn upload_execution_mode(total_bytes: Option<u64>, inline_threshold: u64) -> TransferExecutionMode {
+        match total_bytes {
+            Some(n) if n > inline_threshold => TransferExecutionMode::Resumable,
+            _ => TransferExecutionMode::Inline,
+        }
     }
 }

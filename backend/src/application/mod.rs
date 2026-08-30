@@ -2,6 +2,8 @@
 //! API may know HTTP, Application knows domain + ports, Domain knows nothing about HTTP/SQL/Tokio.
 
 pub mod files;
+pub mod upload;
 
 // Re-exports for handlers
 pub use files::FileApplicationService;
+pub use upload::UploadApplicationService;

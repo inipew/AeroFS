@@ -2,6 +2,8 @@
 //! Replaces universal `&AppState` DI with explicit ports.
 
 mod listing;
+mod mutation;
+mod presign;
 mod read;
 mod write;
 

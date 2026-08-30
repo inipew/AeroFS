@@ -55,6 +55,8 @@ fn create_test_job(
         destination_path: dst_path.to_string(),
         status: TransferStatus::Queued,
         phase: TransferPhase::Preparing,
+        execution_mode: Default::default(),
+        staging: Default::default(),
         transferred_bytes: 0,
         total_bytes: 1000,
         speed_bytes_per_sec: 0,

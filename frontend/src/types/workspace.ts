@@ -99,6 +99,8 @@ export interface PersistedPanelLocation {
   showHidden: boolean;
   sortField: SortField;
   sortOrder: SortOrder;
+  history?: string[];
+  historyIndex?: number;
 }
 
 export interface PersistedWorkspace {
