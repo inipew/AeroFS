@@ -1,8 +1,7 @@
-use crate::transfer::WsEvent;
+use crate::events::{DomainEvent, EventJournal};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::broadcast;
 
 pub struct FileSystemWatcher {
     _watcher: RecommendedWatcher,
@@ -14,8 +13,7 @@ impl FileSystemWatcher {
     pub fn new<P: AsRef<Path>>(
         connection_id: String,
         root_path: P,
-        event_sender: broadcast::Sender<crate::transfer::EventEnvelope>,
-        seq_counter: Arc<std::sync::atomic::AtomicU64>,
+        event_journal: Arc<EventJournal>,
     ) -> anyhow::Result<Self> {
         let root = root_path.as_ref().to_path_buf();
         let root_clone = root.clone();
@@ -39,16 +37,11 @@ impl FileSystemWatcher {
                             format!("/{}", path.to_string_lossy().replace('\\', "/"))
                         };
 
-                        let ws_event = WsEvent::file_change(&conn_id, &relative_str, action);
-
-                        let envelope = crate::transfer::EventEnvelope {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            sequence: seq_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-                            timestamp: chrono::Utc::now(),
-                            event: ws_event,
-                        };
-
-                        let _ = event_sender.send(envelope);
+                        let ws_event = DomainEvent::file_change(&conn_id, &relative_str, action);
+                        let journal = event_journal.clone();
+                        tokio::spawn(async move {
+                            let _ = journal.append(ws_event, None).await;
+                        });
                     }
                 }
             },

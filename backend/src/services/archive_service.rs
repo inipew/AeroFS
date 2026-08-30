@@ -86,7 +86,7 @@ impl ArchiveService {
             connection_id,
             &dest_vfs.path,
             "create",
-        ));
+        )).await;
 
         Ok(ArchiveResult {
             success: true,
@@ -149,7 +149,7 @@ impl ArchiveService {
             connection_id,
             destination_dir,
             "extract",
-        ));
+        )).await;
 
         Ok(ArchiveResult {
             success: true,
@@ -210,7 +210,7 @@ impl ArchiveService {
             connection_id,
             destination_dir,
             "extract",
-        ));
+        )).await;
 
         Ok(ArchiveResult {
             success: true,

@@ -557,7 +557,7 @@ pub async fn copy_entry(
         &connection_id,
         &to_vfs.path,
         "copy",
-    ));
+    )).await;
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -741,7 +741,7 @@ pub async fn upload_file(
                 &connection_id,
                 &target_path.path,
                 "upload",
-            ));
+            )).await;
 
             uploaded_files.push(target_path.path);
         }

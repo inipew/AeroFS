@@ -1,3 +1,3 @@
 pub mod journal;
 
-pub use journal::{DomainEvent, EventJournal, ReplayOutcome};
+pub use journal::{DomainEvent, EventEnvelope, EventJournal, ReplayOutcome};

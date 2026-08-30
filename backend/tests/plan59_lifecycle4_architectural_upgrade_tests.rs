@@ -277,21 +277,23 @@ async fn test_sync_manager_creation_and_reconciliation() {
     let token = tokio_util::sync::CancellationToken::new();
     let tracker = tokio_util::task::TaskTracker::new();
 
+    let event_journal = Arc::new(
+        backend::events::EventJournal::init(pool.clone())
+            .await
+            .unwrap(),
+    );
+
     let transfer_manager = backend::transfer::TransferManager::new(
         registry.providers_map(),
         pool.clone(),
         4,
+        event_journal.clone(),
         token,
         &tracker,
     )
     .await;
 
     let supervisor = TaskSupervisor::new();
-    let event_journal = Arc::new(
-        backend::events::EventJournal::init(pool.clone())
-            .await
-            .unwrap(),
-    );
     let sync_mgr = backend::sync::SyncManager::new(
         pool.clone(),
         transfer_manager,

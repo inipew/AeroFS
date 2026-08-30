@@ -146,7 +146,7 @@ impl TrashService {
                             path_str,
                             "delete",
                         ),
-                    );
+                    ).await;
 
                     moved_count += 1;
                 }
@@ -216,7 +216,7 @@ impl TrashService {
                 &orig_path,
                 "create",
             ),
-        );
+        ).await;
 
         Ok(())
     }

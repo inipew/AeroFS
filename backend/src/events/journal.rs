@@ -104,6 +104,18 @@ impl DomainEvent {
         }
     }
 
+    pub fn transfer_progress(job: &crate::transfer::TransferJob) -> Self {
+        DomainEvent::TransferProgress(serde_json::to_value(job).unwrap_or_default())
+    }
+
+    pub fn transfer_completed(job: &crate::transfer::TransferJob) -> Self {
+        DomainEvent::TransferCompleted(serde_json::to_value(job).unwrap_or_default())
+    }
+
+    pub fn transfer_failed(job: &crate::transfer::TransferJob) -> Self {
+        DomainEvent::TransferFailed(serde_json::to_value(job).unwrap_or_default())
+    }
+
     pub fn event_type_name(&self) -> &'static str {
         match self {
             DomainEvent::TransferProgress(_) => "transfer_progress",
@@ -208,25 +220,18 @@ impl EventJournal {
         if !is_progress {
             let payload = serde_json::to_string(&event)?;
             let event_type = event.event_type_name();
-            let db = self.db.clone();
-            let epoch_str = self.epoch.clone();
-            let agg_id = aggregate_id.map(|s| s.to_string());
-            
-            // Asynchronously persist to SQLite event_journal
-            tokio::spawn(async move {
-                let _ = sqlx::query(
-                    "INSERT INTO event_journal (epoch, sequence, event_type, aggregate_id, payload, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?)",
-                )
-                .bind(epoch_str)
-                .bind(seq as i64)
-                .bind(event_type)
-                .bind(agg_id)
-                .bind(payload)
-                .bind(now_str)
-                .execute(&db)
-                .await;
-            });
+            let _ = sqlx::query(
+                "INSERT INTO event_journal (epoch, sequence, event_type, aggregate_id, payload, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&self.epoch)
+            .bind(seq as i64)
+            .bind(event_type)
+            .bind(aggregate_id)
+            .bind(payload)
+            .bind(&now_str)
+            .execute(&self.db)
+            .await;
         }
 
         Ok(envelope)

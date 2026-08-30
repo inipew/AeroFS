@@ -326,9 +326,6 @@ async fn test_transfer_to_non_atomic_rename_provider() {
         updated_at: chrono::Utc::now(),
     };
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(100);
-    let seq_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let event_history = Arc::new(tokio::sync::RwLock::new(std::collections::VecDeque::new()));
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let jobs_map = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     jobs_map.write().await.insert(job.id.clone(), job.clone());
@@ -344,9 +341,7 @@ async fn test_transfer_to_non_atomic_rename_provider() {
         &cancel_token,
         &providers_lock,
         &jobs_map,
-        &event_tx,
-        &seq_counter,
-        &event_history,
+        &state.event_journal,
         &state.db,
     )
     .await;

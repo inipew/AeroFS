@@ -121,7 +121,7 @@ async fn test_event_replay_includes_rich_metadata() {
         "local",
         "/src/doc.pdf",
         "/archive/doc.pdf",
-    ));
+    )).await;
 
     // Fetch replay
     let replay = state.transfer_manager.get_events_since(0).await;

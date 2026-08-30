@@ -533,7 +533,7 @@ impl FileService {
             connection_id,
             &vfs_path.path,
             "write",
-        ));
+        )).await;
 
         Ok(meta)
     }
@@ -591,7 +591,7 @@ impl FileService {
             connection_id,
             &vfs_path.path,
             "create",
-        ));
+        )).await;
 
         Ok(meta)
     }
@@ -665,7 +665,7 @@ impl FileService {
                             connection_id,
                             &path,
                             "delete",
-                        ));
+                        )).await;
 
                         succeeded.push(path);
                     }
@@ -718,7 +718,7 @@ impl FileService {
             connection_id,
             &vfs_path.path,
             "delete",
-        ));
+        )).await;
 
         Ok(())
     }
@@ -769,7 +769,7 @@ impl FileService {
             connection_id,
             &from_vfs.path,
             &to_vfs.path,
-        ));
+        )).await;
 
         Ok(())
     }
@@ -815,7 +815,7 @@ impl FileService {
             connection_id,
             &vfs_path.path,
             "chmod",
-        ));
+        )).await;
 
         Ok(())
     }

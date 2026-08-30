@@ -41,6 +41,8 @@ export const useTransferStore = defineStore('transfer', () => {
   let batchResolution: ConflictResolution | null = null;
   let isRealtimeSubscribed = false;
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let watchdogInterval: ReturnType<typeof setInterval> | null = null;
+  let lastProgressTimestamp = Date.now();
 
   const activeJobs = computed(() => {
     return jobs.value.filter(
@@ -66,11 +68,31 @@ export const useTransferStore = defineStore('transfer', () => {
     }, 5000);
   }
 
+  // Safety watchdog: if active transfers exist but no progress received for > 5s while connected, reconcile
+  function startWatchdogIfNeeded() {
+    if (watchdogInterval) return;
+    watchdogInterval = setInterval(async () => {
+      if (activeCount.value > 0) {
+        if (Date.now() - lastProgressTimestamp > 5000) {
+          lastProgressTimestamp = Date.now();
+          await fetchJobs();
+        }
+      } else {
+        if (watchdogInterval) {
+          clearInterval(watchdogInterval);
+          watchdogInterval = null;
+        }
+      }
+    }, 2500);
+  }
+
   async function fetchJobs() {
     try {
       jobs.value = await listTransfersApi();
       if (!isConnected.value && activeCount.value > 0) {
         startPollingIfNeeded();
+      } else if (activeCount.value > 0) {
+        startWatchdogIfNeeded();
       }
     } catch (err) {
       console.error('Failed to fetch transfers', err);
@@ -78,6 +100,7 @@ export const useTransferStore = defineStore('transfer', () => {
   }
 
   function updateJobProgress(job: TransferJob) {
+    lastProgressTimestamp = Date.now();
     speedMetrics.value[job.id] = {
       speedBytesPerSec: job.speed_bytes_per_sec || 0,
       etaSeconds: job.eta_seconds ?? null,
@@ -89,6 +112,10 @@ export const useTransferStore = defineStore('transfer', () => {
       jobs.value = [...jobs.value];
     } else {
       jobs.value = [job, ...jobs.value];
+    }
+
+    if (activeCount.value > 0) {
+      startWatchdogIfNeeded();
     }
   }
 

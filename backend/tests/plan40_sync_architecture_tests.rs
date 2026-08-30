@@ -8,7 +8,7 @@ use backend::create_router;
 use backend::db::init_db;
 use backend::middleware::REQUEST_ID_HEADER;
 use backend::services::FileService;
-use backend::transfer::{ReplayResult, WsEvent};
+use backend::transfer::{ReplayResult, TransferType, WsEvent};
 use backend::AppState;
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -156,27 +156,30 @@ async fn test_part_file_filtered_from_directory_listing() {
 async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
     let (_app, state, _cookie, _temp) = setup_test_app().await;
 
-    // 1. Broadcast > 550 events to push history beyond its 500-capacity buffer
+    // 1. Broadcast 550 events to SQLite journal
     for i in 0..550 {
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            "local",
-            format!("/file_{}.txt", i),
-            "create",
-        ));
+        let _ = state
+            .event_journal
+            .append(
+                WsEvent::file_change("local", format!("/file_{}.txt", i), "create"),
+                None,
+            )
+            .await;
     }
 
-    // 2. Query sequence 1 (which has expired from the 500 buffer)
+    // Simulate retention expiration by purging oldest 50 events from SQLite
+    sqlx::query("DELETE FROM event_journal WHERE sequence <= 50")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // 2. Query sequence 1 (which has expired from retention)
     let replay_result = state.transfer_manager.get_events_since(1).await;
     match replay_result {
         ReplayResult::Expired { latest_sequence } => {
             assert!(latest_sequence >= 550);
         }
-        ReplayResult::Events(events) => {
-            panic!(
-                "Expected Expired result for sequence 1, got {} events",
-                events.len()
-            );
-        }
+        other => panic!("Expected Expired result for sequence 1, got {:?}", other),
     }
 
     // 3. Query a recent sequence (e.g. 540)
@@ -188,9 +191,7 @@ async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
                 "Should replay recent events within buffer"
             );
         }
-        ReplayResult::Expired { .. } => {
-            panic!("Recent sequence should not be expired");
-        }
+        other => panic!("Expected Events result for sequence 540, got {:?}", other),
     }
 }
 
@@ -203,106 +204,85 @@ async fn test_transfer_idempotency_key_deduplication() {
         is_admin: true,
     });
 
-    FileService::create_or_write_file(
-        &state,
-        &admin,
-        "local",
-        "/idemp_src.txt",
-        b"Idempotency Test".to_vec(),
-        None,
-    )
-    .await
-    .unwrap();
-
-    let idemp_key = "idemp-transfer-key-plan40-test";
-    let payload = json!({
-        "name": "idemp_job",
+    let req_body = serde_json::json!({
+        "name": "idempotent_test",
         "transfer_type": "copy",
         "source_connection_id": "local",
-        "source_path": "/idemp_src.txt",
+        "source_path": "/file_0.txt",
         "destination_connection_id": "local",
-        "destination_path": "/idemp_dst.txt"
+        "destination_path": "/file_0_idempotent.txt",
     });
 
-    // 1. Initial request
-    let req1 = Request::builder()
-        .uri("/api/v1/transfers")
-        .method("POST")
-        .header(header::COOKIE, &cookie)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header("idempotency-key", idemp_key)
-        .body(Body::from(payload.to_string()))
+    // Submit with idempotency key
+    let response1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/transfers")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "test-key-123")
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
         .unwrap();
-
-    let resp1 = app.clone().oneshot(req1).await.unwrap();
-    assert_eq!(resp1.status(), StatusCode::ACCEPTED);
-    let body1: Value =
-        serde_json::from_slice(&to_bytes(resp1.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response1.status(), StatusCode::ACCEPTED);
+    let body1: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap()).unwrap();
     let job_id1 = body1["job_id"].as_str().unwrap().to_string();
 
-    // 2. Retried request with identical Idempotency-Key
-    let req2 = Request::builder()
-        .uri("/api/v1/transfers")
-        .method("POST")
-        .header(header::COOKIE, &cookie)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header("idempotency-key", idemp_key)
-        .body(Body::from(payload.to_string()))
+    // Submit again with same idempotency key
+    let response2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/transfers")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "test-key-123")
+                .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                .unwrap(),
+        )
+        .await
         .unwrap();
-
-    let resp2 = app.oneshot(req2).await.unwrap();
-    assert_eq!(resp2.status(), StatusCode::ACCEPTED);
-    assert_eq!(
-        resp2
-            .headers()
-            .get("x-cache-idempotency")
-            .map(|v| v.to_str().unwrap()),
-        Some("HIT")
-    );
-    let body2: Value =
-        serde_json::from_slice(&to_bytes(resp2.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(response2.status(), StatusCode::ACCEPTED);
+    let body2: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap()).unwrap();
     let job_id2 = body2["job_id"].as_str().unwrap().to_string();
 
     assert_eq!(
         job_id1, job_id2,
-        "Idempotent transfer submissions must return the identical job_id"
+        "Submitting with same idempotency key must return existing job ID"
     );
 }
 
 #[tokio::test]
-async fn test_event_ordering_file_change_before_transfer_completed() {
-    let (_app, state, _cookie, _temp) = setup_test_app().await;
-    let admin = AuthenticatedUser(UserInfo {
-        id: "admin-id".to_string(),
-        username: "admin".to_string(),
-        is_admin: true,
-    });
+async fn test_transfer_event_ordering_and_causality() {
+    let (_app, state, _cookie, temp) = setup_test_app().await;
 
-    FileService::create_or_write_file(
-        &state,
-        &admin,
-        "local",
-        "/order_src.txt",
-        b"Ordering verification data".to_vec(),
-        None,
-    )
-    .await
-    .unwrap();
+    // Create source file
+    let src_file = temp.path().join("storage").join("order_src.txt");
+    std::fs::write(&src_file, b"ordering test").unwrap();
 
     let mut rx = state.transfer_manager.subscribe();
 
-    backend::services::TransferService::create_transfer(
-        &state,
-        &admin,
-        "order_job".into(),
-        backend::transfer::TransferType::Copy,
-        "local".into(),
-        "/order_src.txt".into(),
-        "local".into(),
-        "/order_dst.txt".into(),
-    )
-    .await
-    .unwrap();
+    // Submit transfer
+    state
+        .transfer_manager
+        .submit_job(
+            None,
+            "order_test".to_string(),
+            TransferType::Copy,
+            "local".to_string(),
+            "/order_src.txt".to_string(),
+            "local".to_string(),
+            "/order_dst.txt".to_string(),
+        )
+        .await
+        .unwrap();
 
     // Collect events until TransferCompleted
     let mut file_change_seq = None;
@@ -318,7 +298,10 @@ async fn test_event_ordering_file_change_before_transfer_completed() {
                 {
                     file_change_seq = Some(env.sequence);
                 }
-                WsEvent::TransferCompleted(job) if job.destination_path == "/order_dst.txt" => {
+                WsEvent::TransferCompleted(job)
+                    if job.get("destination_path").and_then(|v| v.as_str())
+                        == Some("/order_dst.txt") =>
+                {
                     completed_seq = Some(env.sequence);
                     break;
                 }

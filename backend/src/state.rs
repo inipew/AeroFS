@@ -185,6 +185,7 @@ impl AppState {
             registry.providers_map(),
             db.clone(),
             config.limits.max_concurrent_transfers,
+            event_journal.clone(),
             runtime.shutdown_token.clone(),
             &runtime.task_tracker,
         )

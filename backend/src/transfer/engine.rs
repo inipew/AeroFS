@@ -1,12 +1,14 @@
 use super::planner::{TransferPlanner, TransferStrategy};
 use crate::db::DbPool;
 use crate::domain::VfsPath;
+use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
+pub use crate::events::EventEnvelope;
 use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,6 +17,9 @@ use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+pub type WsEvent = DomainEvent;
+pub type ReplayResult = ReplayOutcome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -168,127 +173,12 @@ pub struct TransferJob {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-pub enum WsEvent {
-    #[serde(rename = "transfer_progress")]
-    TransferProgress(TransferJob),
-    #[serde(rename = "transfer_completed")]
-    TransferCompleted(TransferJob),
-    #[serde(rename = "transfer_failed")]
-    TransferFailed(TransferJob),
-    #[serde(rename = "file_change")]
-    FileChange {
-        connection_id: String,
-        path: String,
-        action: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        old_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        old_parent_path: Option<String>,
-    },
-    #[serde(rename = "resync_required")]
-    ResyncRequired {
-        reason: String,
-        latest_sequence: u64,
-    },
-    #[serde(rename = "permission_changed")]
-    PermissionChanged {
-        user_id: i64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        connection_id: Option<String>,
-    },
-    #[serde(rename = "full_sync")]
-    FullSync {
-        reason: String,
-        epoch: String,
-    },
-}
-
-impl WsEvent {
-    pub fn file_change(
-        connection_id: impl Into<String>,
-        path: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Self {
-        let p: String = path.into();
-        let parent = std::path::Path::new(&p).parent().map(|d| {
-            let s = d.to_string_lossy().to_string();
-            if s.is_empty() {
-                "/".to_string()
-            } else {
-                s
-            }
-        });
-        Self::FileChange {
-            connection_id: connection_id.into(),
-            path: p,
-            action: action.into(),
-            old_path: None,
-            parent_path: parent,
-            old_parent_path: None,
-        }
-    }
-
-    pub fn file_rename(
-        connection_id: impl Into<String>,
-        from_path: impl Into<String>,
-        to_path: impl Into<String>,
-    ) -> Self {
-        let from_str: String = from_path.into();
-        let to_str: String = to_path.into();
-        let old_parent = std::path::Path::new(&from_str).parent().map(|d| {
-            let s = d.to_string_lossy().to_string();
-            if s.is_empty() {
-                "/".to_string()
-            } else {
-                s
-            }
-        });
-        let parent = std::path::Path::new(&to_str).parent().map(|d| {
-            let s = d.to_string_lossy().to_string();
-            if s.is_empty() {
-                "/".to_string()
-            } else {
-                s
-            }
-        });
-        Self::FileChange {
-            connection_id: connection_id.into(),
-            path: to_str,
-            action: "rename".into(),
-            old_path: Some(from_str),
-            parent_path: parent,
-            old_parent_path: old_parent,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ReplayResult {
-    Events(Vec<EventEnvelope>),
-    Expired { latest_sequence: u64 },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventEnvelope {
-    pub id: String,
-    pub sequence: u64,
-    pub timestamp: DateTime<Utc>,
-    #[serde(flatten)]
-    pub event: WsEvent,
-}
-
 #[derive(Clone)]
 pub struct TransferManager {
     jobs: Arc<RwLock<HashMap<String, TransferJob>>>,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     queue_tx: mpsc::Sender<String>,
-    event_tx: broadcast::Sender<EventEnvelope>,
-    sequence_counter: Arc<AtomicU64>,
-    event_history: Arc<RwLock<VecDeque<EventEnvelope>>>,
+    event_journal: Arc<EventJournal>,
     db: DbPool,
     max_concurrent_workers: Arc<AtomicUsize>,
     max_retry_attempts: Arc<AtomicUsize>,
@@ -296,7 +186,6 @@ pub struct TransferManager {
     is_accepting_jobs: Arc<std::sync::atomic::AtomicBool>,
     completion_tx: broadcast::Sender<(String, bool)>,
 }
-
 
 impl TransferManager {
     /// Create and initialize the TransferManager.
@@ -309,18 +198,16 @@ impl TransferManager {
         providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         db: DbPool,
         max_concurrent_workers: usize,
+        event_journal: Arc<EventJournal>,
         shutdown_token: CancellationToken,
         task_tracker: &tokio_util::task::TaskTracker,
     ) -> Self {
         let (queue_tx, queue_rx) = mpsc::channel::<String>(200);
-        let (event_tx, _) = broadcast::channel::<EventEnvelope>(400);
         let (completion_tx, _) = broadcast::channel::<(String, bool)>(400);
 
         let jobs: Arc<RwLock<HashMap<String, TransferJob>>> = Arc::new(RwLock::new(HashMap::new()));
         let cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let sequence_counter = Arc::new(AtomicU64::new(1));
-        let event_history = Arc::new(RwLock::new(VecDeque::with_capacity(500)));
         let clamped_workers = max_concurrent_workers.clamp(1, 64);
         let max_concurrent_workers_arc =
             Arc::new(AtomicUsize::new(clamped_workers));
@@ -330,11 +217,9 @@ impl TransferManager {
 
         let jobs_clone = Arc::clone(&jobs);
         let cancel_tokens_clone = Arc::clone(&cancel_tokens);
-        let event_tx_clone = event_tx.clone();
+        let event_journal_clone = Arc::clone(&event_journal);
         let db_clone = db.clone();
         let queue_tx_clone = queue_tx.clone();
-        let sequence_counter_clone = Arc::clone(&sequence_counter);
-        let event_history_clone = Arc::clone(&event_history);
         let completion_tx_clone = completion_tx.clone();
 
         // 1. Synchronous startup recovery: Load jobs from SQLite into memory
@@ -412,9 +297,7 @@ impl TransferManager {
                 let jobs_worker = Arc::clone(&jobs_clone);
                 let cancel_tokens_worker = Arc::clone(&cancel_tokens_clone);
                 let providers_worker = Arc::clone(&providers);
-                let event_tx_worker = event_tx_clone.clone();
-                let seq_worker = Arc::clone(&sequence_counter_clone);
-                let hist_worker = Arc::clone(&event_history_clone);
+                let event_journal_worker = Arc::clone(&event_journal_clone);
                 let db_worker = db_clone.clone();
                 let completion_tx_worker = completion_tx_clone.clone();
                 let retries_task = Arc::clone(&retries_clone);
@@ -457,21 +340,17 @@ impl TransferManager {
                         if !should_run {
                             if job.status == TransferStatus::Cancelled {
                                 let _ = Self::save_job_to_db(&db_worker, &job).await;
-                                Self::send_enveloped_event(
-                                    &event_tx_worker,
-                                    &seq_worker,
-                                    &hist_worker,
-                                    WsEvent::TransferFailed(job),
-                                );
+                                let _ = event_journal_worker.append(
+                                    DomainEvent::transfer_failed(&job),
+                                    Some(&job.id),
+                                ).await;
                             }
                         } else {
                             let _ = Self::save_job_to_db(&db_worker, &job).await;
-                            Self::send_enveloped_event(
-                                &event_tx_worker,
-                                &seq_worker,
-                                &hist_worker,
-                                WsEvent::TransferProgress(job.clone()),
-                            );
+                            let _ = event_journal_worker.append(
+                                DomainEvent::transfer_progress(&job),
+                                Some(&job.id),
+                            ).await;
 
                             // Execute robust bounded-stream transfer with retry & instant CancellationToken abort
                             let result = Self::execute_job_with_retry(
@@ -479,9 +358,7 @@ impl TransferManager {
                                 &cancel_token,
                                 &providers_worker,
                                 &jobs_worker,
-                                &event_tx_worker,
-                                &seq_worker,
-                                &hist_worker,
+                                &event_journal_worker,
                                 &db_worker,
                                 &retries_task,
                             )
@@ -506,12 +383,10 @@ impl TransferManager {
                                     map.insert(job.id.clone(), job.clone());
                                 }
                                 let _ = Self::save_job_to_db(&db_worker, &job).await;
-                                Self::send_enveloped_event(
-                                    &event_tx_worker,
-                                    &seq_worker,
-                                    &hist_worker,
-                                    WsEvent::TransferFailed(job),
-                                );
+                                let _ = event_journal_worker.append(
+                                    DomainEvent::transfer_failed(&job),
+                                    Some(&job.id),
+                                ).await;
                             } else {
                                 match result {
                                     Ok(()) => {
@@ -527,36 +402,30 @@ impl TransferManager {
                                         }
                                         let _ = Self::save_job_to_db(&db_worker, &job).await;
                                         // 1. Broadcast real-time FileChange event FIRST so open panels auto-refresh immediately (Plan 41 #22)
-                                        Self::send_enveloped_event(
-                                            &event_tx_worker,
-                                            &seq_worker,
-                                            &hist_worker,
-                                            WsEvent::file_change(
+                                        let _ = event_journal_worker.append(
+                                            DomainEvent::file_change(
                                                 &job.destination_connection_id,
                                                 &job.destination_path,
                                                 "create",
                                             ),
-                                        );
+                                            Some(&job.id),
+                                        ).await;
                                         if job.transfer_type == TransferType::Move {
-                                            Self::send_enveloped_event(
-                                                &event_tx_worker,
-                                                &seq_worker,
-                                                &hist_worker,
-                                                WsEvent::file_change(
+                                            let _ = event_journal_worker.append(
+                                                DomainEvent::file_change(
                                                     &job.source_connection_id,
                                                     &job.source_path,
                                                     "delete",
                                                 ),
-                                            );
+                                                Some(&job.id),
+                                            ).await;
                                         }
 
                                         // 2. Then emit TransferCompleted
-                                        Self::send_enveloped_event(
-                                            &event_tx_worker,
-                                            &seq_worker,
-                                            &hist_worker,
-                                            WsEvent::TransferCompleted(job.clone()),
-                                        );
+                                        let _ = event_journal_worker.append(
+                                            DomainEvent::transfer_completed(&job),
+                                            Some(&job.id),
+                                        ).await;
                                         let _ = completion_tx_worker.send((job.id.clone(), true));
                                     }
                                     Err(e) => {
@@ -570,12 +439,10 @@ impl TransferManager {
                                             map.insert(job.id.clone(), job.clone());
                                         }
                                         let _ = Self::save_job_to_db(&db_worker, &job).await;
-                                        Self::send_enveloped_event(
-                                            &event_tx_worker,
-                                            &seq_worker,
-                                            &hist_worker,
-                                            WsEvent::TransferFailed(job.clone()),
-                                        );
+                                        let _ = event_journal_worker.append(
+                                            DomainEvent::transfer_failed(&job),
+                                            Some(&job.id),
+                                        ).await;
                                         let _ = completion_tx_worker.send((job.id.clone(), false));
                                     }
                                 }
@@ -593,9 +460,7 @@ impl TransferManager {
             jobs,
             cancel_tokens,
             queue_tx,
-            event_tx,
-            sequence_counter,
-            event_history,
+            event_journal,
             db,
             max_concurrent_workers: max_concurrent_workers_arc,
             max_retry_attempts: max_retry_attempts_arc,
@@ -627,76 +492,27 @@ impl TransferManager {
         );
     }
 
-    fn send_enveloped_event(
-        event_tx: &broadcast::Sender<EventEnvelope>,
-        seq_counter: &Arc<AtomicU64>,
-        event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
-        event: WsEvent,
-    ) {
-        let envelope = EventEnvelope {
-            id: Uuid::new_v4().to_string(),
-            sequence: seq_counter.fetch_add(1, Ordering::SeqCst),
-            timestamp: Utc::now(),
-            event,
-        };
-
-        if let Ok(mut hist) = event_history.try_write() {
-            if hist.len() >= 500 {
-                hist.pop_front();
-            }
-            hist.push_back(envelope.clone());
-        } else {
-            let hist_clone = Arc::clone(event_history);
-            let env_clone = envelope.clone();
-            tokio::spawn(async move {
-                let mut hist = hist_clone.write().await;
-                if hist.len() >= 500 {
-                    hist.pop_front();
-                }
-                hist.push_back(env_clone);
-            });
-        }
-
-        let _ = event_tx.send(envelope);
-    }
-
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
-        self.event_tx.subscribe()
+        self.event_journal.subscribe()
     }
 
     pub fn current_sequence(&self) -> u64 {
-        self.sequence_counter.load(Ordering::SeqCst)
+        self.event_journal.latest_sequence()
     }
 
-    pub async fn get_events_since(&self, since_seq: u64) -> ReplayResult {
-        let hist = self.event_history.read().await;
-        if hist.is_empty() {
-            return ReplayResult::Events(Vec::new());
-        }
-        if since_seq == 0 {
-            return ReplayResult::Events(hist.iter().cloned().collect());
-        }
-        let oldest_seq = hist.front().map(|f| f.sequence).unwrap_or(0);
-        if since_seq + 1 < oldest_seq {
-            return ReplayResult::Expired {
-                latest_sequence: self.sequence_counter.load(Ordering::SeqCst),
-            };
-        }
-        let events = hist
-            .iter()
-            .filter(|e| e.sequence > since_seq)
-            .cloned()
-            .collect();
-        ReplayResult::Events(events)
+    pub async fn get_events_since(&self, since_seq: u64) -> ReplayOutcome {
+        self.event_journal
+            .get_since(Some(self.event_journal.epoch()), since_seq, 500)
+            .await
+            .unwrap_or(ReplayOutcome::Events(Vec::new()))
     }
 
-    pub fn broadcast_event(&self, event: WsEvent) {
-        Self::send_enveloped_event(
-            &self.event_tx,
-            &self.sequence_counter,
-            &self.event_history,
-            event,
-        );
+    pub async fn broadcast_event(&self, event: DomainEvent) {
+        let _ = self.event_journal.append(event, None).await;
+    }
+
+    pub async fn emit_event(&self, event: DomainEvent, aggregate_id: Option<&str>) {
+        let _ = self.event_journal.append(event, aggregate_id).await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -755,12 +571,7 @@ impl TransferManager {
             tokens.insert(id.clone(), CancellationToken::new());
         }
 
-        Self::send_enveloped_event(
-            &self.event_tx,
-            &self.sequence_counter,
-            &self.event_history,
-            WsEvent::TransferProgress(job),
-        );
+        let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
         self.queue_tx
             .send(id.clone())
             .await
@@ -869,19 +680,15 @@ impl TransferManager {
         if let Some(job) = updated_job {
             let _ = Self::save_job_to_db(&self.db, &job).await;
             if is_queued {
-                Self::send_enveloped_event(
-                    &self.event_tx,
-                    &self.sequence_counter,
-                    &self.event_history,
-                    WsEvent::TransferFailed(job),
-                );
+                let _ = self.event_journal.append(
+                    DomainEvent::transfer_failed(&job),
+                    Some(&job.id),
+                ).await;
             } else {
-                Self::send_enveloped_event(
-                    &self.event_tx,
-                    &self.sequence_counter,
-                    &self.event_history,
-                    WsEvent::TransferProgress(job),
-                );
+                let _ = self.event_journal.append(
+                    DomainEvent::transfer_progress(&job),
+                    Some(&job.id),
+                ).await;
             }
             Ok(true)
         } else {
@@ -958,12 +765,10 @@ impl TransferManager {
         if can_retry {
             if let Some(job) = job_opt {
                 let _ = Self::save_job_to_db(&self.db, &job).await;
-                Self::send_enveloped_event(
-                    &self.event_tx,
-                    &self.sequence_counter,
-                    &self.event_history,
-                    WsEvent::TransferProgress(job),
-                );
+                let _ = self.event_journal.append(
+                    DomainEvent::transfer_progress(&job),
+                    Some(&job.id),
+                ).await;
                 let _ = self.queue_tx.send(id.to_string()).await;
                 return Ok(true);
             }
@@ -1122,9 +927,7 @@ impl TransferManager {
         cancel_token: &CancellationToken,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         jobs_map: &Arc<RwLock<HashMap<String, TransferJob>>>,
-        event_tx: &broadcast::Sender<EventEnvelope>,
-        seq_counter: &Arc<AtomicU64>,
-        event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
+        event_journal: &Arc<EventJournal>,
         db: &DbPool,
         max_retries: &Arc<AtomicUsize>,
     ) -> anyhow::Result<()> {
@@ -1142,9 +945,7 @@ impl TransferManager {
                 cancel_token,
                 providers,
                 jobs_map,
-                event_tx,
-                seq_counter,
-                event_history,
+                event_journal,
                 db,
             )
             .await
@@ -1198,12 +999,9 @@ impl TransferManager {
                             j.updated_at = Utc::now();
                         }
                     }
-                    Self::send_enveloped_event(
-                        event_tx,
-                        seq_counter,
-                        event_history,
-                        WsEvent::TransferProgress(job.clone()),
-                    );
+                    let _ = event_journal
+                        .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                        .await;
 
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
@@ -1223,9 +1021,7 @@ impl TransferManager {
         cancel_token: &CancellationToken,
         providers: &Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
         jobs_map: &Arc<RwLock<HashMap<String, TransferJob>>>,
-        event_tx: &broadcast::Sender<EventEnvelope>,
-        seq_counter: &Arc<AtomicU64>,
-        event_history: &Arc<RwLock<VecDeque<EventEnvelope>>>,
+        event_journal: &Arc<EventJournal>,
         db: &DbPool,
     ) -> anyhow::Result<()> {
         if cancel_token.is_cancelled() {
@@ -1283,12 +1079,9 @@ impl TransferManager {
                     j.phase = TransferPhase::Preparing;
                 }
             }
-            Self::send_enveloped_event(
-                event_tx,
-                seq_counter,
-                event_history,
-                WsEvent::TransferProgress(job.clone()),
-            );
+            let _ = event_journal
+                .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                .await;
         }
 
         let strategy = TransferPlanner::plan_transfer(job, &src_fs, &dst_fs, &src_vfs, &dst_vfs);
@@ -1498,13 +1291,18 @@ impl TransferManager {
                 }
             }
 
+            // Emit immediate Transferring 0% phase transition
             job.phase = TransferPhase::Transferring;
             {
                 let mut map = jobs_map.write().await;
                 if let Some(j) = map.get_mut(&job.id) {
                     j.phase = TransferPhase::Transferring;
+                    j.updated_at = Utc::now();
                 }
             }
+            let _ = event_journal
+                .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                .await;
 
             let concurrency = if dst_fs.capabilities().write_can_multi {
                 8
@@ -1517,7 +1315,6 @@ impl TransferManager {
             let total_bytes_atomic = Arc::new(AtomicU64::new(0));
             let start_time = Instant::now();
 
-            let worker_job_id = job.id.clone();
             let worker_src_fs = Arc::clone(&src_fs);
             let worker_dst_fs = Arc::clone(&dst_fs);
             let worker_src_vfs = src_vfs.clone();
@@ -1527,11 +1324,59 @@ impl TransferManager {
             let worker_is_move = job.transfer_type == TransferType::Move;
             let worker_cancel_token = cancel_token.clone();
             let worker_transferred = Arc::clone(&transferred_atomic);
-            let worker_total_bytes = Arc::clone(&total_bytes_atomic);
-            let worker_jobs_map = Arc::clone(jobs_map);
-            let worker_event_tx = event_tx.clone();
-            let worker_seq_counter = Arc::clone(seq_counter);
-            let worker_event_hist = Arc::clone(event_history);
+
+            // Spawn background progress ticker (every 100ms) for real-time byte progress during directory transfers
+            let ticker_cancel = cancel_token.clone();
+            let ticker_transferred = Arc::clone(&transferred_atomic);
+            let ticker_total = Arc::clone(&total_bytes_atomic);
+            let ticker_job_id = job.id.clone();
+            let ticker_jobs_map = Arc::clone(jobs_map);
+            let ticker_journal = Arc::clone(event_journal);
+            let ticker_start = start_time;
+
+            let ticker_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    tokio::select! {
+                        _ = ticker_cancel.cancelled() => break,
+                        _ = interval.tick() => {
+                            let current_bytes = ticker_transferred.load(Ordering::Relaxed);
+                            let total = ticker_total.load(Ordering::Relaxed);
+                            let elapsed_secs = ticker_start.elapsed().as_secs_f64().max(0.001);
+                            let speed = (current_bytes as f64 / elapsed_secs) as u64;
+                            let eta = if speed > 0 && total > current_bytes {
+                                Some((total - current_bytes) / speed)
+                            } else {
+                                Some(0)
+                            };
+                            let updated = {
+                                let mut map = ticker_jobs_map.write().await;
+                                if let Some(j) = map.get_mut(&ticker_job_id) {
+                                    if j.status == TransferStatus::Cancelled
+                                        || j.status == TransferStatus::CancellationRequested
+                                        || ticker_cancel.is_cancelled()
+                                    {
+                                        None
+                                    } else {
+                                        j.transferred_bytes = current_bytes;
+                                        j.total_bytes = total;
+                                        j.speed_bytes_per_sec = speed;
+                                        j.eta_seconds = eta;
+                                        j.phase = TransferPhase::Transferring;
+                                        j.updated_at = Utc::now();
+                                        Some(j.clone())
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(j) = updated {
+                                let _ = ticker_journal.append(DomainEvent::transfer_progress(&j), Some(&ticker_job_id)).await;
+                            }
+                        }
+                    }
+                }
+            });
 
             let file_workers = tokio::spawn(async move {
                 use futures::StreamExt;
@@ -1543,17 +1388,11 @@ impl TransferManager {
                     let dst_fs = Arc::clone(&worker_dst_fs);
                     let src_vfs = worker_src_vfs.clone();
                     let dst_vfs = worker_dst_vfs.clone();
-                    let job_id = worker_job_id.clone();
                     let src_conn_id = worker_src_conn.clone();
                     let dst_conn_id = worker_dst_conn.clone();
                     let is_move = worker_is_move;
                     let cancel_token = worker_cancel_token.clone();
                     let transferred_atomic = Arc::clone(&worker_transferred);
-                    let total_bytes_atomic = Arc::clone(&worker_total_bytes);
-                    let jobs_map_clone = Arc::clone(&worker_jobs_map);
-                    let event_tx_clone = worker_event_tx.clone();
-                    let seq_counter_clone = Arc::clone(&worker_seq_counter);
-                    let event_hist_clone = Arc::clone(&worker_event_hist);
 
                     async move {
                         if cancel_token.is_cancelled() {
@@ -1575,6 +1414,7 @@ impl TransferManager {
                             .map_err(|e| anyhow::anyhow!("Read failed: {}", e))?;
                         let (mut pipe_writer, pipe_reader) = tokio::io::duplex(64 * 1024);
                         let cancel_pump = cancel_token.clone();
+                        let transferred_atomic_pump = Arc::clone(&transferred_atomic);
 
                         let pump_handle = tokio::spawn(async move {
                             let mut buffer = vec![0u8; 64 * 1024];
@@ -1595,6 +1435,7 @@ impl TransferManager {
                                     res = pipe_writer.write_all(&buffer[..n]) => res?,
                                 };
                                 file_transferred += n as u64;
+                                transferred_atomic_pump.fetch_add(n as u64, Ordering::Relaxed);
                             }
                             pipe_writer.flush().await?;
                             drop(pipe_writer);
@@ -1610,41 +1451,7 @@ impl TransferManager {
                             res = write_fut => res.map_err(|e| anyhow::anyhow!("Write failed: {}", e))?,
                         }
 
-                        let file_bytes = pump_handle.await.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))??;
-                        let current_total = transferred_atomic.fetch_add(file_bytes, Ordering::SeqCst) + file_bytes;
-                        let total_bytes = total_bytes_atomic.load(Ordering::Relaxed);
-
-                        let elapsed_secs = start_time.elapsed().as_secs_f64().max(0.001);
-                        let speed = (current_total as f64 / elapsed_secs) as u64;
-                        let eta = if speed > 0 && total_bytes > current_total {
-                            Some((total_bytes - current_total) / speed)
-                        } else {
-                            Some(0)
-                        };
-
-                        let updated = {
-                            let mut map = jobs_map_clone.write().await;
-                            if let Some(j) = map.get_mut(&job_id) {
-                                j.transferred_bytes = current_total;
-                                j.total_bytes = total_bytes;
-                                j.speed_bytes_per_sec = speed;
-                                j.eta_seconds = eta;
-                                j.phase = TransferPhase::Transferring;
-                                j.updated_at = Utc::now();
-                                Some(j.clone())
-                            } else {
-                                None
-                            }
-                        };
-
-                        if let Some(j) = updated {
-                            Self::send_enveloped_event(
-                                &event_tx_clone,
-                                &seq_counter_clone,
-                                &event_hist_clone,
-                                WsEvent::TransferProgress(j),
-                            );
-                        }
+                        let _file_bytes = pump_handle.await.map_err(|e| anyhow::anyhow!("Pump panic: {}", e))??;
 
                         if is_move {
                             src_fs.delete(&src_file_vfs).await.map_err(|e| {
@@ -1709,6 +1516,9 @@ impl TransferManager {
                 .await
                 .map_err(|e| anyhow::anyhow!("Worker pool panic: {}", e))??;
 
+            // Stop background directory ticker
+            ticker_handle.abort();
+
             // Move transfer: remove source directory after empty
             if job.transfer_type == TransferType::Move {
                 job.phase = TransferPhase::CleaningUp;
@@ -1719,12 +1529,9 @@ impl TransferManager {
                         j.updated_at = Utc::now();
                     }
                 }
-                Self::send_enveloped_event(
-                    event_tx,
-                    seq_counter,
-                    event_history,
-                    WsEvent::TransferProgress(job.clone()),
-                );
+                let _ = event_journal
+                    .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                    .await;
 
                 src_fs.delete(&src_vfs).await.map_err(|e| {
                     anyhow::anyhow!("Failed to delete source directory {}: {}", src_vfs.path, e)
@@ -1861,21 +1668,24 @@ impl TransferManager {
 
         let job_id = job.id.clone();
         let jobs_map_clone = Arc::clone(jobs_map);
-        let event_tx_clone = event_tx.clone();
-        let seq_counter_clone = Arc::clone(seq_counter);
-        let event_hist_clone = Arc::clone(event_history);
+        let event_journal_clone = Arc::clone(event_journal);
         let db_clone = db.clone();
         let cancel_token_pump = cancel_token.clone();
         let staging_path_clone = staging_path.clone();
         let source_etag_clone = src_meta.map(|m| m.etag);
 
+        // Emit immediate Transferring 0% phase transition
         job.phase = TransferPhase::Transferring;
         {
             let mut map = jobs_map.write().await;
             if let Some(j) = map.get_mut(&job.id) {
                 j.phase = TransferPhase::Transferring;
+                j.updated_at = Utc::now();
             }
         }
+        let _ = event_journal
+            .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+            .await;
 
         // 5. Spawn writer task to pump data, calculate SHA-256 checksum on-the-fly, and write to pipe
         let is_clean_start = resume_offset == 0;
@@ -1960,12 +1770,9 @@ impl TransferManager {
                     };
 
                     if let Some(j) = updated_job {
-                        Self::send_enveloped_event(
-                            &event_tx_clone,
-                            &seq_counter_clone,
-                            &event_hist_clone,
-                            WsEvent::TransferProgress(j.clone()),
-                        );
+                        let _ = event_journal_clone
+                            .append(DomainEvent::transfer_progress(&j), Some(&job_id))
+                            .await;
 
                         // Persist to DB every 2 seconds or on finish
                         if last_db_save.elapsed().as_secs() >= 2 || transferred == total_bytes {
@@ -2012,12 +1819,9 @@ impl TransferManager {
                 }
             };
             if let Some(j) = emit_finalizing {
-                Self::send_enveloped_event(
-                    &event_tx_clone,
-                    &seq_counter_clone,
-                    &event_hist_clone,
-                    WsEvent::TransferProgress(j),
-                );
+                let _ = event_journal_clone
+                    .append(DomainEvent::transfer_progress(&j), Some(&job_id))
+                    .await;
             }
 
             let checksum_hex = if is_clean_start {
@@ -2102,12 +1906,9 @@ impl TransferManager {
                 j.updated_at = Utc::now();
             }
         }
-        Self::send_enveloped_event(
-            event_tx,
-            seq_counter,
-            event_history,
-            WsEvent::TransferProgress(job.clone()),
-        );
+        let _ = event_journal
+            .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+            .await;
 
         let dst_stat = dst_fs
             .stat(&dst_vfs)
@@ -2131,12 +1932,9 @@ impl TransferManager {
                     j.updated_at = Utc::now();
                 }
             }
-            Self::send_enveloped_event(
-                event_tx,
-                seq_counter,
-                event_history,
-                WsEvent::TransferProgress(job.clone()),
-            );
+            let _ = event_journal
+                .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                .await;
 
             // Safely delete source file
             src_fs
