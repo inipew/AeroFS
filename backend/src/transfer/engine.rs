@@ -984,8 +984,11 @@ impl TransferManager {
                         backoff
                     );
 
+                    let cp = crate::transfer::checkpoint::TransferCheckpoint::load(db, &job.id).await.ok().flatten();
+                    let preserved_offset = cp.map(|c| c.offset).unwrap_or(job.transferred_bytes);
+
                     job.phase = TransferPhase::Preparing;
-                    job.transferred_bytes = 0;
+                    job.transferred_bytes = preserved_offset;
                     job.speed_bytes_per_sec = 0;
                     job.eta_seconds = None;
                     job.updated_at = Utc::now();
@@ -993,7 +996,7 @@ impl TransferManager {
                         let mut map = jobs_map.write().await;
                         if let Some(j) = map.get_mut(&job.id) {
                             j.phase = TransferPhase::Preparing;
-                            j.transferred_bytes = 0;
+                            j.transferred_bytes = preserved_offset;
                             j.speed_bytes_per_sec = 0;
                             j.eta_seconds = None;
                             j.updated_at = Utc::now();
@@ -1610,11 +1613,16 @@ impl TransferManager {
             true
         };
 
+        let target_offset = saved_checkpoint
+            .as_ref()
+            .map(|cp| cp.offset)
+            .unwrap_or(job.transferred_bytes);
+
         let existing_part_stat = if can_append
             && can_range_read
             && checkpoint_valid
-            && job.transferred_bytes > 0
-            && job.transferred_bytes < total_bytes
+            && target_offset > 0
+            && target_offset < total_bytes
         {
             dst_fs.stat(&write_target_vfs).await.ok()
         } else {
@@ -1622,11 +1630,12 @@ impl TransferManager {
         };
 
         let resume_offset = if let Some(part_meta) = existing_part_stat {
-            if part_meta.size == job.transferred_bytes {
-                job.transferred_bytes
+            if part_meta.size == target_offset {
+                target_offset
             } else {
                 // Target file size does not match recorded progress; clean restart for safety
                 let _ = dst_fs.delete(&write_target_vfs).await;
+                let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(db, &job.id).await;
                 0
             }
         } else {
@@ -1637,9 +1646,7 @@ impl TransferManager {
             0
         };
 
-        if resume_offset == 0 {
-            job.transferred_bytes = 0;
-        }
+        job.transferred_bytes = resume_offset;
 
         let mut reader = if resume_offset > 0 {
             tracing::info!(
