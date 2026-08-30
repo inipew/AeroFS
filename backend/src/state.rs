@@ -194,7 +194,30 @@ impl AppState {
             db.clone(),
             transfer_manager.clone(),
             runtime.supervisor.clone(),
+            event_journal.clone(),
+            registry.providers_map(),
         ));
+
+        // Spawn transfer completion listener for sync operations
+        let mut completion_rx = transfer_manager.completion_receiver();
+        let sync_manager_clone = sync_manager.clone();
+        let shutdown_token_cl = runtime.shutdown_token.clone();
+        runtime.supervisor.spawn("sync_completion_listener", async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown_token_cl.cancelled() => break,
+                    result = completion_rx.recv() => {
+                        match result {
+                            Ok((transfer_job_id, success)) => {
+                                let _ = sync_manager_clone.notify_transfer_completed(&transfer_job_id, success).await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+        });
 
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());

@@ -294,6 +294,7 @@ pub struct TransferManager {
     max_retry_attempts: Arc<AtomicUsize>,
     worker_semaphore: Arc<tokio::sync::Semaphore>,
     is_accepting_jobs: Arc<std::sync::atomic::AtomicBool>,
+    completion_tx: broadcast::Sender<(String, bool)>,
 }
 
 
@@ -313,6 +314,7 @@ impl TransferManager {
     ) -> Self {
         let (queue_tx, queue_rx) = mpsc::channel::<String>(200);
         let (event_tx, _) = broadcast::channel::<EventEnvelope>(400);
+        let (completion_tx, _) = broadcast::channel::<(String, bool)>(400);
 
         let jobs: Arc<RwLock<HashMap<String, TransferJob>>> = Arc::new(RwLock::new(HashMap::new()));
         let cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>> =
@@ -333,6 +335,7 @@ impl TransferManager {
         let queue_tx_clone = queue_tx.clone();
         let sequence_counter_clone = Arc::clone(&sequence_counter);
         let event_history_clone = Arc::clone(&event_history);
+        let completion_tx_clone = completion_tx.clone();
 
         // 1. Synchronous startup recovery: Load jobs from SQLite into memory
         // Awaited directly so server readiness is announced only after recovery completes.
@@ -413,6 +416,7 @@ impl TransferManager {
                 let seq_worker = Arc::clone(&sequence_counter_clone);
                 let hist_worker = Arc::clone(&event_history_clone);
                 let db_worker = db_clone.clone();
+                let completion_tx_worker = completion_tx_clone.clone();
                 let retries_task = Arc::clone(&retries_clone);
                 let tracker_for_worker = tracker_clone.clone();
 
@@ -551,8 +555,9 @@ impl TransferManager {
                                             &event_tx_worker,
                                             &seq_worker,
                                             &hist_worker,
-                                            WsEvent::TransferCompleted(job),
+                                            WsEvent::TransferCompleted(job.clone()),
                                         );
+                                        let _ = completion_tx_worker.send((job.id.clone(), true));
                                     }
                                     Err(e) => {
                                         job.status = TransferStatus::Failed;
@@ -569,8 +574,9 @@ impl TransferManager {
                                             &event_tx_worker,
                                             &seq_worker,
                                             &hist_worker,
-                                            WsEvent::TransferFailed(job),
+                                            WsEvent::TransferFailed(job.clone()),
                                         );
+                                        let _ = completion_tx_worker.send((job.id.clone(), false));
                                     }
                                 }
                             }
@@ -595,7 +601,12 @@ impl TransferManager {
             max_retry_attempts: max_retry_attempts_arc,
             worker_semaphore,
             is_accepting_jobs,
+            completion_tx,
         }
+    }
+
+    pub fn completion_receiver(&self) -> broadcast::Receiver<(String, bool)> {
+        self.completion_tx.subscribe()
     }
 
     /// Dynamically update transfer concurrency worker limit and max retry count without restart (P1 #16 & #17)

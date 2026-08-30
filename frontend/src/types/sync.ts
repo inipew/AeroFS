@@ -50,8 +50,6 @@ export interface CreateSyncRequest {
   destination_connection_id: string;
   destination_path: string;
   strategy?: SyncStrategy;
-  source_manifest?: FileManifest[];
-  destination_manifest?: FileManifest[];
 }
 
 export interface CreateSyncResponse {

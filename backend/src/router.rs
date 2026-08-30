@@ -260,6 +260,14 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/",
             get(crate::api::sync::list_sync_jobs).post(crate::api::sync::create_sync_job),
+        )
+        .route(
+            "/{id}/operations",
+            get(crate::api::sync::list_operations),
+        )
+        .route(
+            "/{id}/resolve",
+            post(crate::api::sync::resolve_conflict),
         );
 
     let api_v1 = Router::new()

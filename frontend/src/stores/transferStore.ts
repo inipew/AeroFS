@@ -209,17 +209,8 @@ export const useTransferStore = defineStore('transfer', () => {
         jobs.value = [...jobs.value];
       }
     } catch (err) {
-      console.warn('retryTransferApi failed, fallback to resubmission', err);
-      const job = jobs.value.find((j) => j.id === jobId);
-      if (!job) return;
-      await submitTransfer(
-        job.name,
-        job.transfer_type,
-        job.source_connection_id,
-        job.source_path,
-        job.destination_connection_id,
-        job.destination_path
-      );
+      console.error('retryTransferApi failed', err);
+      throw err;
     }
   }
 

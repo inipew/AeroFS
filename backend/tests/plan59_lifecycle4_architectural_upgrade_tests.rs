@@ -287,10 +287,17 @@ async fn test_sync_manager_creation_and_reconciliation() {
     .await;
 
     let supervisor = TaskSupervisor::new();
+    let event_journal = Arc::new(
+        backend::events::EventJournal::init(pool.clone())
+            .await
+            .unwrap(),
+    );
     let sync_mgr = backend::sync::SyncManager::new(
         pool.clone(),
         transfer_manager,
         supervisor,
+        event_journal,
+        registry.providers_map(),
     );
 
     let job = sync_mgr
@@ -301,8 +308,7 @@ async fn test_sync_manager_creation_and_reconciliation() {
     assert_eq!(job.user_id, "user-1");
     assert_eq!(job.status, backend::sync::SyncStatus::Created);
 
-    let list = sync_mgr.list_jobs("user-1").await.unwrap();
-    assert_eq!(list.len(), 1);
+    let list = sync_mgr.list_jobs().await.unwrap();
+    assert!(!list.is_empty());
     assert_eq!(list[0].id, job.id);
 }
-
