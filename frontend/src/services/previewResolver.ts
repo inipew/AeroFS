@@ -1,5 +1,6 @@
 import type { FileEntry } from '../types/vfs';
 import { useUiStore } from '../stores/uiStore';
+import { useRecentStore } from '../stores/recentStore';
 import { readFileApi, getDownloadUrl } from '../api/files';
 import { isArchiveFile } from '../utils/archive';
 
@@ -64,12 +65,14 @@ export class PreviewResolver {
   ): PreviewResolution {
     const kind = this.getKind(entry);
     const uiStore = useUiStore();
+    const recentStore = useRecentStore();
 
     if (kind === 'archive') {
       return {
         kind: 'archive',
         canPreview: true,
         open: () => {
+          recentStore.addRecent(connectionId, entry);
           if (onOpenArchive) {
             onOpenArchive({ connectionId, path: entry.path });
           } else {
@@ -89,6 +92,7 @@ export class PreviewResolver {
         kind,
         canPreview: true,
         open: () => {
+          recentStore.addRecent(connectionId, entry);
           const downloadUrl = getDownloadUrl(connectionId, entry.path);
           uiStore.openMediaViewer(
             entry.name,
@@ -106,6 +110,7 @@ export class PreviewResolver {
         kind: 'pdf',
         canPreview: true,
         open: () => {
+          recentStore.addRecent(connectionId, entry);
           const downloadUrl = getDownloadUrl(connectionId, entry.path);
           window.open(downloadUrl, '_blank');
         },
@@ -117,6 +122,7 @@ export class PreviewResolver {
         kind,
         canPreview: true,
         open: async () => {
+          recentStore.addRecent(connectionId, entry);
           // Dynamic safety guard: Maximum editable file size guard (P1 #18)
           const size = entry.size || 0;
           const maxEditable = uiStore.maxEditableSize || 10 * 1024 * 1024;
@@ -153,6 +159,7 @@ export class PreviewResolver {
       kind: 'binary',
       canPreview: false,
       open: () => {
+        recentStore.addRecent(connectionId, entry);
         const downloadUrl = getDownloadUrl(connectionId, entry.path);
         window.open(downloadUrl, '_blank');
       },

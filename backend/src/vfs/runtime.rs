@@ -2,11 +2,31 @@ use crate::domain::{Capabilities, RetryPolicy};
 use crate::errors::VfsError;
 use crate::vfs::lifecycle::ProviderState;
 use crate::vfs::FileSystem;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 
+/// RAII Guard that holds a lease reference to an active storage connection.
+pub struct ConnectionLeaseGuard {
+    leases: Arc<AtomicUsize>,
+    last_active: Arc<RwLock<Instant>>,
+}
+
+impl Drop for ConnectionLeaseGuard {
+    fn drop(&mut self) {
+        self.leases.fetch_sub(1, Ordering::SeqCst);
+        let la = Arc::clone(&self.last_active);
+        tokio::spawn(async move {
+            let mut w = la.write().await;
+            *w = Instant::now();
+        });
+    }
+}
+
 /// Centralized storage runtime combining provider execution, capabilities snapshot,
-/// typed retry policy, lifecycle state machine, and connection-wide concurrency budgeting.
+/// typed retry policy, lifecycle state machine, connection-wide concurrency budgeting,
+/// and reference-counted lease tracking (Plan 65).
 pub struct StorageRuntime {
     pub connection_id: String,
     pub provider: Arc<dyn FileSystem>,
@@ -14,6 +34,8 @@ pub struct StorageRuntime {
     pub retry: RetryPolicy,
     pub semaphore: Arc<Semaphore>,
     pub state: Arc<RwLock<ProviderState>>,
+    pub active_leases: Arc<AtomicUsize>,
+    pub last_active: Arc<RwLock<Instant>>,
 }
 
 impl StorageRuntime {
@@ -32,6 +54,8 @@ impl StorageRuntime {
         };
         let semaphore = Arc::new(Semaphore::new(permits));
         let state = Arc::new(RwLock::new(ProviderState::Ready));
+        let active_leases = Arc::new(AtomicUsize::new(0));
+        let last_active = Arc::new(RwLock::new(Instant::now()));
 
         Self {
             connection_id: conn_id,
@@ -40,6 +64,8 @@ impl StorageRuntime {
             retry,
             semaphore,
             state,
+            active_leases,
+            last_active,
         }
     }
 
@@ -66,6 +92,33 @@ impl StorageRuntime {
 
     pub fn capabilities(&self) -> &Capabilities {
         &self.capabilities
+    }
+
+    /// Acquire an active connection lease (for Panels, Transfers, and Sync jobs)
+    pub async fn acquire_lease(&self) -> ConnectionLeaseGuard {
+        self.active_leases.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut la = self.last_active.write().await;
+            *la = Instant::now();
+        }
+        ConnectionLeaseGuard {
+            leases: Arc::clone(&self.active_leases),
+            last_active: Arc::clone(&self.last_active),
+        }
+    }
+
+    /// Total count of active leases currently holding this connection
+    pub fn active_leases_count(&self) -> usize {
+        self.active_leases.load(Ordering::Relaxed)
+    }
+
+    /// Check if connection is idle with no active leases beyond specified TTL
+    pub async fn is_idle(&self, ttl: Duration) -> bool {
+        if self.active_leases_count() > 0 {
+            return false;
+        }
+        let la = self.last_active.read().await;
+        la.elapsed() >= ttl
     }
 
     pub async fn acquire_permit(&self) -> Result<SemaphorePermit<'_>, VfsError> {

@@ -91,4 +91,16 @@ impl ProviderRegistry {
         let mut errors = self.connection_errors.write().await;
         errors.remove(connection_id);
     }
+
+    /// List non-local connections that have 0 leases and have been idle for longer than TTL
+    pub async fn get_idle_connections(&self, ttl: std::time::Duration) -> Vec<String> {
+        let runtimes = self.runtimes.read().await;
+        let mut idle = Vec::new();
+        for (id, rt) in runtimes.iter() {
+            if id != "local" && rt.is_idle(ttl).await {
+                idle.push(id.clone());
+            }
+        }
+        idle
+    }
 }

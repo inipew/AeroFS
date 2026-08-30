@@ -224,16 +224,45 @@
       </div>
     </div>
 
+    <!-- Orphaned / Unavailable Connection Banner (Plan 65/66) -->
+    <div
+      v-if="panel.status === 'orphaned'"
+      class="mx-4 mt-2 px-4 py-3 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-800 dark:text-red-300 flex items-center justify-between text-xs shrink-0 animate-in fade-in"
+    >
+      <div class="flex items-center space-x-2.5 truncate mr-2">
+        <FbIcon name="info" size="18px" class="text-red-500 shrink-0" />
+        <div class="truncate">
+          <span class="font-bold">Storage connection unavailable</span>
+          <span class="ml-1 text-[11px] opacity-80 truncate block sm:inline">This connection may have been disconnected or removed.</span>
+        </div>
+      </div>
+      <div class="flex items-center space-x-1.5 shrink-0">
+        <button
+          @click.stop="workspaceStore.switchPanelConnection(panelId, 'local', '/')"
+          class="px-2.5 py-1 bg-gray-200 dark:bg-slate-800 hover:bg-gray-300 dark:hover:bg-slate-700 text-gray-800 dark:text-slate-200 font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition"
+        >
+          Switch to Local
+        </button>
+        <button
+          v-if="workspaceStore.isDualPane"
+          @click.stop="workspaceStore.closePanel(panelId)"
+          class="px-2.5 py-1 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition"
+        >
+          Close Panel
+        </button>
+      </div>
+    </div>
+
     <!-- Graceful Warning / Stale Cache Banner (Human-Friendly Diagnostic) -->
     <div
-      v-if="panel.error && panel.entries.length > 0"
+      v-else-if="panel.error && panel.entries.length > 0"
       class="mx-4 mt-2 px-3.5 py-2 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 flex items-center justify-between text-xs shrink-0 animate-in fade-in"
     >
       <div class="flex items-center space-x-2.5 truncate mr-2">
         <FbIcon name="info" size="16px" class="text-amber-500 shrink-0" />
         <div class="truncate">
           <span class="font-bold">Unable to refresh directory</span>
-          <span class="ml-1 text-[11px] opacity-80 truncate">Showing last cached version</span>
+          <span class="ml-1 text-[11px] opacity-80 truncate">{{ panel.error || 'Showing last cached version' }}</span>
         </div>
       </div>
       <button
@@ -961,6 +990,12 @@ const isAllSelected = computed(() => {
 });
 
 // ── Virtualisation Engines (TanStack Vue Virtual) ───────────────────────────
+const panelContentRef = ref<HTMLElement | null>(null);
+const isPullRefreshing = ref(false);
+const pullDistance = ref(0);
+let startY = 0;
+let isPulling = false;
+
 const listVirtualizer = useVirtualizer({
   get count() { return displayedEntries.value.length; },
   getScrollElement: () => panelContentRef.value,
@@ -1084,12 +1119,6 @@ let touchTimer: any = null;
 let touchMoved = false;
 let lastClickTime = 0;
 let lastClickPath = '';
-
-const panelContentRef = ref<HTMLElement | null>(null);
-const isPullRefreshing = ref(false);
-const pullDistance = ref(0);
-let startY = 0;
-let isPulling = false;
 
 function getGridColumnCount(): number {
   if (panel.value.viewMode !== 'grid' || !panelContentRef.value) return 1;
@@ -1642,9 +1671,13 @@ function handleKeyDown(e: KeyboardEvent) {
     e.preventDefault();
     workspaceStore.setActivePanel('right');
     return;
-  } else if (e.key === 'F5') {
+  } else if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r')) {
     e.preventDefault();
-    workspaceStore.fetchPanelEntries(props.panelId);
+    workspaceStore.refreshPanel(props.panelId);
+    return;
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    panel.value.selectedEntries = [];
     return;
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
     e.preventDefault();

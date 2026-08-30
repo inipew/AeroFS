@@ -2,7 +2,7 @@ import type { FileEntry } from './vfs';
 
 export type PanelId = 'left' | 'right';
 export type WorkspaceLayout = 'single' | 'split';
-export type PanelStatus = 'idle' | 'loading' | 'refreshing' | 'loading_more' | 'stale' | 'error' | 'offline';
+export type PanelStatus = 'idle' | 'loading' | 'refreshing' | 'loading_more' | 'stale' | 'error' | 'offline' | 'degraded' | 'orphaned' | 'closed';
 export type SortField = 'name' | 'size' | 'modified' | 'type';
 export type SortOrder = 'asc' | 'desc';
 export type ViewMode = 'grid' | 'list';
@@ -43,6 +43,8 @@ export interface PanelRuntimeState {
   hasMore: boolean;
   nextCursor?: string;
   totalCount?: number;
+  lastLoadedAt?: number;
+  lastError?: string;
 }
 
 export interface Panel {
@@ -75,6 +77,9 @@ export interface Panel {
   hasMore?: boolean;
   nextCursor?: string;
   totalCount?: number;
+  lastLoadedAt?: number;
+  lastError?: string;
+  status: PanelStatus;
 }
 
 export type PanelState = Panel;

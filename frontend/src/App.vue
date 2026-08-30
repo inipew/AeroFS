@@ -13,6 +13,9 @@
         @open-shares-dialog="isSharesDialogOpen = true"
         @open-trash-dialog="isTrashDialogOpen = true"
         @open-starred-dialog="isStarredDialogOpen = true"
+        @open-starred-view="isStarredDialogOpen = true"
+        @open-recent-dialog="handleRecentView"
+        @open-recent-view="handleRecentView"
         @open-archive-dialog="handleOpenArchive"
         @recent-view="handleRecentView"
       />
@@ -26,6 +29,9 @@
           @open-shares-dialog="isSharesDialogOpen = true"
           @open-trash-dialog="isTrashDialogOpen = true"
           @open-starred-dialog="isStarredDialogOpen = true"
+          @open-starred-view="isStarredDialogOpen = true"
+          @open-recent-dialog="handleRecentView"
+          @open-recent-view="handleRecentView"
         />
 
         <!-- Main Workspace Workspace Area -->
@@ -241,6 +247,7 @@
         <SharesModal v-if="isSharesDialogOpen" v-model="isSharesDialogOpen" />
         <TrashModal v-if="isTrashDialogOpen" v-model="isTrashDialogOpen" />
         <StarredModal v-if="isStarredDialogOpen" v-model="isStarredDialogOpen" />
+        <RecentModal v-if="isRecentDialogOpen" v-model="isRecentDialogOpen" />
         <PropertiesModal
           v-if="isPropertiesDialogOpen"
           v-model="isPropertiesDialogOpen"
@@ -356,6 +363,7 @@ const SettingsModal = defineAsyncComponent(() => import('./components/dialogs/Se
 const SharesModal = defineAsyncComponent(() => import('./components/dialogs/SharesModal.vue'));
 const TrashModal = defineAsyncComponent(() => import('./components/dialogs/TrashModal.vue'));
 const StarredModal = defineAsyncComponent(() => import('./components/dialogs/StarredModal.vue'));
+const RecentModal = defineAsyncComponent(() => import('./components/dialogs/RecentModal.vue'));
 const PropertiesModal = defineAsyncComponent(() => import('./components/dialogs/PropertiesModal.vue'));
 const CreateShareModal = defineAsyncComponent(() => import('./components/dialogs/CreateShareModal.vue'));
 const CodeEditorModal = defineAsyncComponent(() => import('./components/editor/CodeEditorModal.vue'));
@@ -525,6 +533,7 @@ const isSettingsDialogOpen = ref(false);
 const isSharesDialogOpen = ref(false);
 const isTrashDialogOpen = ref(false);
 const isStarredDialogOpen = ref(false);
+const isRecentDialogOpen = ref(false);
 const isPropertiesDialogOpen = ref(false);
 const isCreateShareDialogOpen = ref(false);
 const isArchiveDialogOpen = ref(false);
@@ -603,13 +612,7 @@ function handleOpenCreateShare(payload: { connectionId: string; path: string }) 
 }
 
 function handleRecentView() {
-  const panel = workspaceStore.getPanel(workspaceStore.activePanelId);
-  panel.entries.sort((a: FileEntry, b: FileEntry) => {
-    const timeA = a.modified_at ? new Date(a.modified_at).getTime() : 0;
-    const timeB = b.modified_at ? new Date(b.modified_at).getTime() : 0;
-    return timeB - timeA;
-  });
-  uiStore.showToast('Sorted by most recently modified files', 'info');
+  isRecentDialogOpen.value = true;
 }
 
 function handleGlobalKeydown(e: KeyboardEvent) {
@@ -649,6 +652,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     isSharesDialogOpen.value ||
     isTrashDialogOpen.value ||
     isStarredDialogOpen.value ||
+    isRecentDialogOpen.value ||
     isPropertiesDialogOpen.value ||
     isCreateShareDialogOpen.value;
 

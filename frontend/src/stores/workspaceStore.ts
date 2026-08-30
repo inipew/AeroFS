@@ -131,6 +131,15 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
 
     get totalCount() { return runtime.totalCount; },
     set totalCount(val: number | undefined) { runtime.totalCount = val; },
+
+    get lastLoadedAt() { return runtime.lastLoadedAt; },
+    set lastLoadedAt(val: number | undefined) { runtime.lastLoadedAt = val; },
+
+    get lastError() { return runtime.lastError; },
+    set lastError(val: string | undefined) { runtime.lastError = val; },
+
+    get status() { return runtime.status; },
+    set status(val: any) { runtime.status = val; },
   };
 
   return reactive(panel) as Panel;
@@ -411,6 +420,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
       p.runtime.status = 'idle';
       p.runtime.error = null;
+      p.runtime.lastError = undefined;
+      p.runtime.lastLoadedAt = Date.now();
       p.runtime.initialized = true;
       return { ok: true, path: data.path };
     } catch (err: unknown) {
@@ -421,8 +432,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return { ok: false, error: 'Stale response discarded', aborted: true } as any;
       }
       const norm = normalizeApiError(err);
-      p.runtime.status = p.runtime.entries.length > 0 ? 'stale' : 'error';
+      p.runtime.status = p.runtime.entries.length > 0 ? 'degraded' : 'error';
       p.runtime.error = norm.message;
+      p.runtime.lastError = norm.message;
       return { ok: false, error: p.runtime.error || undefined };
     }
   }
