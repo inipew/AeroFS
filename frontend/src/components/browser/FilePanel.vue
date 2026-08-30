@@ -320,7 +320,7 @@
                   top: 0,
                   left: 0,
                   width: '100%',
-                  height: `${vRow.size}px`,
+                  height: `${vRow.size - 12}px`,
                   transform: `translateY(${vRow.start}px)`,
                   gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
                 }"
@@ -329,6 +329,7 @@
                 <div
                   v-for="colIdx in gridCols"
                   :key="colIdx"
+                  class="h-full"
                 >
                   <template v-if="getGridItemAt(vRow.index, colIdx - 1)">
                     <!-- FOLDER CARD -->
@@ -349,7 +350,7 @@
                       @dragleave.stop="handleFolderDragLeave($event, getGridItemAt(vRow.index, colIdx - 1)!)"
                       @drop.stop.prevent="handleDrop($event, getGridItemAt(vRow.index, colIdx - 1)!)"
                       :class="[
-                        'border rounded-2xl p-3 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group active:scale-[0.98] min-h-[124px] sm:min-h-[132px]',
+                        'border rounded-2xl p-2.5 flex flex-col items-center justify-between text-center cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring select-none shadow-xs group active:scale-[0.98] h-full overflow-hidden',
                         isItemHidden(getGridItemAt(vRow.index, colIdx - 1)!) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-900/40' : '',
                         workspaceStore.isCutItem(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                         hoveredFolderDrop === getGridItemAt(vRow.index, colIdx - 1)!.path
@@ -365,7 +366,7 @@
                           <path d="M6 25C6 21.6863 8.68629 19 12 19H52C55.3137 19 58 21.6863 58 25V46C58 49.3137 55.3137 52 52 52H12C8.68629 52 6 49.3137 6 46V25Z" class="fill-sky-400 dark:fill-sky-400" />
                         </svg>
                       </div>
-                      <div class="w-full px-0.5 mt-1 text-center">
+                      <div class="w-full px-0.5 mt-1 text-center shrink-0">
                         <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition line-clamp-2 break-all leading-tight block" :title="getGridItemAt(vRow.index, colIdx - 1)!.name">
                           {{ getGridItemAt(vRow.index, colIdx - 1)!.name }}
                         </span>
@@ -390,7 +391,7 @@
                       @dblclick="handleEntryDoubleClick(getGridItemAt(vRow.index, colIdx - 1)!)"
                       @contextmenu="openContextMenu($event, getGridItemAt(vRow.index, colIdx - 1)!)"
                       :class="[
-                        'border rounded-2xl overflow-hidden cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring flex flex-col group select-none shadow-xs active:scale-[0.98] min-h-[136px] sm:min-h-[148px]',
+                        'border rounded-2xl overflow-hidden cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring flex flex-col group select-none shadow-xs active:scale-[0.98] h-full',
                         isItemHidden(getGridItemAt(vRow.index, colIdx - 1)!) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
                         workspaceStore.isCutItem(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) ? 'opacity-40 border-dashed border-amber-500 ring-1 ring-amber-500/30' : '',
                         panel.selectedEntries.includes(getGridItemAt(vRow.index, colIdx - 1)!.path)
@@ -398,7 +399,7 @@
                           : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1 hover:border-blue-400 dark:hover:border-blue-500'
                       ]"
                     >
-                      <div class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-[85px]">
+                      <div class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-0">
                         <template v-if="isImage(getGridItemAt(vRow.index, colIdx - 1)!)">
                           <img
                             :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path)"
@@ -439,26 +440,32 @@
                           </div>
                         </template>
                         <div v-else class="flex flex-col items-center justify-center w-full h-full relative">
-                          <div :class="['absolute inset-0 bg-gradient-to-b opacity-60 pointer-events-none rounded-t-2xl', getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).cardBg]"></div>
-                          <div
-                            class="w-10 h-13 sm:w-11 sm:h-14 rounded-lg relative flex flex-col items-center justify-between py-1.5 px-1 shadow-xs border group-hover:scale-110 group-hover:shadow-md transition-[transform,box-shadow] duration-standard ease-spring bg-white/90 dark:bg-slate-900/90"
-                            :class="getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder"
-                          >
+                          <div :class="['absolute inset-0 bg-gradient-to-b opacity-40 dark:opacity-30 pointer-events-none rounded-t-2xl', getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).cardBg]"></div>
+                          <div class="relative flex flex-col items-center justify-center group-hover:scale-105 transition-transform duration-200 ease-spring">
+                            <!-- Soft glow halo -->
+                            <div :class="['absolute w-12 h-12 rounded-full blur-md opacity-25 dark:opacity-40 pointer-events-none', getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBg]"></div>
+
+                            <!-- Sleek Document Sheet -->
                             <div
-                              class="absolute top-0 right-0 w-2.5 h-2.5 bg-gray-100 dark:bg-slate-950 rounded-bl-md border-l border-b"
+                              class="w-11 h-14 sm:w-12 sm:h-15 rounded-xl relative flex flex-col items-center justify-between p-1.5 shadow-xs border bg-white/95 dark:bg-[#131b2e]/95 backdrop-blur-xs z-10 transition-shadow duration-200"
                               :class="getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder"
-                            ></div>
-                            <span class="text-xs mt-0.5 select-none">{{ getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).symbol }}</span>
-                            <span
-                              class="px-1.5 py-0.5 rounded-md font-mono text-[8px] sm:text-[9px] font-bold uppercase tracking-wider border shadow-2xs max-w-[44px] truncate text-center"
-                              :class="[getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBg, getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeText, getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder]"
                             >
-                              {{ getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).label }}
-                            </span>
+                              <!-- Centered File Symbol -->
+                              <div class="flex-1 flex items-center justify-center">
+                                <span class="text-base select-none filter drop-shadow-xs">{{ getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).symbol }}</span>
+                              </div>
+                              <!-- Extension Pill Badge -->
+                              <span
+                                class="w-full py-0.5 px-1 rounded-md font-mono text-[8.5px] sm:text-[9px] font-bold uppercase tracking-wider border shadow-2xs truncate text-center leading-none"
+                                :class="[getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBg, getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeText, getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).badgeBorder]"
+                              >
+                                {{ getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).label }}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
-                      <div class="p-2 bg-white dark:bg-[#0f1422] shrink-0 text-center flex flex-col items-center justify-center">
+                      <div class="px-2 py-1.5 bg-transparent shrink-0 text-center flex flex-col items-center justify-center">
                         <div class="flex items-center justify-center gap-1 w-full">
                           <span class="font-semibold text-xs text-gray-800 dark:text-slate-100 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition leading-tight block w-full" :title="getGridItemAt(vRow.index, colIdx - 1)!.name">
                             {{ getGridItemAt(vRow.index, colIdx - 1)!.name }}
@@ -985,7 +992,7 @@ const gridRowCount = computed(() => Math.ceil(displayedEntries.value.length / gr
 const gridVirtualizer = useVirtualizer({
   get count() { return gridRowCount.value; },
   getScrollElement: () => panelContentRef.value,
-  estimateSize: () => 140,
+  estimateSize: () => 156,
   overscan: 3,
 });
 

@@ -326,7 +326,8 @@ impl FileService {
                 connection_id,
                 &vfs_path.path,
                 "upload",
-            ));
+            ))
+            .await;
 
         Ok(meta)
     }
