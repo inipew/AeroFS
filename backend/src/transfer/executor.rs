@@ -35,19 +35,29 @@ pub async fn execute_inline_upload_stream<S>(
     max_bytes: u64,
     target_exists: bool,
     target_perms: Option<String>,
+    cancel_token: tokio_util::sync::CancellationToken,
     byte_stream: S,
 ) -> Result<InlineUploadOutcome, AppError>
 where
     S: Stream<Item = Result<Bytes, AppError>> + Send,
 {
+    // Initial cancellation guard — handles race where cancel_job fired between create and executor start (P0)
+    if cancel_token.is_cancelled() {
+        if plan.uses_staging() {
+            if let Some(staging) = plan.staging_path(&target, job_id) {
+                let _ = provider.delete(&staging).await;
+            }
+        }
+        return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled before start")));
+    }
+
     // Resolve staging target via plan (canonical naming)
     let write_target = plan
         .staging_path(&target, job_id)
         .unwrap_or_else(|| target.clone());
     let use_staging = plan.uses_staging();
 
-    // Prepare cancellation + duplex
-    let cancel_token = tokio_util::sync::CancellationToken::new();
+    // Prepare duplex (cancellation token is manager-owned, not local)
     let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
 
     let write_handle = tokio::spawn({
@@ -69,7 +79,20 @@ where
     let total_for_progress = total_hint.unwrap_or(0);
 
     futures::pin_mut!(byte_stream);
-    while let Some(item) = byte_stream.next().await {
+    loop {
+        // Check cancellation before each poll (handles race where cancel fires between chunks)
+        if cancel_token.is_cancelled() {
+            stream_err = Some(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+            break;
+        }
+        let item_opt = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                stream_err = Some(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+                break;
+            }
+            item = byte_stream.next() => item,
+        };
+        let Some(item) = item_opt else { break };
         let chunk = match item {
             Ok(c) => c,
             Err(e) => {
@@ -85,12 +108,22 @@ where
             )));
             break;
         }
-        if let Err(e) = duplex_writer.write_all(&chunk).await {
-            stream_err = Some(AppError::Internal(anyhow::anyhow!(
-                "Failed writing upload chunk: {}",
-                e
-            )));
-            break;
+        // Write with cancellation — abort if token fires while pipe is full
+        let write_fut = duplex_writer.write_all(&chunk);
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                stream_err = Some(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+                break;
+            }
+            res = write_fut => {
+                if let Err(e) = res {
+                    stream_err = Some(AppError::Internal(anyhow::anyhow!(
+                        "Failed writing upload chunk: {}",
+                        e
+                    )));
+                    break;
+                }
+            }
         }
         if last_emit.elapsed().as_millis() >= 100 {
             let elapsed = start_time.elapsed().as_secs_f64();
@@ -107,8 +140,24 @@ where
     }
     drop(duplex_writer);
 
+    // If cancelled, abort writer and cleanup staging, propagate cancellation error (P0: no commit)
+    if cancel_token.is_cancelled() {
+        // Wake writer task via cancel_token (it selects on same token)
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(200), write_handle).await;
+        if use_staging || !target_exists {
+            let _ = provider.delete(&write_target).await;
+        }
+        // Prefer explicit cancelled error so caller can avoid fail->Failed overwrite
+        if let Some(err) = stream_err {
+            // If stream_err already is cancelled, return it; otherwise override with cancelled
+            if err.to_string().contains("cancelled") {
+                return Err(err);
+            }
+        }
+        return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+    }
+
     if let Some(err) = stream_err {
-        cancel_token.cancel();
         let _ = write_handle.await;
         if use_staging || !target_exists {
             let _ = provider.delete(&write_target).await;
@@ -125,6 +174,16 @@ where
             let _ = provider.delete(&write_target).await;
         }
         return Err(AppError::from(e));
+    }
+
+    // No commit if cancelled after stream but before rename (P0: must be impossible to commit after cancel)
+    if cancel_token.is_cancelled() {
+        if use_staging {
+            let _ = provider.delete(&write_target).await;
+        } else if !target_exists {
+            let _ = provider.delete(&target).await;
+        }
+        return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
     }
 
     if use_staging {

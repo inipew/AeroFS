@@ -98,6 +98,18 @@ impl UploadApplicationService {
             .await;
         let job_id = job.id.clone();
 
+        // 3b. Fetch manager-owned cancellation token (P0) — clone, never create new
+        let cancel_token = state
+            .transfer_manager
+            .cancel_token(&job_id)
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+        // Race guard: cancel fired between create and executor start → abort with no commit
+        if cancel_token.is_cancelled() {
+            // No staging file yet, but ensure job lifecycle respects cancellation
+            // Let cancel_job's status win; convert to cancelled error without overwriting with Failed
+            return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled before start")));
+        }
+
         // 4. Adapt axum Field → Stream<Item=Result<Bytes, AppError>> (application boundary adapter)
         //    Transfer layer must not depend on axum.
         let byte_stream = futures::stream::unfold(field, |f| async move {
@@ -111,7 +123,7 @@ impl UploadApplicationService {
             }
         });
 
-        // 5. Delegate pure VFS streaming to TransferExecutor
+        // 5. Delegate pure VFS streaming to TransferExecutor (manager-owned token)
         let exec_result = crate::transfer::executor::execute_inline_upload_stream(
             &state.transfer_manager,
             provider.clone(),
@@ -122,13 +134,26 @@ impl UploadApplicationService {
             max_upload_bytes,
             target_exists,
             target_perms,
+            cancel_token.clone(),
             byte_stream,
         )
         .await;
 
+        // 6. Cancellation-aware completion: if token is cancelled, do NOT overwrite Cancelled with Failed
+        let is_cancelled = cancel_token.is_cancelled()
+            || exec_result
+                .as_ref()
+                .err()
+                .map(|e| e.to_string().contains("cancelled"))
+                .unwrap_or(false);
         match exec_result {
             Ok(_) => {
-                // 6. Post-success: cache invalidation (application concern, not transfer executor)
+                // Check cancelled again before commit (handles cancel during last bytes)
+                if is_cancelled {
+                    // Executor already cleaned staging; ensure no commit happened
+                    return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+                }
+                // Post-success: cache invalidation (application concern, not transfer executor)
                 state
                     .metadata_cache
                     .invalidate(&target.connection_id, &target.path)
@@ -150,6 +175,11 @@ impl UploadApplicationService {
                 Ok(target.path)
             }
             Err(e) => {
+                if is_cancelled {
+                    // Let manager's cancel_job status (Cancelled/CancellationRequested) win; ensure token is cancelled
+                    // Avoid calling fail_inline_job which would set Failed and overwrite Cancelled
+                    return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+                }
                 let msg = e.to_string();
                 state.transfer_manager.fail_inline_job(&job_id, msg).await;
                 Err(e)

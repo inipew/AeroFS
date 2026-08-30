@@ -352,6 +352,12 @@ impl TransferManager {
         self.completion_tx.subscribe()
     }
 
+    /// Transitional accessor for manager-owned cancellation token (P0).
+    /// Returns cloned token to avoid borrow coupling. Executor must not create its own token.
+    pub fn cancel_token(&self, job_id: &str) -> Option<CancellationToken> {
+        self.cancel_tokens.try_read().ok()?.get(job_id).cloned()
+    }
+
     /// Dynamically update transfer concurrency worker limit and max retry count without restart (P1 #16 & #17)
     pub fn update_limits(&self, max_concurrent: usize, max_retries: usize) {
         let clamped_workers = max_concurrent.clamp(1, 64);
