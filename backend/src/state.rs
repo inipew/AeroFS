@@ -243,18 +243,26 @@ impl AppState {
         // Initialize and register all connections from DB via ConnectionService
         ConnectionService::load_all_providers_from_db(&state).await;
 
-        // Spawn background cleanup for stale orphan .part files (> 24 hours old) tracked via TaskSupervisor
+        // Spawn periodic cleanup for stale orphan .part files (> 24 hours old) tracked via TaskSupervisor
         let local_root_clone = state.config.filesystem.default_local_root.clone();
         let cleanup_token = state.runtime.shutdown_token.clone();
         state.runtime.supervisor.spawn("stale_staging_cleanup", async move {
-            tokio::select! {
-                _ = cleanup_token.cancelled() => {
-                    tracing::debug!("Stale staging cleanup cancelled by shutdown");
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cleanup_token.cancelled() => {
+                        tracing::debug!("Stale staging cleanup cancelled by shutdown");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        let _ = crate::vfs::cleanup_stale_staging_files(
+                            &local_root_clone,
+                            std::time::Duration::from_secs(24 * 3600),
+                        )
+                        .await;
+                    }
                 }
-                _ = crate::vfs::cleanup_stale_staging_files(
-                    &local_root_clone,
-                    std::time::Duration::from_secs(24 * 3600),
-                ) => {}
             }
         });
 

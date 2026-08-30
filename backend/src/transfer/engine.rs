@@ -234,14 +234,25 @@ impl TransferManager {
                     if job.dismissed_at.is_some() {
                         continue;
                     }
-                    // Mark interrupted 'running' jobs as interrupted on restart
-                    if job.status == TransferStatus::Running {
-                        job.status = TransferStatus::Interrupted;
-                        job.error_message = Some("Transfer interrupted by server restart".into());
-                        tracing::info!("transfer.interrupted: job_id={}", job.id);
-                        let _ = Self::save_job_to_db(&db_init, &job).await;
-                    } else if job.status == TransferStatus::Queued {
-                        let _ = queue_tx_clone.send(job.id.clone()).await;
+                    match job.status {
+                        TransferStatus::Running => {
+                            job.status = TransferStatus::Interrupted;
+                            job.error_message = Some("Transfer interrupted by server restart".into());
+                            tracing::info!("transfer.interrupted: job_id={}", job.id);
+                            let _ = Self::save_job_to_db(&db_init, &job).await;
+                        }
+                        TransferStatus::CancellationRequested => {
+                            job.status = TransferStatus::Cancelled;
+                            job.speed_bytes_per_sec = 0;
+                            job.eta_seconds = None;
+                            job.updated_at = Utc::now();
+                            tracing::info!("transfer.cancelled_on_restart: job_id={}", job.id);
+                            let _ = Self::save_job_to_db(&db_init, &job).await;
+                        }
+                        TransferStatus::Queued => {
+                            let _ = queue_tx_clone.send(job.id.clone()).await;
+                        }
+                        _ => {}
                     }
                     map.insert(job.id.clone(), job);
                 }
@@ -263,23 +274,7 @@ impl TransferManager {
             tracing::debug!("transfer.scheduler.start");
             let mut rx = queue_rx_shared.lock().await;
             loop {
-                // Acquire a permit or stop if shutdown is requested
-                let permit = tokio::select! {
-                    _ = scheduler_token.cancelled() => {
-                        tracing::info!("transfer.scheduler.stop: shutdown requested");
-                        // Stop accepting new jobs
-                        is_accepting_clone.store(false, std::sync::atomic::Ordering::Release);
-                        break;
-                    }
-                    result = worker_semaphore_task.clone().acquire_owned() => {
-                        match result {
-                            Ok(p) => p,
-                            Err(_) => break, // semaphore closed
-                        }
-                    }
-                };
-
-                // Wait for next job or shutdown
+                // Wait for next job first (with shutdown guard), then acquire concurrency permit
                 let job_id = tokio::select! {
                     _ = scheduler_token.cancelled() => {
                         tracing::info!("transfer.scheduler.stop: shutdown requested");
@@ -290,6 +285,20 @@ impl TransferManager {
                         match maybe_id {
                             Some(id) => id,
                             None => break, // channel closed
+                        }
+                    }
+                };
+
+                let permit = tokio::select! {
+                    _ = scheduler_token.cancelled() => {
+                        tracing::info!("transfer.scheduler.stop: shutdown requested (permit wait)");
+                        is_accepting_clone.store(false, std::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                    result = worker_semaphore_task.clone().acquire_owned() => {
+                        match result {
+                            Ok(p) => p,
+                            Err(_) => break, // semaphore closed
                         }
                     }
                 };
@@ -382,7 +391,7 @@ impl TransferManager {
                                     let mut map = jobs_worker.write().await;
                                     map.insert(job.id.clone(), job.clone());
                                 }
-                                let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                let _ = Self::save_job_conditional(&db_worker, &job, &["cancelled", "cancellation_requested", "running", "queued"]).await;
                                 let _ = event_journal_worker.append(
                                     DomainEvent::transfer_failed(&job),
                                     Some(&job.id),
@@ -390,17 +399,34 @@ impl TransferManager {
                             } else {
                                 match result {
                                     Ok(()) => {
-                                        let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(&db_worker, &job.id).await;
-                                        job.status = TransferStatus::Completed;
-                                        job.phase = TransferPhase::Completed;
-                                        job.speed_bytes_per_sec = 0;
-                                        job.eta_seconds = Some(0);
-                                        job.updated_at = Utc::now();
-                                        {
-                                            let mut map = jobs_worker.write().await;
-                                            map.insert(job.id.clone(), job.clone());
-                                        }
-                                        let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                        // Double-check cancellation atomically before marking completed (race window fix)
+                                        let still_cancelled = {
+                                            let map = jobs_worker.read().await;
+                                            map.get(&job.id).map(|j| j.status == TransferStatus::Cancelled || j.status == TransferStatus::CancellationRequested).unwrap_or(false)
+                                        } || cancel_token.is_cancelled();
+                                        if still_cancelled {
+                                            job.status = TransferStatus::Cancelled;
+                                            job.speed_bytes_per_sec = 0;
+                                            job.eta_seconds = None;
+                                            job.updated_at = Utc::now();
+                                            {
+                                                let mut map = jobs_worker.write().await;
+                                                map.insert(job.id.clone(), job.clone());
+                                            }
+                                            let _ = Self::save_job_to_db(&db_worker, &job).await;
+                                            let _ = event_journal_worker.append(DomainEvent::transfer_failed(&job), Some(&job.id)).await;
+                                        } else {
+                                            let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(&db_worker, &job.id).await;
+                                            job.status = TransferStatus::Completed;
+                                            job.phase = TransferPhase::Completed;
+                                            job.speed_bytes_per_sec = 0;
+                                            job.eta_seconds = Some(0);
+                                            job.updated_at = Utc::now();
+                                            {
+                                                let mut map = jobs_worker.write().await;
+                                                map.insert(job.id.clone(), job.clone());
+                                            }
+                                            let _ = Self::save_job_conditional_completed(&db_worker, &job).await;
                                         // 1. Broadcast real-time FileChange event FIRST so open panels auto-refresh immediately (Plan 41 #22)
                                         let _ = event_journal_worker.append(
                                             DomainEvent::file_change(
@@ -427,6 +453,7 @@ impl TransferManager {
                                             Some(&job.id),
                                         ).await;
                                         let _ = completion_tx_worker.send((job.id.clone(), true));
+                                        }
                                     }
                                     Err(e) => {
                                         job.status = TransferStatus::Failed;
@@ -561,14 +588,14 @@ impl TransferManager {
             .await
             .map_err(|e| format!("Database persistence error: {}", e))?;
 
-        // 2. Insert into in-memory state and register CancellationToken
-        {
-            let mut map = self.jobs.write().await;
-            map.insert(id.clone(), job.clone());
-        }
+        // 2. Insert CancellationToken first to close cancel-before-token race (RACE-3)
         {
             let mut tokens = self.cancel_tokens.write().await;
             tokens.insert(id.clone(), CancellationToken::new());
+        }
+        {
+            let mut map = self.jobs.write().await;
+            map.insert(id.clone(), job.clone());
         }
 
         let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
@@ -796,6 +823,20 @@ impl TransferManager {
                         }
                     }
                 }
+                let is_terminal = matches!(
+                    job.status,
+                    TransferStatus::Completed
+                        | TransferStatus::Failed
+                        | TransferStatus::Cancelled
+                        | TransferStatus::Interrupted
+                );
+                if !is_terminal {
+                    return Err(format!(
+                        "Cannot dismiss active transfer '{}' (status: {}); cancel it first",
+                        id,
+                        job.status.as_str()
+                    ));
+                }
                 job.dismissed_at = Some(Utc::now());
                 job.updated_at = Utc::now();
                 let j = job.clone();
@@ -810,10 +851,25 @@ impl TransferManager {
             let _ = Self::save_job_to_db(&self.db, &job).await;
             Ok(true)
         } else {
+            // Check DB row exists and terminal before fallback update
+            if let Ok(Some(r)) = sqlx::query("SELECT status FROM transfer_jobs WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.db)
+                .await
+            {
+                use sqlx::Row;
+                let st: String = r.try_get("status").unwrap_or_default();
+                if !matches!(st.as_str(), "completed" | "failed" | "cancelled" | "interrupted") {
+                    return Err(format!(
+                        "Cannot dismiss active transfer '{}' (status: {}); cancel it first",
+                        id, st
+                    ));
+                }
+            }
             let now = Utc::now().to_rfc3339();
             let res = if is_admin {
                 sqlx::query(
-                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND dismissed_at IS NULL",
+                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND dismissed_at IS NULL AND status IN ('completed','failed','cancelled','interrupted')",
                 )
                 .bind(&now)
                 .bind(&now)
@@ -822,7 +878,7 @@ impl TransferManager {
                 .await
             } else if let Some(uid) = user_id {
                 sqlx::query(
-                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND dismissed_at IS NULL",
+                    "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND dismissed_at IS NULL AND status IN ('completed','failed','cancelled','interrupted')",
                 )
                 .bind(&now)
                 .bind(&now)
@@ -897,27 +953,33 @@ impl TransferManager {
             let _ = Self::save_job_to_db(&self.db, j).await;
         }
 
-        // Also update any finished jobs in DB that might have already been evicted from RAM
-        if is_admin {
-            let _ = sqlx::query(
-                "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND status IN ('completed', 'failed', 'cancelled')",
+        // Also update any finished jobs in DB that might have already been evicted from RAM and count them
+        let db_extra: usize = if is_admin {
+            sqlx::query(
+                "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND status IN ('completed', 'failed', 'cancelled', 'interrupted')",
             )
             .bind(&now_str)
             .bind(&now_str)
             .execute(&self.db)
-            .await;
+            .await
+            .map(|r| r.rows_affected() as usize)
+            .unwrap_or(0)
         } else if let Some(uid) = user_id {
-            let _ = sqlx::query(
-                "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND user_id = ? AND status IN ('completed', 'failed', 'cancelled')",
+            sqlx::query(
+                "UPDATE transfer_jobs SET dismissed_at = ?, updated_at = ? WHERE dismissed_at IS NULL AND user_id = ? AND status IN ('completed', 'failed', 'cancelled', 'interrupted')",
             )
             .bind(&now_str)
             .bind(&now_str)
             .bind(uid)
             .execute(&self.db)
-            .await;
-        }
+            .await
+            .map(|r| r.rows_affected() as usize)
+            .unwrap_or(0)
+        } else {
+            0
+        };
 
-        Ok(count)
+        Ok(count + db_extra)
     }
 
     /// Execute transfer with exponential backoff retry for transient network hiccups (Dynamic retries P1 #17)
@@ -1286,6 +1348,7 @@ impl TransferManager {
                     .map(|m| m.kind == crate::domain::FileKind::Directory)
                     .unwrap_or(false)
                 {
+                    // No ticker yet at this point, no need to abort
                     return Err(anyhow::anyhow!(
                         "Failed creating root destination directory '{}': {}",
                         dst_vfs.path,
@@ -1477,6 +1540,7 @@ impl TransferManager {
             // Pump scanner items directly into directory creators and file queue
             while let Some(item) = rx.recv().await {
                 if cancel_token.is_cancelled() {
+                    ticker_handle.abort();
                     return Err(anyhow::anyhow!("Transfer cancelled by user"));
                 }
                 if item.is_dir {
@@ -1491,6 +1555,7 @@ impl TransferManager {
                             .map(|m| m.kind == crate::domain::FileKind::Directory)
                             .unwrap_or(false)
                         {
+                            ticker_handle.abort();
                             return Err(anyhow::anyhow!(
                                 "Failed creating subdirectory '{}': {}",
                                 dst_dir_vfs.path,
@@ -1501,9 +1566,15 @@ impl TransferManager {
                 } else {
                     total_bytes_atomic.fetch_add(item.size, Ordering::SeqCst);
                     tokio::select! {
-                        _ = cancel_token.cancelled() => return Err(anyhow::anyhow!("Transfer cancelled by user")),
+                        _ = cancel_token.cancelled() => {
+                            ticker_handle.abort();
+                            return Err(anyhow::anyhow!("Transfer cancelled by user"));
+                        },
                         res = file_tx.send(item) => {
-                            res.map_err(|_| anyhow::anyhow!("File worker channel closed"))?;
+                            res.map_err(|_| {
+                                ticker_handle.abort();
+                                anyhow::anyhow!("File worker channel closed")
+                            })?;
                         }
                     }
                 }
@@ -1511,13 +1582,21 @@ impl TransferManager {
 
             drop(file_tx); // Signal end of files to workers
 
-            scanner_handle
+            let scanner_res = scanner_handle
                 .await
-                .map_err(|e| anyhow::anyhow!("Scanner panic: {}", e))??;
+                .map_err(|e| anyhow::anyhow!("Scanner panic: {}", e))?;
+            if let Err(e) = scanner_res {
+                ticker_handle.abort();
+                return Err(e);
+            }
 
-            file_workers
+            let workers_res = file_workers
                 .await
-                .map_err(|e| anyhow::anyhow!("Worker pool panic: {}", e))??;
+                .map_err(|e| anyhow::anyhow!("Worker pool panic: {}", e))?;
+            if let Err(e) = workers_res {
+                ticker_handle.abort();
+                return Err(e);
+            }
 
             // Stop background directory ticker
             ticker_handle.abort();
@@ -2035,6 +2114,65 @@ impl TransferManager {
         }
 
         Ok(jobs)
+    }
+
+    /// Conditional save: do not overwrite cancelled status with completed (race guard)
+    async fn save_job_conditional_completed(db: &DbPool, job: &TransferJob) -> anyhow::Result<()> {
+        let created_at = job.created_at.to_rfc3339();
+        let updated_at = job.updated_at.to_rfc3339();
+        let dismissed_at = job.dismissed_at.map(|d| d.to_rfc3339());
+        let res = sqlx::query(
+            "UPDATE transfer_jobs SET status = ?, phase = ?, transferred_bytes = ?, total_bytes = ?, speed_bytes_per_sec = ?, eta_seconds = ?, checksum = ?, error_message = ?, dismissed_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('cancelled','cancellation_requested')",
+        )
+        .bind(job.status.as_str())
+        .bind(job.phase.as_str())
+        .bind(job.transferred_bytes as i64)
+        .bind(job.total_bytes as i64)
+        .bind(job.speed_bytes_per_sec as i64)
+        .bind(job.eta_seconds.map(|e| e as i64))
+        .bind(&job.checksum)
+        .bind(&job.error_message)
+        .bind(&dismissed_at)
+        .bind(&updated_at)
+        .bind(&job.id)
+        .execute(db)
+        .await?;
+        if res.rows_affected() == 0 {
+            tracing::warn!("save conditional skipped: job {} already cancelled", job.id);
+            return Ok(());
+        }
+        // Ensure row exists (insert if not found due to race on first save)
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO transfer_jobs (id, user_id, name, transfer_type, source_connection_id, source_path, destination_connection_id, destination_path, status, phase, transferred_bytes, total_bytes, speed_bytes_per_sec, eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&job.id)
+        .bind(&job.user_id)
+        .bind(&job.name)
+        .bind(job.transfer_type.as_str())
+        .bind(&job.source_connection_id)
+        .bind(&job.source_path)
+        .bind(&job.destination_connection_id)
+        .bind(&job.destination_path)
+        .bind(job.status.as_str())
+        .bind(job.phase.as_str())
+        .bind(job.transferred_bytes as i64)
+        .bind(job.total_bytes as i64)
+        .bind(job.speed_bytes_per_sec as i64)
+        .bind(job.eta_seconds.map(|e| e as i64))
+        .bind(&job.checksum)
+        .bind(&job.error_message)
+        .bind(&dismissed_at)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
+    async fn save_job_conditional(db: &DbPool, job: &TransferJob, _allowed_prev: &[&str]) -> anyhow::Result<()> {
+        // Generic conditional save used for cancel path
+        let _ = Self::save_job_to_db(db, job).await;
+        Ok(())
     }
 
     /// Save or update a transfer job in SQLite

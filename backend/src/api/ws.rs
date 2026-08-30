@@ -55,11 +55,12 @@ fn is_event_authorized(
         | crate::events::DomainEvent::TransferFailed(val) => {
             let src = val.get("source_connection_id").and_then(|v| v.as_str());
             let dst = val.get("destination_connection_id").and_then(|v| v.as_str());
+            // Align with TransferService::authorize_transfer_visibility: require both if known
             match (src, dst) {
-                (Some(s), Some(d)) => authorized_conns.contains(s) || authorized_conns.contains(d),
+                (Some(s), Some(d)) => authorized_conns.contains(s) && authorized_conns.contains(d),
                 (Some(s), None) => authorized_conns.contains(s),
                 (None, Some(d)) => authorized_conns.contains(d),
-                _ => true,
+                _ => false,
             }
         }
         crate::events::DomainEvent::FileChange { connection_id, .. } => {

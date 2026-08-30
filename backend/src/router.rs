@@ -113,6 +113,8 @@ pub fn create_router(state: AppState) -> Router {
             RANGE,
             HeaderName::from_static("x-force-overwrite"),
             HeaderName::from_static("x-idempotency-key"),
+            HeaderName::from_static("idempotency-key"),
+            HeaderName::from_static("x-cache-idempotency"),
         ];
         let exposed_headers = [
             ETAG,
@@ -120,6 +122,8 @@ pub fn create_router(state: AppState) -> Router {
             CONTENT_DISPOSITION,
             HeaderName::from_static("x-request-id"),
             HeaderName::from_static("x-idempotency-key"),
+            HeaderName::from_static("idempotency-key"),
+            HeaderName::from_static("x-cache-idempotency"),
         ];
 
         if !state.config.security.allowed_origins.is_empty() {

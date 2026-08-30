@@ -89,10 +89,21 @@ export const useTransferStore = defineStore('transfer', () => {
   async function fetchJobs() {
     try {
       jobs.value = await listTransfersApi();
+      lastProgressTimestamp = Date.now();
       if (!isConnected.value && activeCount.value > 0) {
         startPollingIfNeeded();
       } else if (activeCount.value > 0) {
         startWatchdogIfNeeded();
+      } else {
+        // No active jobs: stop watchdog to prevent stale polling
+        if (watchdogInterval) {
+          clearInterval(watchdogInterval);
+          watchdogInterval = null;
+        }
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
       }
     } catch (err) {
       console.error('Failed to fetch transfers', err);
@@ -196,8 +207,9 @@ export const useTransferStore = defineStore('transfer', () => {
   }
 
   async function cancelTransfer(jobId: string) {
-    // Optimistically transition to cancellation_requested for instant UI feedback
+    // Optimistically transition to cancellation_requested with rollback snapshot
     const idx = jobs.value.findIndex((j) => j.id === jobId);
+    const snapshot = idx >= 0 ? { ...jobs.value[idx] } : null;
     if (idx >= 0) {
       jobs.value[idx] = {
         ...jobs.value[idx],
@@ -211,6 +223,11 @@ export const useTransferStore = defineStore('transfer', () => {
       await cancelTransferApi(jobId);
     } catch (err) {
       console.error('Failed to cancel transfer', err);
+      if (idx >= 0 && snapshot) {
+        jobs.value[idx] = snapshot;
+        jobs.value = [...jobs.value];
+      }
+      await fetchJobs();
     }
   }
 
@@ -242,26 +259,42 @@ export const useTransferStore = defineStore('transfer', () => {
   }
 
   async function removeJob(jobId: string) {
+    const prevJobs = [...jobs.value];
+    const prevMetrics = { ...speedMetrics.value };
     jobs.value = jobs.value.filter((j) => j.id !== jobId);
     delete speedMetrics.value[jobId];
     try {
       await dismissTransferApi(jobId);
     } catch (err) {
       console.error('Failed to dismiss transfer on server', err);
+      jobs.value = prevJobs;
+      speedMetrics.value = prevMetrics;
     }
   }
 
   async function clearFinished() {
+    const prevJobs = [...jobs.value];
+    const prevMetrics = { ...speedMetrics.value };
+    const toClear = jobs.value.filter(
+      (j) =>
+        j.status === 'completed' ||
+        j.status === 'failed' ||
+        j.status === 'cancelled' ||
+        j.status === 'interrupted'
+    );
     jobs.value = jobs.value.filter(
       (j) =>
         j.status === 'running' ||
         j.status === 'queued' ||
         j.status === 'cancellation_requested'
     );
+    for (const j of toClear) delete speedMetrics.value[j.id];
     try {
       await clearFinishedTransfersApi();
     } catch (err) {
       console.error('Failed to clear finished transfers on server', err);
+      jobs.value = prevJobs;
+      speedMetrics.value = prevMetrics;
     }
   }
 
