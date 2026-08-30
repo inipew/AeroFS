@@ -2,7 +2,80 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+use std::time::Duration;
 use thiserror::Error;
+
+// ── Internal constants replacing magic numbers (67.md §127) ──
+pub const DEFAULT_GLOBAL_IO_CONCURRENCY: usize = 32;
+pub const DEFAULT_ARCHIVE_CONCURRENCY: usize = 4;
+pub const DEFAULT_SEARCH_CONCURRENCY: usize = 8;
+pub const DEFAULT_UPLOAD_PIPE_BUFFER: usize = 64 * 1024;
+pub const STAGING_RETENTION_SECS: u64 = 24 * 3600;
+pub const EVENT_JOURNAL_VACUUM_SECS: u64 = 6 * 3600;
+pub const EVENT_JOURNAL_RETENTION_SECS: u64 = 24 * 3600;
+
+// ── Env helpers (67.md §28) ──
+fn env_bool(name: &str) -> Result<Option<bool>, ConfigError> {
+    match env::var(name) {
+        Ok(v) => {
+            let lower = v.to_lowercase();
+            match lower.as_str() {
+                "1" | "true" | "yes" | "on" => Ok(Some(true)),
+                "0" | "false" | "no" | "off" => Ok(Some(false)),
+                _ => Err(ConfigError::Validation(format!(
+                    "Invalid boolean for {}: '{}' (expected 1/0/true/false)",
+                    name, v
+                ))),
+            }
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
+fn env_parse<T: std::str::FromStr>(name: &str) -> Result<Option<T>, ConfigError>
+where
+    T::Err: std::fmt::Display,
+{
+    match env::var(name) {
+        Ok(v) => v.parse::<T>().map(Some).map_err(|e| {
+            ConfigError::Validation(format!("Invalid value for {}: '{}': {}", name, v, e))
+        }),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
+fn env_var_with_fallback(primary: &str, fallback: &str) -> Option<String> {
+    env::var(primary).or_else(|_| env::var(fallback)).ok()
+}
+
+fn env_var_with_fallbacks(primary: &str, fallbacks: &[&str]) -> Option<String> {
+    if let Ok(v) = env::var(primary) {
+        return Some(v);
+    }
+    for f in fallbacks {
+        if let Ok(v) = env::var(*f) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+pub mod database;
+pub mod filesystem;
+pub mod limits;
+pub mod security;
+pub mod server;
+pub mod storage;
+
+pub use database::DatabaseConfig;
+pub use filesystem::FilesystemConfig;
+pub use limits::LimitsConfig;
+pub use security::SecurityConfig;
+pub use server::ServerConfig;
+pub use storage::{ProviderStorageConfig, StorageConfig};
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -23,192 +96,6 @@ pub struct AppConfig {
     pub limits: LimitsConfig,
     pub database: DatabaseConfig,
     pub storage: StorageConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct ServerConfig {
-    pub host: String,
-    pub port: u16,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct SecurityConfig {
-    pub session_secret: String,
-    pub session_ttl_secs: u64,
-    pub allow_symlinks_outside_root: bool,
-    pub allow_private_network_connections: bool,
-    /// Comma-separated list of allowed CORS origins (e.g. "http://192.168.1.5:8080").
-    /// Empty means mirror-request in dev, same-origin only in production.
-    pub allowed_origins: Vec<String>,
-    /// If true, set the Secure flag on session cookies regardless of host detection.
-    /// If false (default), Secure is only set when the server host is not a loopback address.
-    /// Set to false explicitly when serving over plain HTTP on LAN/Android.
-    pub cookie_secure: bool,
-}
-
-impl Default for SecurityConfig {
-    fn default() -> Self {
-        Self {
-            session_secret: "dev_secret_change_in_production_32_chars_min".to_string(),
-            session_ttl_secs: 86400 * 7,
-            allow_symlinks_outside_root: false,
-            allow_private_network_connections: true,
-            allowed_origins: Vec::new(),
-            cookie_secure: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct FilesystemConfig {
-    pub default_local_root: PathBuf,
-    pub temp_dir: Option<PathBuf>,
-    pub show_hidden_default: bool,
-    pub read_only_default: bool,
-}
-
-impl Default for FilesystemConfig {
-    fn default() -> Self {
-        Self {
-            default_local_root: PathBuf::from("./storage"),
-            temp_dir: Some(PathBuf::from("./storage/temp")),
-            show_hidden_default: false,
-            read_only_default: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct LimitsConfig {
-    pub max_upload_size: u64,
-    pub max_editable_size: u64,
-    pub max_preview_size: u64,
-    pub max_directory_entries: usize,
-    pub max_concurrent_transfers: usize,
-}
-
-impl Default for LimitsConfig {
-    fn default() -> Self {
-        Self {
-            max_upload_size: 1024 * 1024 * 1024,
-            max_editable_size: 10 * 1024 * 1024,
-            max_preview_size: 25 * 1024 * 1024,
-            max_directory_entries: 50_000,
-            max_concurrent_transfers: 4,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct DatabaseConfig {
-    pub url: String,
-}
-
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self {
-            url: "sqlite://./filemanager.db?mode=rwc".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct StorageConfig {
-    pub default_timeout_secs: u64,
-    pub default_io_timeout_secs: u64,
-    pub default_concurrency: usize,
-    pub retry_attempts: usize,
-    pub s3: ProviderStorageConfig,
-    pub sftp: ProviderStorageConfig,
-    pub ftp: ProviderStorageConfig,
-    pub fs: ProviderStorageConfig,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            default_timeout_secs: 60,
-            default_io_timeout_secs: 60,
-            default_concurrency: 16,
-            retry_attempts: 3,
-            s3: ProviderStorageConfig {
-                max_concurrency: 64,
-                control_timeout_secs: 10,
-                io_timeout_secs: 60,
-                retry_attempts: 3,
-            },
-            sftp: ProviderStorageConfig {
-                max_concurrency: 8,
-                control_timeout_secs: 15,
-                io_timeout_secs: 120,
-                retry_attempts: 3,
-            },
-            ftp: ProviderStorageConfig {
-                max_concurrency: 8,
-                control_timeout_secs: 15,
-                io_timeout_secs: 60,
-                retry_attempts: 3,
-            },
-            fs: ProviderStorageConfig {
-                max_concurrency: 0,
-                control_timeout_secs: 10,
-                io_timeout_secs: 60,
-                retry_attempts: 1,
-            },
-        }
-    }
-}
-
-impl StorageConfig {
-    pub fn get_provider_config(&self, scheme: &str) -> ProviderStorageConfig {
-        match scheme {
-            "s3" => self.s3.clone(),
-            "sftp" => self.sftp.clone(),
-            "ftp" | "ftps" => self.ftp.clone(),
-            "fs" => self.fs.clone(),
-            _ => ProviderStorageConfig {
-                max_concurrency: self.default_concurrency,
-                control_timeout_secs: self.default_timeout_secs,
-                io_timeout_secs: self.default_io_timeout_secs,
-                retry_attempts: self.retry_attempts,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct ProviderStorageConfig {
-    pub max_concurrency: usize,
-    pub control_timeout_secs: u64,
-    pub io_timeout_secs: u64,
-    pub retry_attempts: usize,
-}
-
-impl Default for ProviderStorageConfig {
-    fn default() -> Self {
-        Self {
-            max_concurrency: 16,
-            control_timeout_secs: 30,
-            io_timeout_secs: 60,
-            retry_attempts: 3,
-        }
-    }
 }
 
 impl AppConfig {
@@ -289,12 +176,12 @@ impl AppConfig {
             self.filesystem.temp_dir = Some(PathBuf::from(temp));
         }
 
-        if let Ok(hidden) = env::var("AEROFS_SHOW_HIDDEN") {
-            self.filesystem.show_hidden_default = hidden == "1" || hidden.to_lowercase() == "true";
+        if let Some(v) = env_bool("AEROFS_SHOW_HIDDEN")? {
+            self.filesystem.show_hidden_default = v;
         }
 
-        if let Ok(ro) = env::var("AEROFS_READ_ONLY") {
-            self.filesystem.read_only_default = ro == "1" || ro.to_lowercase() == "true";
+        if let Some(v) = env_bool("AEROFS_READ_ONLY")? {
+            self.filesystem.read_only_default = v;
         }
 
         if let Ok(db_url) =
@@ -303,16 +190,15 @@ impl AppConfig {
             self.database.url = db_url;
         }
 
-        if let Ok(symlinks) =
-            env::var("AEROFS_ALLOW_SYMLINKS").or_else(|_| env::var("WFM_ALLOW_SYMLINKS"))
-        {
-            self.security.allow_symlinks_outside_root =
-                symlinks == "1" || symlinks.to_lowercase() == "true";
+        // Support legacy WFM_ prefix for symlinks (§29)
+        if let Some(v) = env_bool("AEROFS_ALLOW_SYMLINKS")? {
+            self.security.allow_symlinks_outside_root = v;
+        } else if let Some(v) = env_bool("WFM_ALLOW_SYMLINKS")? {
+            self.security.allow_symlinks_outside_root = v;
         }
 
-        if let Ok(private_net) = env::var("AEROFS_ALLOW_PRIVATE_NETWORKS") {
-            self.security.allow_private_network_connections =
-                private_net == "1" || private_net.to_lowercase() == "true";
+        if let Some(v) = env_bool("AEROFS_ALLOW_PRIVATE_NETWORKS")? {
+            self.security.allow_private_network_connections = v;
         }
 
         if let Ok(secret) =
@@ -342,9 +228,24 @@ impl AppConfig {
         }
 
         // AEROFS_COOKIE_SECURE: explicit control over the Secure cookie flag.
-        // Set to "false" or "0" when serving over plain HTTP (LAN / Android).
-        if let Ok(val) = env::var("AEROFS_COOKIE_SECURE") {
-            self.security.cookie_secure = val == "1" || val.to_lowercase() == "true";
+        if let Some(v) = env_bool("AEROFS_COOKIE_SECURE")? {
+            self.security.cookie_secure = v;
+        }
+
+        if let Ok(trusted) = env::var("AEROFS_TRUSTED_PROXIES") {
+            self.security.trusted_proxies = trusted
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        if let Ok(cred_key) = env::var("AEROFS_CREDENTIAL_ENCRYPTION_KEY")
+            .or_else(|_| env::var("WFM_CREDENTIAL_ENCRYPTION_KEY"))
+        {
+            if !cred_key.trim().is_empty() {
+                self.security.credential_encryption_key = Some(cred_key);
+            }
         }
 
         if let Ok(max_upload_mb_str) =

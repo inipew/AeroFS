@@ -40,10 +40,7 @@ pub enum DomainEvent {
         latest_sequence: u64,
     },
     #[serde(rename = "full_sync")]
-    FullSync {
-        reason: String,
-        epoch: String,
-    },
+    FullSync { reason: String, epoch: String },
 }
 
 impl DomainEvent {
@@ -142,8 +139,13 @@ pub struct EventEnvelope {
 #[derive(Debug, Clone)]
 pub enum ReplayOutcome {
     Events(Vec<EventEnvelope>),
-    Expired { latest_sequence: u64 },
-    EpochMismatch { current_epoch: String, latest_sequence: u64 },
+    Expired {
+        latest_sequence: u64,
+    },
+    EpochMismatch {
+        current_epoch: String,
+        latest_sequence: u64,
+    },
 }
 
 /// Durable Event Journal backed by SQLite and real-time in-memory broadcast.

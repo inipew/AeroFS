@@ -79,7 +79,11 @@ async fn test_realtime_cancellation_with_token() {
         }
     }
 
-    assert!(cancelled, "Transfer job should transition to Cancelled, last status: {:?}", last_status);
+    assert!(
+        cancelled,
+        "Transfer job should transition to Cancelled, last status: {:?}",
+        last_status
+    );
 
     // 5. Verify staging hidden .aerofs-part file is cleaned up
     let part_path = format!("/.dest_cancel_test.dat.aerofs-part-{}", job_id);

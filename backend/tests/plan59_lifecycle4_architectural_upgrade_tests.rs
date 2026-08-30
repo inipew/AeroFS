@@ -65,12 +65,18 @@ async fn test_event_journal_epoch_and_sqlite_persistence() {
     assert!(!epoch.is_empty());
 
     let event1 = DomainEvent::file_change("local", "/docs/test.txt", "create");
-    let env1 = journal.append(event1, Some("/docs/test.txt")).await.unwrap();
+    let env1 = journal
+        .append(event1, Some("/docs/test.txt"))
+        .await
+        .unwrap();
     assert_eq!(env1.sequence, 1);
     assert_eq!(env1.epoch, epoch);
 
     let event2 = DomainEvent::file_rename("local", "/docs/test.txt", "/docs/renamed.txt");
-    let env2 = journal.append(event2, Some("/docs/renamed.txt")).await.unwrap();
+    let env2 = journal
+        .append(event2, Some("/docs/renamed.txt"))
+        .await
+        .unwrap();
     assert_eq!(env2.sequence, 2);
     assert_eq!(env2.epoch, epoch);
 
@@ -101,9 +107,15 @@ async fn test_event_journal_epoch_mismatch_triggers_full_sync() {
     let journal = EventJournal::init(pool).await.unwrap();
     let current_epoch = journal.epoch();
 
-    let outcome = journal.get_since(Some("old-expired-epoch-1234"), 50, 10).await.unwrap();
+    let outcome = journal
+        .get_since(Some("old-expired-epoch-1234"), 50, 10)
+        .await
+        .unwrap();
     match outcome {
-        ReplayOutcome::EpochMismatch { current_epoch: reported_epoch, .. } => {
+        ReplayOutcome::EpochMismatch {
+            current_epoch: reported_epoch,
+            ..
+        } => {
             assert_eq!(reported_epoch, current_epoch);
         }
         _ => panic!("Expected ReplayOutcome::EpochMismatch"),
@@ -134,13 +146,18 @@ async fn test_transfer_checkpoint_save_load_delete() {
 
     checkpoint.save(&pool).await.unwrap();
 
-    let loaded = TransferCheckpoint::load(&pool, transfer_id).await.unwrap().expect("Checkpoint must exist");
+    let loaded = TransferCheckpoint::load(&pool, transfer_id)
+        .await
+        .unwrap()
+        .expect("Checkpoint must exist");
     assert_eq!(loaded.transfer_id, transfer_id);
     assert_eq!(loaded.offset, 1048576);
     assert_eq!(loaded.total, 5242880);
     assert_eq!(loaded.source_etag, Some("\"etag-abc-123\"".to_string()));
 
-    TransferCheckpoint::delete(&pool, transfer_id).await.unwrap();
+    TransferCheckpoint::delete(&pool, transfer_id)
+        .await
+        .unwrap();
     let after_delete = TransferCheckpoint::load(&pool, transfer_id).await.unwrap();
     assert!(after_delete.is_none());
 }
@@ -175,8 +192,14 @@ async fn test_provider_lifecycle_states() {
 async fn test_resource_budget_concurrency_coordination() {
     let budget = ResourceBudget::new(4, 2, 2, 1, 1);
 
-    let p1 = budget.acquire_local_disk().await.expect("Must acquire permit");
-    let p2 = budget.acquire_local_disk().await.expect("Must acquire permit");
+    let p1 = budget
+        .acquire_local_disk()
+        .await
+        .expect("Must acquire permit");
+    let p2 = budget
+        .acquire_local_disk()
+        .await
+        .expect("Must acquire permit");
     assert_eq!(budget.local_disk.available_permits(), 0);
 
     drop(p1);
@@ -235,18 +258,30 @@ async fn test_sync_manifest_diff_engine() {
 
     // SourceWins strategy:
     let ops_src_wins = ManifestDiffer::diff(&src, &dst, SyncStrategy::SourceWins);
-    let same_op = ops_src_wins.iter().find(|o| o.relative_path == "same.txt").unwrap();
+    let same_op = ops_src_wins
+        .iter()
+        .find(|o| o.relative_path == "same.txt")
+        .unwrap();
     assert_eq!(same_op.kind, SyncOpKind::Noop);
 
-    let mod_op = ops_src_wins.iter().find(|o| o.relative_path == "modified.txt").unwrap();
+    let mod_op = ops_src_wins
+        .iter()
+        .find(|o| o.relative_path == "modified.txt")
+        .unwrap();
     assert_eq!(mod_op.kind, SyncOpKind::Update);
 
-    let new_op = ops_src_wins.iter().find(|o| o.relative_path == "new_file.txt").unwrap();
+    let new_op = ops_src_wins
+        .iter()
+        .find(|o| o.relative_path == "new_file.txt")
+        .unwrap();
     assert_eq!(new_op.kind, SyncOpKind::Create);
 
     // KeepBoth strategy:
     let ops_keep_both = ManifestDiffer::diff(&src, &dst, SyncStrategy::KeepBoth);
-    let mod_conflict = ops_keep_both.iter().find(|o| o.relative_path == "modified.txt").unwrap();
+    let mod_conflict = ops_keep_both
+        .iter()
+        .find(|o| o.relative_path == "modified.txt")
+        .unwrap();
     assert_eq!(mod_conflict.kind, SyncOpKind::Conflict);
 }
 
@@ -303,7 +338,14 @@ async fn test_sync_manager_creation_and_reconciliation() {
     );
 
     let job = sync_mgr
-        .create_job("user-1", "local", "/src", "local", "/dst", SyncStrategy::SourceWins)
+        .create_job(
+            "user-1",
+            "local",
+            "/src",
+            "local",
+            "/dst",
+            SyncStrategy::SourceWins,
+        )
         .await
         .unwrap();
 

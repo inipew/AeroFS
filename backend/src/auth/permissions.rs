@@ -11,6 +11,8 @@ pub enum PermissionAction {
     Rename,
     Upload,
     Download,
+    Search,
+    Admin,
 }
 
 impl PermissionAction {
@@ -93,6 +95,8 @@ pub async fn check_permission(
         PermissionAction::Rename => can_rename != 0,
         PermissionAction::Upload => can_upload != 0,
         PermissionAction::Download => can_download != 0,
+        PermissionAction::Search => can_read != 0, // search requires read
+        PermissionAction::Admin => false,          // only is_admin path above
     };
 
     if !allowed {

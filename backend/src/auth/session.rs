@@ -12,6 +12,17 @@ pub struct UserInfo {
     pub is_admin: bool,
 }
 
+impl UserInfo {
+    pub fn user_id(&self) -> crate::domain::UserId {
+        // SAFETY: id from DB is validated on creation; unwrap is safe for existing rows
+        crate::domain::UserId::new(self.id.clone())
+            .unwrap_or(crate::domain::UserId(self.id.clone()))
+    }
+    pub fn typed_id(&self) -> crate::domain::UserId {
+        self.user_id()
+    }
+}
+
 pub async fn create_session(
     pool: &DbPool,
     user_id: &str,

@@ -1,8 +1,8 @@
 use super::planner::{TransferPlanner, TransferStrategy};
 use crate::db::DbPool;
 use crate::domain::VfsPath;
-use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
 pub use crate::events::EventEnvelope;
+use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
 use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,35 @@ impl std::str::FromStr for TransferStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(TransferStatus::from_str(s))
+    }
+}
+
+impl TransferStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
+    }
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Running | Self::CancellationRequested
+        )
+    }
+    pub fn can_transition_to(self, next: Self) -> bool {
+        match (self, next) {
+            (Self::Queued, Self::Running)
+            | (Self::Queued, Self::Cancelled)
+            | (Self::Running, Self::CancellationRequested)
+            | (Self::Running, Self::Completed)
+            | (Self::Running, Self::Failed)
+            | (Self::Running, Self::Interrupted)
+            | (Self::CancellationRequested, Self::Cancelled)
+            | (Self::Interrupted, Self::Queued)
+            | (Self::Failed, Self::Queued) => true,
+            _ => false,
+        }
     }
 }
 
@@ -209,8 +238,7 @@ impl TransferManager {
         let cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let clamped_workers = max_concurrent_workers.clamp(1, 64);
-        let max_concurrent_workers_arc =
-            Arc::new(AtomicUsize::new(clamped_workers));
+        let max_concurrent_workers_arc = Arc::new(AtomicUsize::new(clamped_workers));
         let max_retry_attempts_arc = Arc::new(AtomicUsize::new(3));
         let worker_semaphore = Arc::new(tokio::sync::Semaphore::new(clamped_workers));
         let is_accepting_jobs = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -237,7 +265,8 @@ impl TransferManager {
                     match job.status {
                         TransferStatus::Running => {
                             job.status = TransferStatus::Interrupted;
-                            job.error_message = Some("Transfer interrupted by server restart".into());
+                            job.error_message =
+                                Some("Transfer interrupted by server restart".into());
                             tracing::info!("transfer.interrupted: job_id={}", job.id);
                             let _ = Self::save_job_to_db(&db_init, &job).await;
                         }
@@ -504,9 +533,12 @@ impl TransferManager {
     /// Dynamically update transfer concurrency worker limit and max retry count without restart (P1 #16 & #17)
     pub fn update_limits(&self, max_concurrent: usize, max_retries: usize) {
         let clamped_workers = max_concurrent.clamp(1, 64);
-        let old_workers = self.max_concurrent_workers.swap(clamped_workers, Ordering::SeqCst);
+        let old_workers = self
+            .max_concurrent_workers
+            .swap(clamped_workers, Ordering::SeqCst);
         if clamped_workers > old_workers {
-            self.worker_semaphore.add_permits(clamped_workers - old_workers);
+            self.worker_semaphore
+                .add_permits(clamped_workers - old_workers);
         }
         self.max_retry_attempts
             .store(max_retries.clamp(1, 10), Ordering::SeqCst);
@@ -554,7 +586,10 @@ impl TransferManager {
         destination_path: String,
     ) -> Result<String, String> {
         // Reject new jobs during shutdown to prevent half-lifecycle transfers
-        if !self.is_accepting_jobs.load(std::sync::atomic::Ordering::Acquire) {
+        if !self
+            .is_accepting_jobs
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             return Err("Server is shutting down; no new transfers accepted".to_string());
         }
 
@@ -598,7 +633,10 @@ impl TransferManager {
             map.insert(id.clone(), job.clone());
         }
 
-        let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
+        let _ = self
+            .event_journal
+            .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+            .await;
         self.queue_tx
             .send(id.clone())
             .await
@@ -707,15 +745,15 @@ impl TransferManager {
         if let Some(job) = updated_job {
             let _ = Self::save_job_to_db(&self.db, &job).await;
             if is_queued {
-                let _ = self.event_journal.append(
-                    DomainEvent::transfer_failed(&job),
-                    Some(&job.id),
-                ).await;
+                let _ = self
+                    .event_journal
+                    .append(DomainEvent::transfer_failed(&job), Some(&job.id))
+                    .await;
             } else {
-                let _ = self.event_journal.append(
-                    DomainEvent::transfer_progress(&job),
-                    Some(&job.id),
-                ).await;
+                let _ = self
+                    .event_journal
+                    .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                    .await;
             }
             Ok(true)
         } else {
@@ -771,11 +809,18 @@ impl TransferManager {
                 if !is_admin {
                     match (&job.user_id, user_id) {
                         (Some(owner), Some(uid)) if owner == uid => {}
-                        _ => return Err("Permission denied: cannot retry another user's transfer".into()),
+                        _ => {
+                            return Err(
+                                "Permission denied: cannot retry another user's transfer".into()
+                            )
+                        }
                     }
                 }
 
-                if matches!(job.status, TransferStatus::Failed | TransferStatus::Interrupted) {
+                if matches!(
+                    job.status,
+                    TransferStatus::Failed | TransferStatus::Interrupted
+                ) {
                     job.status = TransferStatus::Queued;
                     job.phase = TransferPhase::Preparing;
                     job.error_message = None;
@@ -792,16 +837,19 @@ impl TransferManager {
         if can_retry {
             if let Some(job) = job_opt {
                 let _ = Self::save_job_to_db(&self.db, &job).await;
-                let _ = self.event_journal.append(
-                    DomainEvent::transfer_progress(&job),
-                    Some(&job.id),
-                ).await;
+                let _ = self
+                    .event_journal
+                    .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                    .await;
                 let _ = self.queue_tx.send(id.to_string()).await;
                 return Ok(true);
             }
         }
 
-        Err(format!("Transfer job '{}' cannot be retried (not in failed or interrupted state)", id))
+        Err(format!(
+            "Transfer job '{}' cannot be retried (not in failed or interrupted state)",
+            id
+        ))
     }
 
     pub async fn dismiss_job(
@@ -859,7 +907,10 @@ impl TransferManager {
             {
                 use sqlx::Row;
                 let st: String = r.try_get("status").unwrap_or_default();
-                if !matches!(st.as_str(), "completed" | "failed" | "cancelled" | "interrupted") {
+                if !matches!(
+                    st.as_str(),
+                    "completed" | "failed" | "cancelled" | "interrupted"
+                ) {
                     return Err(format!(
                         "Cannot dismiss active transfer '{}' (status: {}); cancel it first",
                         id, st
@@ -1002,15 +1053,7 @@ impl TransferManager {
 
             attempt += 1;
             let max_attempts = max_retries.load(Ordering::Relaxed).max(1);
-            match Self::execute_job(
-                job,
-                cancel_token,
-                providers,
-                jobs_map,
-                event_journal,
-                db,
-            )
-            .await
+            match Self::execute_job(job, cancel_token, providers, jobs_map, event_journal, db).await
             {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -1046,7 +1089,10 @@ impl TransferManager {
                         backoff
                     );
 
-                    let cp = crate::transfer::checkpoint::TransferCheckpoint::load(db, &job.id).await.ok().flatten();
+                    let cp = crate::transfer::checkpoint::TransferCheckpoint::load(db, &job.id)
+                        .await
+                        .ok()
+                        .flatten();
                     let preserved_offset = cp.map(|c| c.offset).unwrap_or(job.transferred_bytes);
 
                     job.phase = TransferPhase::Preparing;
@@ -1201,7 +1247,10 @@ impl TransferManager {
                         }
                         if job.transfer_type == TransferType::Move {
                             src_fs.delete(&src_vfs).await.map_err(|e| {
-                                anyhow::anyhow!("Cleanup source failed during server-side move: {}", e)
+                                anyhow::anyhow!(
+                                    "Cleanup source failed during server-side move: {}",
+                                    e
+                                )
                             })?;
                         }
                         job.transferred_bytes = meta.size;
@@ -1676,11 +1725,16 @@ impl TransferManager {
         let src_meta = src_fs.stat(&src_vfs).await.ok();
 
         // Check if there is a saved checkpoint and whether source etag changed
-        let saved_checkpoint = crate::transfer::checkpoint::TransferCheckpoint::load(db, &job.id).await.ok().flatten();
+        let saved_checkpoint = crate::transfer::checkpoint::TransferCheckpoint::load(db, &job.id)
+            .await
+            .ok()
+            .flatten();
         let checkpoint_valid = if let Some(cp) = &saved_checkpoint {
             if let (Some(saved_etag), Some(src)) = (&cp.source_etag, src_meta.as_ref()) {
                 if saved_etag != &src.etag {
-                    tracing::warn!("transfer.resume: Source ETag changed since checkpoint, restarting from 0");
+                    tracing::warn!(
+                        "transfer.resume: Source ETag changed since checkpoint, restarting from 0"
+                    );
                     false
                 } else {
                     true
@@ -1814,7 +1868,9 @@ impl TransferManager {
                 transferred += n as u64;
 
                 let now = Instant::now();
-                if now.duration_since(last_emit) >= Duration::from_millis(100) || transferred == total_bytes {
+                if now.duration_since(last_emit) >= Duration::from_millis(100)
+                    || transferred == total_bytes
+                {
                     last_emit = now;
                     let elapsed_sec = start_time.elapsed().as_secs_f64();
                     let bytes_since_start = transferred.saturating_sub(resume_offset);
@@ -2169,7 +2225,11 @@ impl TransferManager {
         Ok(())
     }
 
-    async fn save_job_conditional(db: &DbPool, job: &TransferJob, _allowed_prev: &[&str]) -> anyhow::Result<()> {
+    async fn save_job_conditional(
+        db: &DbPool,
+        job: &TransferJob,
+        _allowed_prev: &[&str],
+    ) -> anyhow::Result<()> {
         // Generic conditional save used for cancel path
         let _ = Self::save_job_to_db(db, job).await;
         Ok(())

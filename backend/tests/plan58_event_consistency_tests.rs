@@ -117,11 +117,14 @@ async fn test_event_replay_includes_rich_metadata() {
     let (state, _, _temp) = setup_test_context().await;
 
     // Broadcast rename event
-    state.transfer_manager.broadcast_event(WsEvent::file_rename(
-        "local",
-        "/src/doc.pdf",
-        "/archive/doc.pdf",
-    )).await;
+    state
+        .transfer_manager
+        .broadcast_event(WsEvent::file_rename(
+            "local",
+            "/src/doc.pdf",
+            "/archive/doc.pdf",
+        ))
+        .await;
 
     // Fetch replay
     let replay = state.transfer_manager.get_events_since(0).await;

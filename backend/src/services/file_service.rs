@@ -6,7 +6,6 @@ use crate::domain::{DirectoryListing, FileKind, FileMetadata, VfsPath};
 use crate::errors::{AppError, VfsError};
 use crate::services::settings_service::SettingsService;
 use crate::state::AppState;
-use crate::transfer::WsEvent;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -320,13 +319,12 @@ impl FileService {
         )
         .await;
 
-        state
-            .transfer_manager
-            .broadcast_event(crate::transfer::WsEvent::file_change(
-                connection_id,
-                &vfs_path.path,
-                "upload",
-            ))
+        let _ = state
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_change(connection_id, &vfs_path.path, "upload"),
+                None,
+            )
             .await;
 
         Ok(meta)
@@ -530,11 +528,13 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            &vfs_path.path,
-            "write",
-        )).await;
+        let _ = state
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_change(connection_id, &vfs_path.path, "write"),
+                None,
+            )
+            .await;
 
         Ok(meta)
     }
@@ -588,11 +588,13 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            &vfs_path.path,
-            "create",
-        )).await;
+        let _ = state
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_change(connection_id, &vfs_path.path, "create"),
+                None,
+            )
+            .await;
 
         Ok(meta)
     }
@@ -627,7 +629,9 @@ impl FileService {
                     Err(_) => {
                         return (
                             raw_path,
-                            Err(crate::errors::VfsError::IoError("Semaphore closed during shutdown".to_string())),
+                            Err(crate::errors::VfsError::IoError(
+                                "Semaphore closed during shutdown".to_string(),
+                            )),
                         )
                     }
                 };
@@ -662,11 +666,17 @@ impl FileService {
                         )
                         .await;
 
-                        state.transfer_manager.broadcast_event(WsEvent::file_change(
-                            connection_id,
-                            &path,
-                            "delete",
-                        )).await;
+                        let _ = state
+                            .event_journal
+                            .append(
+                                crate::events::DomainEvent::file_change(
+                                    connection_id,
+                                    &path,
+                                    "delete",
+                                ),
+                                None,
+                            )
+                            .await;
 
                         succeeded.push(path);
                     }
@@ -715,11 +725,13 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            &vfs_path.path,
-            "delete",
-        )).await;
+        let _ = state
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_change(connection_id, &vfs_path.path, "delete"),
+                None,
+            )
+            .await;
 
         Ok(())
     }
@@ -766,11 +778,17 @@ impl FileService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_rename(
-            connection_id,
-            &from_vfs.path,
-            &to_vfs.path,
-        )).await;
+        let _ = state
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_rename(
+                    connection_id,
+                    &from_vfs.path,
+                    &to_vfs.path,
+                ),
+                None,
+            )
+            .await;
 
         Ok(())
     }
@@ -812,11 +830,13 @@ impl FileService {
         .await;
 
         // Broadcast FileChange event for real-time inspector / panel refresh (Plan 58)
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            &vfs_path.path,
-            "chmod",
-        )).await;
+        let _ = state
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_change(connection_id, &vfs_path.path, "chmod"),
+                None,
+            )
+            .await;
 
         Ok(())
     }

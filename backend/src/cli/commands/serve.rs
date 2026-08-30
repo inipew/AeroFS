@@ -126,7 +126,8 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
 
     // 1. Channel for hard deadline forced stop
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown_start_time = std::sync::Arc::new(tokio::sync::Mutex::new(None::<std::time::Instant>));
+    let shutdown_start_time =
+        std::sync::Arc::new(tokio::sync::Mutex::new(None::<std::time::Instant>));
     let shutdown_start_time_clone = std::sync::Arc::clone(&shutdown_start_time);
     let force_token_clone = force_shutdown_token.clone();
 
@@ -198,7 +199,9 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
             tracing::warn!("Background task tracker drain timed out within remaining grace window");
         }
     } else {
-        tracing::warn!("Global shutdown deadline already exhausted; skipping extended background drain");
+        tracing::warn!(
+            "Global shutdown deadline already exhausted; skipping extended background drain"
+        );
     }
 
     runtime.set_phase(RuntimePhase::Stopped);
@@ -249,6 +252,3 @@ async fn shutdown_signal(runtime: AppRuntime) {
         }
     });
 }
-
-
-

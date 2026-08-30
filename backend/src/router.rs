@@ -1,5 +1,12 @@
-use crate::api::{archive, audit, auth, connections, files, openapi, search, transfers, ws};
+use crate::api::{
+    archive as api_archive, audit, connections as api_connections, files as api_files, openapi,
+    search as api_search, ws,
+};
 use crate::state::AppState;
+
+pub mod auth;
+pub mod files;
+pub mod transfers;
 use axum::{
     http::{
         header::{
@@ -16,8 +23,14 @@ use axum::{
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-/// Middleware to append essential HTTP security headers
+/// Middleware to append essential HTTP security headers (67.md §47-48)
 async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
+    let is_https = request
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "https")
+        .unwrap_or(false);
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -25,15 +38,39 @@ async fn security_headers_middleware(request: axum::extract::Request, next: Next
         "X-Content-Type-Options",
         HeaderValue::from_static("nosniff"),
     );
+    // Legacy X-Frame-Options kept for compatibility; CSP frame-ancestors is authoritative
     headers.insert("X-Frame-Options", HeaderValue::from_static("SAMEORIGIN"));
-    headers.insert(
-        "X-XSS-Protection",
-        HeaderValue::from_static("1; mode=block"),
-    );
+    if !headers.contains_key("content-security-policy") {
+        headers.insert(
+            "Content-Security-Policy",
+            HeaderValue::from_static("frame-ancestors 'self'; default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:"),
+        );
+    }
     headers.insert(
         "Referrer-Policy",
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
+    headers.insert(
+        "Permissions-Policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    headers.insert(
+        "Cross-Origin-Opener-Policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        "Cross-Origin-Resource-Policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    // X-XSS-Protection deprecated — intentional omission (browsers ignore, can introduce XSS)
+
+    // HSTS only when serving over TLS
+    if is_https {
+        headers.insert(
+            "Strict-Transport-Security",
+            HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
+        );
+    }
 
     response
 }
@@ -50,7 +87,8 @@ async fn shutdown_guard(
 
         // Safe read-only methods are allowed during shutdown drain, EXCEPT new WebSocket upgrades
         let is_ws_upgrade = path == "/api/v1/ws";
-        let is_readonly = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) && !is_ws_upgrade;
+        let is_readonly =
+            matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) && !is_ws_upgrade;
 
         // Allowed mutation endpoints during shutdown drain:
         // 1. POST /api/v1/transfers/{id}/cancel (allows canceling in-flight jobs)
@@ -83,12 +121,16 @@ async fn shutdown_guard(
     next.run(req).await
 }
 
-
-
 pub fn create_router(state: AppState) -> Router {
-    let is_dev = std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into())
-        == "development"
-        || cfg!(test);
+    // Environment via AppConfig single source of truth when possible; fallback to env for early boot (§104)
+    let is_dev = state
+        .config
+        .get_by_key_path("aero_env")
+        .map(|v| v == "development")
+        .unwrap_or_else(|| {
+            std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into()) == "development"
+                || cfg!(test)
+        });
 
     // Build CORS layer:
     // 1. If explicit allowed_origins are configured, use them (supports LAN IPs, Android).
@@ -150,11 +192,14 @@ pub fn create_router(state: AppState) -> Router {
                 .expose_headers(exposed_headers)
                 .allow_credentials(true)
         } else {
-            // Production with no explicit origins: mirror request origin with credentials.
-            // This allows the same-origin embedded SPA to work while still permitting
-            // apps that present a proper Origin header (including Android WebView).
+            // Production with no explicit origins: restrictive — only same-origin / no Origin header.
+            // Unlike dev, we do NOT mirror arbitrary Origins with credentials (§46).
             CorsLayer::new()
-                .allow_origin(AllowOrigin::mirror_request())
+                .allow_origin(AllowOrigin::predicate(|_origin: &HeaderValue, _| {
+                    // Secure-by-default: no implicit cross-origin allow when allowed_origins is empty.
+                    // Same-origin fetches without Origin header bypass CORS; cross-origin requires explicit allowlist.
+                    false
+                }))
                 .allow_methods(allowed_methods)
                 .allow_headers(allowed_headers)
                 .expose_headers(exposed_headers)
@@ -162,80 +207,69 @@ pub fn create_router(state: AppState) -> Router {
         }
     };
 
-    let auth_routes = Router::new()
-        .route("/login", post(auth::login))
-        .route("/logout", post(auth::logout))
-        .route("/me", get(auth::me));
+    let auth_routes = self::auth::router();
 
     let connection_routes = Router::new()
         .route(
             "/",
-            get(connections::list_connections).post(connections::create_connection),
+            get(api_connections::list_connections).post(api_connections::create_connection),
         )
         .route(
             "/{id}",
-            get(connections::get_connection)
-                .put(connections::update_connection)
-                .delete(connections::delete_connection),
+            get(api_connections::get_connection)
+                .put(api_connections::update_connection)
+                .delete(api_connections::delete_connection),
         )
-        .route("/{id}/test", post(connections::test_connection))
+        .route("/{id}/test", post(api_connections::test_connection))
         .route(
             "/{id}/files",
-            get(files::list_files)
-                .post(files::create_file)
-                .delete(files::delete_files),
+            get(api_files::list_files)
+                .post(api_files::create_file)
+                .delete(api_files::delete_files),
         )
-        .route("/{id}/directories", post(files::create_directory))
-        .route("/{id}/files/metadata", get(files::get_metadata))
+        .route("/{id}/directories", post(api_files::create_directory))
+        .route("/{id}/files/metadata", get(api_files::get_metadata))
         .route(
             "/{id}/files/content",
-            get(files::get_file_content).put(files::update_file_content),
+            get(api_files::get_file_content).put(api_files::update_file_content),
         )
-        .route("/{id}/files/rename", post(files::rename_entry))
-        .route("/{id}/files/copy", post(files::copy_entry))
-        .route("/{id}/files/chmod", post(files::chmod_file))
+        .route("/{id}/files/rename", post(api_files::rename_entry))
+        .route("/{id}/files/copy", post(api_files::copy_entry))
+        .route("/{id}/files/chmod", post(api_files::chmod_file))
         .route(
             "/{id}/files/presign/download",
-            post(files::presign_download_file),
+            post(api_files::presign_download_file),
         )
         .route(
             "/{id}/files/presign/upload",
-            post(files::presign_upload_file),
+            post(api_files::presign_upload_file),
         )
         .route(
             "/{id}/files/presign/complete",
-            post(files::presign_complete_upload),
+            post(api_files::presign_complete_upload),
         )
-        .route("/{id}/storage-info", get(files::get_storage_info))
-        .route("/{id}/upload", post(files::upload_file))
-        .route("/{id}/archive/compress", post(archive::compress_files))
+        .route("/{id}/storage-info", get(api_files::get_storage_info))
+        .route("/{id}/upload", post(api_files::upload_file))
+        .route("/{id}/archive/compress", post(api_archive::compress_files))
         .route(
             "/{id}/archive/extract",
-            post(archive::extract_archive_endpoint),
+            post(api_archive::extract_archive_endpoint),
         )
         .route(
             "/{id}/archive/entries",
-            get(archive::list_virtual_archive_endpoint),
+            get(api_archive::list_virtual_archive_endpoint),
         )
         .route(
             "/{id}/archive/read",
-            get(archive::read_virtual_archive_entry_endpoint),
+            get(api_archive::read_virtual_archive_entry_endpoint),
         )
         .route(
             "/{id}/archive/extract-selected",
-            post(archive::extract_selected_archive_endpoint),
+            post(api_archive::extract_selected_archive_endpoint),
         )
-        .route("/{id}/search", get(search::search_files));
+        .route("/{id}/search", get(api_search::search_files));
 
-    let transfer_routes = Router::new()
-        .route(
-            "/",
-            get(transfers::list_transfers).post(transfers::create_transfer),
-        )
-        .route("/{id}/cancel", post(transfers::cancel_transfer))
-        .route("/{id}/retry", post(transfers::retry_transfer))
-        .route("/{id}/dismiss", post(transfers::dismiss_transfer))
-        .route("/clear-finished", post(transfers::clear_finished_transfers));
+    let transfer_routes = self::transfers::router();
 
     let share_routes = Router::new()
         .route(
@@ -265,14 +299,8 @@ pub fn create_router(state: AppState) -> Router {
             "/",
             get(crate::api::sync::list_sync_jobs).post(crate::api::sync::create_sync_job),
         )
-        .route(
-            "/{id}/operations",
-            get(crate::api::sync::list_operations),
-        )
-        .route(
-            "/{id}/resolve",
-            post(crate::api::sync::resolve_conflict),
-        );
+        .route("/{id}/operations", get(crate::api::sync::list_operations))
+        .route("/{id}/resolve", post(crate::api::sync::resolve_conflict));
 
     let api_v1 = Router::new()
         .nest("/auth", auth_routes)

@@ -94,4 +94,3 @@ pub async fn health_ready(
 pub async fn health_check() -> impl IntoResponse {
     health_live().await
 }
-

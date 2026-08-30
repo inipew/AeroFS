@@ -140,13 +140,14 @@ impl TrashService {
                     )
                     .await;
 
-                    state.transfer_manager.broadcast_event(
-                        crate::transfer::WsEvent::file_change(
+                    state
+                        .transfer_manager
+                        .broadcast_event(crate::transfer::WsEvent::file_change(
                             &payload.connection_id,
                             path_str,
                             "delete",
-                        ),
-                    ).await;
+                        ))
+                        .await;
 
                     moved_count += 1;
                 }
@@ -210,13 +211,14 @@ impl TrashService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(
-            crate::transfer::WsEvent::file_change(
+        state
+            .transfer_manager
+            .broadcast_event(crate::transfer::WsEvent::file_change(
                 &connection_id,
                 &orig_path,
                 "create",
-            ),
-        ).await;
+            ))
+            .await;
 
         Ok(())
     }

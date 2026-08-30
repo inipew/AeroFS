@@ -78,9 +78,21 @@ impl VfsPath {
         }
     }
 
-    /// Normalize path string safely without swallowing traversal errors
-    pub fn normalize_path_str(p: &str) -> String {
+    /// Normalize path string safely — returns error on traversal/invalid input (67.md §11).
+    /// Use `try_normalize_path_str` as alias for callers needing explicit Result handling.
+    pub fn normalize_path_str(p: &str) -> Result<String, VfsError> {
+        Self::validate_and_normalize(p)
+    }
+
+    /// Deprecated fallback that preserves previous swallowing behavior for legacy callers.
+    /// Prefer `normalize_path_str` which enforces security invariants.
+    #[deprecated(note = "Use normalize_path_str which returns Result and enforces security checks")]
+    pub fn normalize_path_str_lossy(p: &str) -> String {
         Self::validate_and_normalize(p).unwrap_or_else(|_| p.to_string())
+    }
+
+    pub fn try_normalize_path(p: &str) -> Result<String, VfsError> {
+        Self::validate_and_normalize(p)
     }
 
     /// Returns the parent VfsPath if not already root

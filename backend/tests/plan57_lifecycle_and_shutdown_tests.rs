@@ -371,10 +371,7 @@ async fn test_first_shutdown_reason_wins_compare_exchange() {
     // Third request: Internal -> must also be ignored
     let third = state.runtime.request_shutdown(ShutdownReason::Internal);
     assert!(!third);
-    assert_eq!(
-        state.runtime.shutdown_reason(),
-        Some(ShutdownReason::CtrlC)
-    );
+    assert_eq!(state.runtime.shutdown_reason(), Some(ShutdownReason::CtrlC));
 }
 
 #[tokio::test]
@@ -405,6 +402,3 @@ async fn test_shutdown_guard_rejects_new_websocket_during_shutdown() {
     );
     assert_eq!(resp.headers().get("Retry-After").unwrap(), "5");
 }
-
-
-

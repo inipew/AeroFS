@@ -17,7 +17,7 @@ impl ManifestDiffer {
 
         let mut dest_map: HashMap<&str, &FileManifest> = HashMap::new();
         let mut dest_fingerprints: HashMap<String, &FileManifest> = HashMap::new();
-        
+
         for entry in dest_entries {
             dest_map.insert(&entry.path, entry);
             let fingerprint = Self::fingerprint(entry);
@@ -41,7 +41,10 @@ impl ManifestDiffer {
                     _ => false,
                 };
 
-                if same_hash || (same_etag && same_size) || (same_size && src.modified_at == dst.modified_at) {
+                if same_hash
+                    || (same_etag && same_size)
+                    || (same_size && src.modified_at == dst.modified_at)
+                {
                     // Unchanged
                     ops.push(SyncOperation {
                         relative_path: path.to_string(),
@@ -78,7 +81,9 @@ impl ManifestDiffer {
                     if !source_map.contains_key(renamed_dst.path.as_str()) {
                         ops.push(SyncOperation {
                             relative_path: path.to_string(),
-                            kind: SyncOpKind::Rename { old_path: renamed_dst.path.clone() },
+                            kind: SyncOpKind::Rename {
+                                old_path: renamed_dst.path.clone(),
+                            },
                             source_manifest: Some((*src).clone()),
                             dest_manifest: Some((*renamed_dst).clone()),
                         });
@@ -86,7 +91,7 @@ impl ManifestDiffer {
                         continue;
                     }
                 }
-                
+
                 ops.push(SyncOperation {
                     relative_path: path.to_string(),
                     kind: SyncOpKind::Create,

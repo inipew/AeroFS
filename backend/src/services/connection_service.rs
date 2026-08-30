@@ -374,6 +374,23 @@ impl ConnectionService {
             ProviderKind::Local => "local",
         };
 
+        // SSRF protection (§155-156) — sync literal check + async DNS post-resolution
+        crate::security::validate_network_target(
+            state.config.security.allow_private_network_connections,
+            payload.host.as_deref(),
+            payload.port,
+        )
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
+        if let Some(h) = payload.host.as_deref() {
+            crate::security::ssrf::validate_after_dns(
+                state.config.security.allow_private_network_connections,
+                h,
+                payload.port.unwrap_or(21),
+            )
+            .await
+            .map_err(|e| AppError::Forbidden(e.to_string()))?;
+        }
+
         let base_path = payload.base_path.unwrap_or_else(|| "/".to_string());
         let read_only = payload.read_only.unwrap_or(false);
 
@@ -513,6 +530,23 @@ impl ConnectionService {
         let new_enabled = payload.enabled.unwrap_or(cur_enabled != 0);
         let now = Utc::now().to_rfc3339();
 
+        // SSRF check for updated host/port — sync + DNS
+        crate::security::validate_network_target(
+            state.config.security.allow_private_network_connections,
+            new_host.as_deref(),
+            new_port,
+        )
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
+        if let Some(h) = new_host.as_deref() {
+            crate::security::ssrf::validate_after_dns(
+                state.config.security.allow_private_network_connections,
+                h,
+                new_port.unwrap_or(21),
+            )
+            .await
+            .map_err(|e| AppError::Forbidden(e.to_string()))?;
+        }
+
         let updated_conn = Connection {
             id: id.to_string(),
             name: new_name.clone(),
@@ -616,7 +650,9 @@ impl ConnectionService {
 
             // 5. Atomic hot-swap in ProviderRegistry (mark existing runtime as Draining before swapping)
             if let Some(existing_rt) = state.registry.get_runtime(id).await {
-                existing_rt.set_state(crate::vfs::ProviderState::Draining).await;
+                existing_rt
+                    .set_state(crate::vfs::ProviderState::Draining)
+                    .await;
             }
             state.registry.register(id.to_string(), fs).await;
         } else {

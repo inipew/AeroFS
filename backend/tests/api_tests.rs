@@ -26,7 +26,6 @@ async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
     (app, temp)
 }
 
-
 #[tokio::test]
 async fn test_auth_and_file_api_flow() {
     let (app, _temp) = setup_test_app().await;

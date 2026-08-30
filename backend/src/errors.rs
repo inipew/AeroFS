@@ -172,6 +172,72 @@ pub struct ErrorDetail {
     pub details: Option<serde_json::Value>,
 }
 
+/// Typed error codes — refactor-safe, typo impossible (67.md §56).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum ErrorCode {
+    InvalidCredentials,
+    SessionExpired,
+    Unauthorized,
+    Forbidden,
+    SecurityViolation,
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    BadRequest,
+    Conflict,
+    PreconditionFailed,
+    RangeNotSatisfiable,
+    PayloadTooLarge,
+    InsufficientStorage,
+    ChecksumMismatch,
+    RateLimited,
+    ServiceUnavailable,
+    StorageTimeout,
+    VfsError,
+    InternalError,
+}
+
+impl ErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidCredentials => "INVALID_CREDENTIALS",
+            Self::SessionExpired => "SESSION_EXPIRED",
+            Self::Unauthorized => "UNAUTHORIZED",
+            Self::Forbidden => "FORBIDDEN",
+            Self::SecurityViolation => "SECURITY_VIOLATION",
+            Self::NotFound => "NOT_FOUND",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::BadRequest => "BAD_REQUEST",
+            Self::Conflict => "CONFLICT",
+            Self::PreconditionFailed => "PRECONDITION_FAILED",
+            Self::RangeNotSatisfiable => "RANGE_NOT_SATISFIABLE",
+            Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            Self::InsufficientStorage => "INSUFFICIENT_STORAGE",
+            Self::ChecksumMismatch => "CHECKSUM_MISMATCH",
+            Self::RateLimited => "RATE_LIMITED",
+            Self::ServiceUnavailable => "SERVICE_UNAVAILABLE",
+            Self::StorageTimeout => "STORAGE_TIMEOUT",
+            Self::VfsError => "VFS_ERROR",
+            Self::InternalError => "INTERNAL_ERROR",
+        }
+    }
+}
+
+/// Rich retryability semantics replacing boolean (67.md §57).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retryability {
+    Never,
+    Safe,
+    WithBackoff,
+}
+
+impl Retryability {
+    pub fn is_retryable(self) -> bool {
+        !matches!(self, Self::Never)
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, code, category, retryable, user_action, message) = match &self {

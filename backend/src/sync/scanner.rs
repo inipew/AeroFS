@@ -58,7 +58,7 @@ impl VfsScanner {
 
         let vfs_path = VfsPath::new(conn_id, full_path)?;
         let mut stream = fs.list_stream(&vfs_path).await?;
-        
+
         use futures::StreamExt;
         let mut entries = Vec::new();
         while let Some(res) = stream.next().await {

@@ -230,7 +230,8 @@ async fn test_transfer_idempotency_key_deduplication() {
         .unwrap();
     assert_eq!(response1.status(), StatusCode::ACCEPTED);
     let body1: serde_json::Value =
-        serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap()).unwrap();
+        serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
     let job_id1 = body1["job_id"].as_str().unwrap().to_string();
 
     // Submit again with same idempotency key
@@ -250,7 +251,8 @@ async fn test_transfer_idempotency_key_deduplication() {
         .unwrap();
     assert_eq!(response2.status(), StatusCode::ACCEPTED);
     let body2: serde_json::Value =
-        serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap()).unwrap();
+        serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
     let job_id2 = body2["job_id"].as_str().unwrap().to_string();
 
     assert_eq!(

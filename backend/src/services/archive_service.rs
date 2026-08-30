@@ -82,11 +82,14 @@ impl ArchiveService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            &dest_vfs.path,
-            "create",
-        )).await;
+        state
+            .transfer_manager
+            .broadcast_event(WsEvent::file_change(
+                connection_id,
+                &dest_vfs.path,
+                "create",
+            ))
+            .await;
 
         Ok(ArchiveResult {
             success: true,
@@ -145,11 +148,14 @@ impl ArchiveService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            destination_dir,
-            "extract",
-        )).await;
+        state
+            .transfer_manager
+            .broadcast_event(WsEvent::file_change(
+                connection_id,
+                destination_dir,
+                "extract",
+            ))
+            .await;
 
         Ok(ArchiveResult {
             success: true,
@@ -206,11 +212,14 @@ impl ArchiveService {
         )
         .await;
 
-        state.transfer_manager.broadcast_event(WsEvent::file_change(
-            connection_id,
-            destination_dir,
-            "extract",
-        )).await;
+        state
+            .transfer_manager
+            .broadcast_event(WsEvent::file_change(
+                connection_id,
+                destination_dir,
+                "extract",
+            ))
+            .await;
 
         Ok(ArchiveResult {
             success: true,

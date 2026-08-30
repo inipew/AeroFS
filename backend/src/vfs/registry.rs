@@ -4,6 +4,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    Ready,
+    Degraded(String),
+    Failed(String),
+    Draining,
+}
+
+#[derive(Clone)]
+pub struct ProviderHandle {
+    pub provider: Arc<dyn FileSystem>,
+    pub runtime: Arc<StorageRuntime>,
+    pub status: ConnectionStatus,
+}
+
 #[derive(Default)]
 pub struct ProviderRegistry {
     providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
@@ -36,6 +51,24 @@ impl ProviderRegistry {
     pub async fn get_runtime(&self, connection_id: &str) -> Option<Arc<StorageRuntime>> {
         let runtimes = self.runtimes.read().await;
         runtimes.get(connection_id).cloned()
+    }
+
+    pub async fn get_handle(&self, connection_id: &str) -> Option<ProviderHandle> {
+        let providers = self.providers.read().await;
+        let runtimes = self.runtimes.read().await;
+        let errors = self.connection_errors.read().await;
+        let provider = providers.get(connection_id)?.clone();
+        let runtime = runtimes.get(connection_id)?.clone();
+        let status = if let Some(err) = errors.get(connection_id) {
+            ConnectionStatus::Failed(err.clone())
+        } else {
+            ConnectionStatus::Ready
+        };
+        Some(ProviderHandle {
+            provider,
+            runtime,
+            status,
+        })
     }
 
     pub async fn register(&self, connection_id: String, provider: Arc<dyn FileSystem>) {

@@ -1,6 +1,7 @@
 use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
 use crate::domain::{
-    parse_single_byte_range, ByteRange, FileKind, FileMetadata, RangeError, VfsPath,
+    parse_single_byte_range, ByteRange, FileKind, FileMetadata, RangeError, SortField, SortOrder,
+    VfsPath,
 };
 use crate::errors::{AppError, VfsError};
 use crate::state::AppState;
@@ -40,8 +41,8 @@ pub fn get_available_disk_space(_path: &std::path::Path) -> Option<u64> {
 pub struct ListFilesQuery {
     pub path: Option<String>,
     pub show_hidden: Option<bool>,
-    pub sort: Option<String>,
-    pub order: Option<String>,
+    pub sort: Option<SortField>,
+    pub order: Option<SortOrder>,
     pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
@@ -107,22 +108,22 @@ use crate::services::FileService;
 pub async fn list_files(
     State(state): State<AppState>,
     user: AuthenticatedUser,
-    Path(connection_id): Path<String>,
+    Path(connection_id): Path<crate::domain::ConnectionId>,
     Query(query): Query<ListFilesQuery>,
 ) -> Result<Json<crate::domain::DirectoryListing>, AppError> {
-    let listing = FileService::list_directory_paged(
-        &state,
-        &user,
-        &connection_id,
-        query.path,
-        query.show_hidden,
-        query.sort.as_deref(),
-        query.order.as_deref(),
-        query.cursor.as_deref(),
-        query.limit,
-    )
-    .await?;
-
+    // New typed application boundary (§85) — handler becomes HTTP→DTO→service
+    let app_svc = crate::application::FileApplicationService::from_state(&state);
+    let opts = crate::application::files::ListOptions {
+        path: query.path,
+        show_hidden: query.show_hidden,
+        sort: query.sort,
+        order: query.order,
+        cursor: query.cursor,
+        limit: query.limit,
+    };
+    let listing = app_svc
+        .list_paged_typed(&state, &user.0, &connection_id, opts)
+        .await?;
     Ok(Json(listing))
 }
 
@@ -240,7 +241,8 @@ pub async fn get_file_content(
     resp_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     resp_headers.insert(
         CONTENT_TYPE,
-        HeaderValue::from_str(&mime).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(&mime)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     resp_headers.insert(
         ETAG,
@@ -344,7 +346,9 @@ pub async fn get_file_content(
                 // 416 Range Not Satisfiable
                 let mut unsat_headers = HeaderMap::new();
                 unsat_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-                if let Ok(cr_val) = HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size)) {
+                if let Ok(cr_val) =
+                    HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size))
+                {
                     unsat_headers.insert(header::CONTENT_RANGE, cr_val);
                 }
                 return Ok((
@@ -395,7 +399,10 @@ pub async fn update_file_content(
     .await?;
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("ETag"));
+    resp_headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("ETag"),
+    );
     if let Ok(val) = HeaderValue::from_str(&meta.etag) {
         resp_headers.insert(header::ETAG, val);
     }
@@ -553,11 +560,14 @@ pub async fn copy_entry(
     )
     .await;
 
-    state.transfer_manager.broadcast_event(crate::transfer::WsEvent::file_change(
-        &connection_id,
-        &to_vfs.path,
-        "copy",
-    )).await;
+    state
+        .transfer_manager
+        .broadcast_event(crate::transfer::WsEvent::file_change(
+            &connection_id,
+            &to_vfs.path,
+            "copy",
+        ))
+        .await;
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -737,11 +747,14 @@ pub async fn upload_file(
             )
             .await;
 
-            state.transfer_manager.broadcast_event(crate::transfer::WsEvent::file_change(
-                &connection_id,
-                &target_path.path,
-                "upload",
-            )).await;
+            state
+                .transfer_manager
+                .broadcast_event(crate::transfer::WsEvent::file_change(
+                    &connection_id,
+                    &target_path.path,
+                    "upload",
+                ))
+                .await;
 
             uploaded_files.push(target_path.path);
         }

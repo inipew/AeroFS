@@ -7,13 +7,27 @@ use axum::{
 };
 use std::ops::Deref;
 
-/// Axum extractor for authenticated user sessions
+/// Axum extractor for authenticated user sessions — invariant: user is authenticated.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser(pub UserInfo);
 
+impl AuthenticatedUser {
+    pub fn id(&self) -> &str {
+        &self.0.id
+    }
+    pub fn username(&self) -> &str {
+        &self.0.username
+    }
+    pub fn is_admin(&self) -> bool {
+        self.0.is_admin
+    }
+    pub fn user_info(&self) -> &UserInfo {
+        &self.0
+    }
+}
+
 impl Deref for AuthenticatedUser {
     type Target = UserInfo;
-
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -58,14 +72,20 @@ where
             }
         }
 
-        // 3. Try extracting from query params (e.g. for WebSocket connections)
-        if let Some(query) = parts.uri.query() {
-            for pair in query.split('&') {
-                let mut kv = pair.splitn(2, '=');
-                if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
-                    if k == "session_id" || k == "token" {
-                        if let Ok(Some(user)) = validate_session(&app_state.db, v).await {
-                            return Ok(AuthenticatedUser(user));
+        // 3. Query param token — restricted to WebSocket upgrade only (§19, §155).
+        // Credentials in URL leak to logs/history/Referer; normal HTTP must use Cookie/Bearer.
+        let is_ws = parts.uri.path() == "/api/v1/ws";
+        if is_ws {
+            if let Some(query) = parts.uri.query() {
+                for pair in query.split('&') {
+                    let mut kv = pair.splitn(2, '=');
+                    if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                        if k == "session_id" || k == "token" {
+                            let decoded = urlencoding::decode(v).unwrap_or_else(|_| v.into());
+                            if let Ok(Some(user)) = validate_session(&app_state.db, &decoded).await
+                            {
+                                return Ok(AuthenticatedUser(user));
+                            }
                         }
                     }
                 }
