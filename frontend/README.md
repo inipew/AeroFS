@@ -1,5 +1,23 @@
-# Vue 3 + TypeScript + Vite
+# AeroFS Frontend (Vue 3 + Vite + Bun)
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+This frontend Single Page Application is built with Vue 3 SFCs, TypeScript, Tailwind CSS v4, and powered by **Bun**.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+## Scripts
+
+```bash
+# Install dependencies
+bun install
+
+# Start Vite dev server with Hot Module Replacement (HMR)
+bun run dev
+
+# Type check TypeScript & Vue templates
+bun run typecheck
+
+# Build for production
+bun run build
+
+# Preview production build locally
+bun run preview
+```
+

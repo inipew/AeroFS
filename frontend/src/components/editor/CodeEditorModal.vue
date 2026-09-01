@@ -759,9 +759,35 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import ace, { version as aceVersion } from 'ace-builds';
 import modelist from 'ace-builds/src-noconflict/ext-modelist';
+
+// Bundled core Ace themes
+import 'ace-builds/src-noconflict/theme-tomorrow_night';
+import 'ace-builds/src-noconflict/theme-one_dark';
+import 'ace-builds/src-noconflict/theme-dracula';
+import 'ace-builds/src-noconflict/theme-monokai';
+import 'ace-builds/src-noconflict/theme-chrome';
+import 'ace-builds/src-noconflict/theme-github';
+
+// Bundled common Ace modes
+import 'ace-builds/src-noconflict/mode-text';
+import 'ace-builds/src-noconflict/mode-rust';
+import 'ace-builds/src-noconflict/mode-typescript';
+import 'ace-builds/src-noconflict/mode-javascript';
+import 'ace-builds/src-noconflict/mode-json';
+import 'ace-builds/src-noconflict/mode-toml';
+import 'ace-builds/src-noconflict/mode-yaml';
+import 'ace-builds/src-noconflict/mode-markdown';
+import 'ace-builds/src-noconflict/mode-sh';
+import 'ace-builds/src-noconflict/mode-html';
+import 'ace-builds/src-noconflict/mode-css';
+import 'ace-builds/src-noconflict/mode-python';
+import 'ace-builds/src-noconflict/mode-golang';
+import 'ace-builds/src-noconflict/mode-sql';
+import 'ace-builds/src-noconflict/mode-dockerfile';
+
 import FbIcon from '../common/FbIcon.vue';
 import { apiClient } from '../../api/client';
 import { useUiStore } from '../../stores/uiStore';
@@ -770,7 +796,7 @@ import { useThemeStore } from '../../stores/themeStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { getFileTypeMeta } from '../../utils/fileTypes';
 
-// Point Ace to CDN scripts for dynamic mode / theme resolution
+// Point Ace to CDN scripts for dynamic mode / theme resolution fallback
 ace.config.set(
   'basePath',
   `https://cdn.jsdelivr.net/npm/ace-builds@${aceVersion}/src-min-noconflict/`
@@ -1145,6 +1171,11 @@ watch(showMarkdownPreview, (show) => {
 function initAce() {
   if (!editorEl.value || !uiStore.editorFile) return;
 
+  if (editor.value) {
+    editor.value.destroy();
+    editor.value = null;
+  }
+
   editor.value = ace.edit(editorEl.value, {
     mode: detectMode(uiStore.editorFile.name),
     theme: editorTheme.value,
@@ -1157,15 +1188,15 @@ function initAce() {
     showPrintMargin: false,
     useWorker: false,
     behavioursEnabled: true,
-    value: uiStore.editorContent,
+    value: uiStore.editorContent || '',
   });
 
-  savedContent.value = uiStore.editorContent;
+  savedContent.value = uiStore.editorContent || '';
   currentMode.value = detectMode(uiStore.editorFile.name);
   lineCount.value = editor.value.session.getLength();
-  charCount.value = uiStore.editorContent.length;
+  charCount.value = (uiStore.editorContent || '').length;
   if (isMarkdownFile.value && showMarkdownPreview.value) {
-    rawTextContent.value = uiStore.editorContent;
+    rawTextContent.value = uiStore.editorContent || '';
   }
 
   editor.value.session.on('change', () => {
@@ -1229,6 +1260,11 @@ function initAce() {
   });
 
   editor.value.focus();
+
+  // Ensure Ace adapts to container size after mount / animation
+  setTimeout(() => {
+    editor.value?.resize();
+  }, 60);
 }
 
 function updateEditorTheme() {
@@ -1275,9 +1311,25 @@ function updateActiveLine() {
   }
 }
 
+onMounted(() => {
+  if (uiStore.isEditorOpen && uiStore.editorFile) {
+    isDirty.value = false;
+    showMarkdownPreview.value = false;
+    isSyntaxMenuOpen.value = false;
+    isSettingsOpen.value = false;
+    isSearchOpen.value = false;
+    isGotoOpen.value = false;
+    isUnsavedConfirmOpen.value = false;
+    isConflictModalOpen.value = false;
+    nextTick(() => {
+      initAce();
+    });
+  }
+});
+
 watch(
-  () => uiStore.isEditorOpen,
-  (open) => {
+  () => [uiStore.isEditorOpen, uiStore.editorFile?.path],
+  ([open]) => {
     if (open && uiStore.editorFile) {
       isDirty.value = false;
       showMarkdownPreview.value = false;
@@ -1290,7 +1342,7 @@ watch(
       nextTick(() => {
         initAce();
       });
-    } else {
+    } else if (!open) {
       editor.value?.destroy();
       editor.value = null;
     }

@@ -67,7 +67,7 @@ pub async fn static_handler(uri: Uri) -> Response {
                 }
                 None => (
                     StatusCode::NOT_FOUND,
-                    "AeroFS: Embedded frontend assets not found. Run `npm run build` in the frontend directory before building the release binary.",
+                    "AeroFS: Embedded frontend assets not found. Run `bun run build` in the frontend directory before building the release binary.",
                 )
                     .into_response(),
             }

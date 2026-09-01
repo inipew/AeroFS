@@ -53,8 +53,10 @@ aerofs/
 │       ├── transfer/         # Durable SQLite-backed background transfer engine
 │       └── router.rs         # Axum route definitions
 │
-├── frontend/                 # Reactive Vue 3 + Vite Single Page Application
-│   ├── package.json          # Node dependencies (Vue 3, Pinia, Tailwind, Ace)
+├── frontend/                 # Reactive Vue 3 + Vite Single Page Application (Bun)
+│   ├── package.json          # Frontend dependencies (Vue 3, Pinia, Tailwind, Ace)
+│   ├── bun.lock              # Bun lockfile
+│   ├── bunfig.toml           # Bun project configuration
 │   ├── src/
 │   │   ├── api/              # Axios API clients & WebSocket client
 │   │   ├── components/       # UI components (browser, dialogs, layout, editor, header)
@@ -72,10 +74,10 @@ aerofs/
 
 ### 1. Build and Run (Single Standalone Binary)
 ```bash
-# 1. Build Vue 3 Frontend
+# 1. Build Vue 3 Frontend with Bun
 cd frontend
-npm install
-npm run build
+bun install
+bun run build
 
 # 2. Build Release Rust Binary with Embedded Frontend
 cd ../backend

@@ -15,4 +15,21 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (
+            id.includes('node_modules/vue') ||
+            id.includes('node_modules/pinia') ||
+            id.includes('node_modules/@tanstack')
+          ) {
+            return 'vendor-vue';
+          }
+        },
+      },
+    },
+  },
 });
+

@@ -8,7 +8,7 @@
 /backend/.trash/
 filemanager.db
 
-# Node / Frontend Build Artifacts
+# Frontend Build Artifacts
 /frontend/node_modules/
 /frontend/dist/
 /frontend/.vite/
@@ -19,4 +19,5 @@ filemanager.db
 .idea/
 *.log
 plan
-*.lock
+aerofs.lock
+backend/aerofs.lock

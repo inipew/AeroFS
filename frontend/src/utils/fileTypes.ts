@@ -42,7 +42,7 @@ export function isTextOrCode(entry: { name: string }): boolean {
     'rs', 'ts', 'js', 'jsx', 'tsx', 'vue', 'html', 'css', 'scss', 'sass', 'less',
     'py', 'sh', 'bash', 'zsh', 'fish', 'c', 'cpp', 'h', 'hpp', 'go', 'java', 'kt',
     'php', 'rb', 'pl', 'lua', 'sql', 'conf', 'cfg', 'ini', 'properties', 'dockerfile',
-    'lock', 'mod', 'sum', 'gradle', 'service', 'gitignore', 'gitattributes', 'npmrc',
+    'lock', 'mod', 'sum', 'gradle', 'service', 'gitignore', 'gitattributes', 'npmrc', 'bunfig',
     'bashrc', 'profile', 'zshrc', 'vimrc', 'eslintrc', 'prettierrc'
   ];
   return textExts.includes(ext);

@@ -1,0 +1,8 @@
+# Bun Configuration for AeroFS Frontend
+
+[install]
+# Prefer frozen lockfile in CI environments
+lockfile = "bun.lock"
+
+[run]
+# Default run options
