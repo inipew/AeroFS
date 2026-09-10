@@ -70,9 +70,13 @@
             v-for="conn in connStore.connections"
             :key="conn.id"
             @click="selectConnection(conn.id)"
+            @contextmenu.prevent="openContextMenu($event, conn)"
+            @touchstart="handleTouchStart($event, conn)"
+            @touchend="handleTouchEnd"
+            @touchmove="handleTouchMove"
             :class="[
-              'flex items-center rounded-xl transition cursor-pointer',
-              isCollapsed ? 'justify-center p-2.5' : 'px-3 py-2.5 min-h-[44px] space-x-3',
+              'group relative flex items-center rounded-xl transition cursor-pointer',
+              isCollapsed ? 'justify-center p-2.5' : 'px-3 py-2.5 min-h-[44px] space-x-2',
               isActiveConnection(conn.id)
                 ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-semibold ring-1 ring-blue-500/20'
                 : 'text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/60'
@@ -89,7 +93,7 @@
             </span>
             <span
               v-if="!isCollapsed && conn.provider !== 'local'"
-              class="flex items-center space-x-1 text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-500 dark:text-slate-400 font-normal"
+              class="flex items-center space-x-1 text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-gray-200/80 dark:bg-slate-800 text-gray-500 dark:text-slate-400 font-normal shrink-0"
             >
               <span
                 class="w-1.5 h-1.5 rounded-full shrink-0"
@@ -102,6 +106,17 @@
               ></span>
               <span>{{ conn.provider }}</span>
             </span>
+
+            <!-- 3-Dots Button (visible on hover for desktop, or on mobile) -->
+            <button
+              v-if="!isCollapsed"
+              type="button"
+              @click.stop="openContextMenuFromButton($event, conn)"
+              class="p-1 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-200/60 dark:hover:bg-slate-700/60 transition cursor-pointer opacity-80 md:opacity-0 md:group-hover:opacity-100 shrink-0"
+              title="Connection options"
+            >
+              <FbIcon name="more-vertical" size="14px" />
+            </button>
           </div>
         </div>
       </div>
@@ -219,12 +234,27 @@
         </button>
       </div>
     </div>
+
+    <!-- Storage Source Context Menu (Desktop & Mobile) -->
+    <SourceContextMenu
+      v-model="isContextMenuOpen"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      :connection="contextMenuConnection"
+      :testing="isTesting"
+      @open="handleMenuOpen"
+      @openOther="handleMenuOpenOther"
+      @test="handleMenuTest"
+      @edit="handleMenuEdit"
+      @delete="handleMenuDelete"
+    />
   </aside>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
+import SourceContextMenu from '../sidebar/SourceContextMenu.vue';
 import { useAuthStore } from '../../stores/authStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -232,9 +262,14 @@ import { useFileStore } from '../../stores/fileStore';
 import { useThemeStore } from '../../stores/themeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { getStorageInfoApi } from '../../api/files';
+import { testConnectionApi, listConnectionsApi } from '../../api/connections';
+import { normalizeApiError } from '../../utils/errorNormalizer';
+import type { Connection } from '../../types/connection';
 
 const emit = defineEmits<{
   (e: 'openConnectionDialog'): void;
+  (e: 'openEditConnectionDialog', conn: Connection): void;
+  (e: 'openDeleteConnectionDialog', conn: Connection): void;
   (e: 'openSettingsDialog'): void;
   (e: 'openSharesDialog'): void;
   (e: 'openTrashDialog'): void;
@@ -312,6 +347,100 @@ function isActiveConnection(id: string): boolean {
 function selectConnection(id: string) {
   fileStore.currentConnectionId = id;
   workspaceStore.switchPanelConnection(workspaceStore.activePanelId, id, '/');
+  if (uiStore.isMobile) {
+    uiStore.isMobileSidebarOpen = false;
+  }
+}
+
+// Context Menu State & Handlers
+const isContextMenuOpen = ref(false);
+const contextMenuX = ref(0);
+const contextMenuY = ref(0);
+const contextMenuConnection = ref<Connection | null>(null);
+const isTesting = ref(false);
+
+function openContextMenu(e: MouseEvent, conn: Connection) {
+  contextMenuX.value = e.clientX;
+  contextMenuY.value = e.clientY;
+  contextMenuConnection.value = conn;
+  isContextMenuOpen.value = true;
+}
+
+function openContextMenuFromButton(e: MouseEvent, conn: Connection) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  contextMenuX.value = rect.right;
+  contextMenuY.value = rect.bottom;
+  contextMenuConnection.value = conn;
+  isContextMenuOpen.value = true;
+}
+
+let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+function handleTouchStart(e: TouchEvent, conn: Connection) {
+  if (e.touches.length !== 1) return;
+  const touch = e.touches[0];
+  const clientX = touch.clientX;
+  const clientY = touch.clientY;
+  longPressTimer = setTimeout(() => {
+    contextMenuX.value = clientX;
+    contextMenuY.value = clientY;
+    contextMenuConnection.value = conn;
+    isContextMenuOpen.value = true;
+  }, 500);
+}
+
+function handleTouchEnd() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function handleTouchMove() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function handleMenuOpen(conn: Connection) {
+  selectConnection(conn.id);
+}
+
+function handleMenuOpenOther(conn: Connection) {
+  if (!workspaceStore.isDualPane) {
+    workspaceStore.setDualPane(true);
+  }
+  const otherPanelId = workspaceStore.activePanelId === 'left' ? 'right' : 'left';
+  workspaceStore.switchPanelConnection(otherPanelId, conn.id, '/');
+  if (uiStore.isMobile) {
+    uiStore.isMobileSidebarOpen = false;
+  }
+}
+
+async function handleMenuTest(conn: Connection) {
+  if (isTesting.value) return;
+  isTesting.value = true;
+  try {
+    const res = await testConnectionApi(conn.id);
+    uiStore.showToast(res.message || 'Connection successful!', 'success');
+    const conns = await listConnectionsApi();
+    connStore.connections = conns;
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
+  } finally {
+    isTesting.value = false;
+  }
+}
+
+function handleMenuEdit(conn: Connection) {
+  emit('openEditConnectionDialog', conn);
+  if (uiStore.isMobile) {
+    uiStore.isMobileSidebarOpen = false;
+  }
+}
+
+function handleMenuDelete(conn: Connection) {
+  emit('openDeleteConnectionDialog', conn);
   if (uiStore.isMobile) {
     uiStore.isMobileSidebarOpen = false;
   }

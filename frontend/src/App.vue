@@ -7,7 +7,7 @@
     <div v-else-if="authStore.isAuthenticated" class="h-full w-full flex flex-col min-h-0 overflow-hidden relative">
       <!-- Universal App Header -->
       <AppHeader
-        @open-connection-dialog="isConnDialogOpen = true"
+        @open-connection-dialog="handleOpenAddConnection"
         @open-search-dialog="isSearchDialogOpen = true"
         @open-settings-dialog="isSettingsDialogOpen = true"
         @open-shares-dialog="isSharesDialogOpen = true"
@@ -24,7 +24,9 @@
       <div class="flex-1 flex min-h-0 overflow-hidden relative">
         <!-- Collapsible / Floating Navigation Sidebar -->
         <AppSidebar
-          @open-connection-dialog="isConnDialogOpen = true"
+          @open-connection-dialog="handleOpenAddConnection"
+          @open-edit-connection-dialog="handleOpenEditConnection"
+          @open-delete-connection-dialog="handleOpenDeleteConnection"
           @open-settings-dialog="isSettingsDialogOpen = true"
           @open-shares-dialog="isSharesDialogOpen = true"
           @open-trash-dialog="isTrashDialogOpen = true"
@@ -184,7 +186,7 @@
             </button>
 
             <button
-              @click="isConnDialogOpen = true"
+              @click="handleOpenAddConnection"
               class="flex-1 flex flex-col items-center justify-center py-1 space-y-1 hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-fast cursor-pointer min-h-[44px]"
             >
               <FbIcon name="share" size="18px" />
@@ -228,7 +230,16 @@
         <RenameDialog v-if="uiStore.isRenameOpen" />
         <DeleteDialog v-if="uiStore.isDeleteOpen" />
         <UploadDialog v-if="uiStore.isUploadOpen" />
-        <ConnectionDialog v-if="isConnDialogOpen" v-model="isConnDialogOpen" />
+        <ConnectionDialog
+          v-if="isConnDialogOpen"
+          v-model="isConnDialogOpen"
+          :connectionToEdit="selectedConnToEdit"
+        />
+        <DeleteConnectionDialog
+          v-if="isDeleteConnDialogOpen"
+          v-model="isDeleteConnDialogOpen"
+          :connection="selectedConnToDelete"
+        />
         <ArchiveDialog
           v-if="isArchiveDialogOpen"
           v-model="isArchiveDialogOpen"
@@ -266,7 +277,7 @@
         <MediaViewerModal v-if="uiStore.isMediaViewerOpen" />
         <CommandPaletteModal
           @open-settings="isSettingsDialogOpen = true"
-          @open-connection-dialog="isConnDialogOpen = true"
+          @open-connection-dialog="handleOpenAddConnection"
           @open-search-dialog="isSearchDialogOpen = true"
         />
 
@@ -339,6 +350,7 @@ import { initializeCommandRegistry, commandRegistry } from './services/commandRe
 import { PreviewResolver } from './services/previewResolver';
 import { getDynamicSettleDuration } from './motion/tokens';
 import type { FileEntry } from './types/vfs';
+import type { Connection } from './types/connection';
 
 // Core eager components
 import AppHeader from './components/layout/AppHeader.vue';
@@ -354,6 +366,7 @@ const RenameDialog = defineAsyncComponent(() => import('./components/dialogs/Ren
 const DeleteDialog = defineAsyncComponent(() => import('./components/dialogs/DeleteDialog.vue'));
 const UploadDialog = defineAsyncComponent(() => import('./components/dialogs/UploadDialog.vue'));
 const ConnectionDialog = defineAsyncComponent(() => import('./components/dialogs/ConnectionDialog.vue'));
+const DeleteConnectionDialog = defineAsyncComponent(() => import('./components/dialogs/DeleteConnectionDialog.vue'));
 const ArchiveDialog = defineAsyncComponent(() => import('./components/dialogs/ArchiveDialog.vue'));
 const ArchiveViewerModal = defineAsyncComponent(() => import('./components/dialogs/ArchiveViewerModal.vue'));
 const ConflictDialog = defineAsyncComponent(() => import('./components/dialogs/ConflictDialog.vue'));
@@ -528,6 +541,25 @@ function handleTouchCancel() {
 }
 
 const isConnDialogOpen = ref(false);
+const isDeleteConnDialogOpen = ref(false);
+const selectedConnToEdit = ref<Connection | null>(null);
+const selectedConnToDelete = ref<Connection | null>(null);
+
+function handleOpenAddConnection() {
+  selectedConnToEdit.value = null;
+  isConnDialogOpen.value = true;
+}
+
+function handleOpenEditConnection(conn: Connection) {
+  selectedConnToEdit.value = conn;
+  isConnDialogOpen.value = true;
+}
+
+function handleOpenDeleteConnection(conn: Connection) {
+  selectedConnToDelete.value = conn;
+  isDeleteConnDialogOpen.value = true;
+}
+
 const isSearchDialogOpen = ref(false);
 const isSettingsDialogOpen = ref(false);
 const isSharesDialogOpen = ref(false);
@@ -624,6 +656,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     uiStore.isEditorOpen ||
     uiStore.isMediaViewerOpen ||
     isConnDialogOpen.value ||
+    isDeleteConnDialogOpen.value ||
     isArchiveDialogOpen.value ||
     isArchiveViewerOpen.value ||
     isSearchDialogOpen.value ||

@@ -8,11 +8,15 @@
       <div class="modal-card bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl relative" @click.stop>
       <div class="flex items-center space-x-3 mb-4">
         <div class="w-10 h-10 rounded-xl bg-blue-600/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center">
-          <FbIcon name="folder" size="20px" />
+          <FbIcon :name="isEditing ? 'rename' : 'folder'" size="20px" />
         </div>
         <div>
-          <h3 class="text-base font-bold text-gray-900 dark:text-white">Add Storage Source</h3>
-          <p class="text-gray-500 dark:text-slate-400 text-xs">Connect to FTP, FTPS, SFTP, or S3 storage.</p>
+          <h3 class="text-base font-bold text-gray-900 dark:text-white">
+            {{ isEditing ? 'Edit Storage Source' : 'Add Storage Source' }}
+          </h3>
+          <p class="text-gray-500 dark:text-slate-400 text-xs">
+            {{ isEditing ? `Update configuration for ${props.connectionToEdit?.name || 'storage'}.` : 'Connect to FTP, FTPS, SFTP, or S3 storage.' }}
+          </p>
         </div>
       </div>
 
@@ -31,10 +35,13 @@
 
         <!-- Protocol / Provider -->
         <div>
-          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">Protocol / Provider</label>
+          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">
+            Protocol / Provider <span v-if="isEditing" class="text-gray-400 font-normal">(cannot be changed)</span>
+          </label>
           <select
             v-model="form.provider"
-            class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 text-xs cursor-pointer shadow-inner"
+            :disabled="isEditing"
+            class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 text-xs shadow-inner disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
           >
             <option value="ftp">FTP (Standard File Transfer Protocol - Port 21)</option>
             <option value="ftps">FTPS (Explicit/Implicit TLS - Port 990/21)</option>
@@ -97,7 +104,7 @@
           <input
             v-model="form.secret"
             type="password"
-            placeholder="•••••••• (Encrypted in Vault)"
+            :placeholder="isEditing ? '•••••••• (Leave blank to keep current credentials)' : '•••••••• (Encrypted in Vault)'"
             class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-xs shadow-inner"
           />
         </div>
@@ -131,7 +138,7 @@
             class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs transition disabled:opacity-50 text-xs cursor-pointer flex items-center space-x-1.5"
           >
             <span v-if="saving" class="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
-            <span>{{ saving ? 'Connecting...' : 'Save & Connect' }}</span>
+            <span>{{ saving ? (isEditing ? 'Saving...' : 'Connecting...') : (isEditing ? 'Save Changes' : 'Save & Connect') }}</span>
           </button>
         </div>
       </form>
@@ -141,16 +148,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { createConnectionApi, listConnectionsApi } from '../../api/connections';
+import { createConnectionApi, updateConnectionApi, listConnectionsApi } from '../../api/connections';
+import { queryClient } from '../../queryClient';
+import { queryKeys } from '../../api/queryKeys';
 import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useUiStore } from '../../stores/uiStore';
-import type { ProviderKind } from '../../types/connection';
+import type { Connection, ProviderKind } from '../../types/connection';
 
 const props = defineProps<{
   modelValue: boolean;
+  connectionToEdit?: Connection | null;
 }>();
 
 const emit = defineEmits<{
@@ -162,20 +172,7 @@ const uiStore = useUiStore();
 
 const isOpen = ref(props.modelValue);
 const saving = ref(false);
-
-watch(
-  () => props.modelValue,
-  (val) => {
-    isOpen.value = val;
-  }
-);
-
-watch(
-  () => isOpen.value,
-  (val) => {
-    emit('update:modelValue', val);
-  }
-);
+const isEditing = computed(() => !!props.connectionToEdit);
 
 const form = ref<{
   name: string;
@@ -195,23 +192,98 @@ const form = ref<{
   base_path: '/',
 });
 
+function defaultPortFor(provider: ProviderKind): number {
+  if (provider === 'ftp') return 21;
+  if (provider === 'ftps') return 990;
+  if (provider === 'sftp') return 22;
+  if (provider === 's3') return 443;
+  return 21;
+}
+
+function syncFormWithEdit() {
+  if (props.connectionToEdit) {
+    form.value = {
+      name: props.connectionToEdit.name,
+      provider: props.connectionToEdit.provider,
+      host: props.connectionToEdit.host || '',
+      port: props.connectionToEdit.port || defaultPortFor(props.connectionToEdit.provider),
+      username: props.connectionToEdit.username || '',
+      secret: '',
+      base_path: props.connectionToEdit.base_path || '/',
+    };
+  } else {
+    form.value = {
+      name: '',
+      provider: 'ftp',
+      host: '',
+      port: 21,
+      username: '',
+      secret: '',
+      base_path: '/',
+    };
+  }
+}
+
+watch(
+  () => props.modelValue,
+  (val) => {
+    isOpen.value = val;
+    if (val) {
+      syncFormWithEdit();
+    }
+  }
+);
+
+watch(
+  () => props.connectionToEdit,
+  () => {
+    if (isOpen.value) {
+      syncFormWithEdit();
+    }
+  }
+);
+
+watch(
+  () => isOpen.value,
+  (val) => {
+    emit('update:modelValue', val);
+  }
+);
+
 watch(
   () => form.value.provider,
   (prov) => {
-    if (prov === 'ftp') form.value.port = 21;
-    if (prov === 'ftps') form.value.port = 990;
-    if (prov === 'sftp') form.value.port = 22;
-    if (prov === 's3') form.value.port = 443;
+    if (!isEditing.value) {
+      form.value.port = defaultPortFor(prov);
+    }
   }
 );
 
 async function handleSave() {
   saving.value = true;
   try {
-    const data = await createConnectionApi(form.value);
-    uiStore.showToast(data.message || 'Connection created!', 'success');
+    if (isEditing.value && props.connectionToEdit) {
+      const payload: Record<string, any> = {
+        name: form.value.name,
+        host: form.value.host,
+        port: form.value.port,
+        username: form.value.username,
+        base_path: form.value.base_path,
+      };
+      if (form.value.secret && form.value.secret.trim().length > 0) {
+        payload.secret = form.value.secret.trim();
+      }
+      const data = await updateConnectionApi(props.connectionToEdit.id, payload);
+      uiStore.showToast(data.message || 'Connection updated!', 'success');
+      queryClient.invalidateQueries({ queryKey: queryKeys.connections() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.connection(props.connectionToEdit.id) });
+    } else {
+      const data = await createConnectionApi(form.value);
+      uiStore.showToast(data.message || 'Connection created!', 'success');
+      queryClient.invalidateQueries({ queryKey: queryKeys.connections() });
+    }
     
-    // Refresh connections list
+    // Refresh connections list in pinia store
     const conns = await listConnectionsApi();
     connStore.connections = conns;
 
