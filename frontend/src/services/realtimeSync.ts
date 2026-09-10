@@ -4,8 +4,9 @@ import {
   type ResyncRequiredEvent,
 } from '../transport/websocket';
 import { queryClient } from '../queryClient';
-import { queryKeys } from '../api/queryKeys';
+import { queryKeys, isDirectoryQueryFor } from '../api/queryKeys';
 import { parentPath, normalizePath } from '../utils/path';
+import type { TransferJob } from '../types/transfer';
 
 export class RealtimeSyncCoordinator {
   private pendingDirectories = new Map<string, Set<string>>(); // connectionId -> Set<dirPath>
@@ -20,8 +21,9 @@ export class RealtimeSyncCoordinator {
 
     this.unsubs.push(
       realtimeClient.onFileChange((event) => this.handleFileChange(event)),
-      realtimeClient.onCompleted(() => this.handleTransferChange()),
-      realtimeClient.onFailed(() => this.handleTransferChange()),
+      realtimeClient.onCompleted((job) => this.handleTransferCompleted(job)),
+      realtimeClient.onFailed((job) => this.handleTransferFailed(job)),
+      realtimeClient.onCancelled((job) => this.handleTransferCancelled(job)),
       realtimeClient.onPermissionChanged((event) => this.handlePermissionChange(event)),
       realtimeClient.onResyncRequired((event) => this.handleResync(event))
     );
@@ -47,6 +49,9 @@ export class RealtimeSyncCoordinator {
     const targetDir = event.parent_path ? normalizePath(event.parent_path) : parentPath(event.path);
     this.queueDirectoryInvalidation(connId, targetDir);
 
+    // Invalidate metadata for mutated path
+    queryClient.invalidateQueries({ queryKey: queryKeys.metadata(connId, event.path) });
+
     if (event.old_path || event.old_parent_path) {
       const oldDir = event.old_parent_path
         ? normalizePath(event.old_parent_path)
@@ -54,21 +59,47 @@ export class RealtimeSyncCoordinator {
       if (oldDir !== targetDir) {
         this.queueDirectoryInvalidation(connId, oldDir);
       }
+      if (event.old_path) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.metadata(connId, event.old_path) });
+      }
     }
   }
 
-  private handleTransferChange(): void {
-    queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
+  private handleTransferCompleted(job?: TransferJob): void {
+    queryClient.invalidateQueries({ queryKey: queryKeys.transfers(), refetchType: 'active' });
+    if (job) {
+      if (job.destination_connection_id && job.destination_path) {
+        this.queueDirectoryInvalidation(job.destination_connection_id, parentPath(job.destination_path));
+      }
+      if (job.transfer_type === 'move' && job.source_connection_id && job.source_path) {
+        this.queueDirectoryInvalidation(job.source_connection_id, parentPath(job.source_path));
+      }
+    }
   }
 
-  private handlePermissionChange(_event: { user_id: string; connection_id: string }): void {
+  private handleTransferFailed(_job?: TransferJob): void {
+    queryClient.invalidateQueries({ queryKey: queryKeys.transfers(), refetchType: 'active' });
+  }
+
+  private handleTransferCancelled(_job?: TransferJob): void {
+    queryClient.invalidateQueries({ queryKey: queryKeys.transfers(), refetchType: 'active' });
+  }
+
+  private handlePermissionChange(event: { user_id: string; connection_id: string }): void {
     queryClient.invalidateQueries({ queryKey: queryKeys.connections() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.directories() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.connection(event.connection_id) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.capabilities(event.connection_id) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.directoryConnection(event.connection_id) });
   }
 
   private handleResync(event: ResyncRequiredEvent): void {
-    console.warn('[RealtimeSync] Resync required:', event.reason);
-    queryClient.invalidateQueries();
+    console.warn('[RealtimeSync] Targeted resync triggered:', event.reason);
+    queryClient.invalidateQueries({ queryKey: queryKeys.directories(), refetchType: 'active' });
+    queryClient.invalidateQueries({ queryKey: queryKeys.metadataPrefix(), refetchType: 'active' });
+    queryClient.invalidateQueries({ queryKey: queryKeys.capabilitiesPrefix(), refetchType: 'active' });
+    queryClient.invalidateQueries({ queryKey: queryKeys.connections(), refetchType: 'active' });
+    queryClient.invalidateQueries({ queryKey: queryKeys.transfers(), refetchType: 'active' });
+    queryClient.invalidateQueries({ queryKey: queryKeys.syncJobs(), refetchType: 'active' });
   }
 
   public queueDirectoryInvalidation(connectionId: string, dirPath: string): void {
@@ -95,12 +126,10 @@ export class RealtimeSyncCoordinator {
       for (const dirPath of dirPaths) {
         queryClient.invalidateQueries({
           predicate: (query) => {
-            const key = query.queryKey;
-            return (
-              Array.isArray(key) &&
-              key[0] === 'directory' &&
-              key[1] === connectionId &&
-              (key[2] === dirPath || dirPath === '/')
+            return isDirectoryQueryFor(
+              query.queryKey,
+              connectionId,
+              dirPath === '/' ? undefined : dirPath
             );
           },
         });

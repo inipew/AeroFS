@@ -284,7 +284,7 @@ async function startUpload() {
       uiStore.showToast(errors[0] || 'Failed to upload files', 'error');
     }
 
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Failed to upload files', 'error');
   } finally {

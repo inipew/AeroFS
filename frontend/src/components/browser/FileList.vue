@@ -98,7 +98,7 @@
 
           <!-- Modified Date -->
           <td class="py-2 px-3 text-slate-500 text-[11px] truncate">
-            {{ formatDate(filteredEntries[vRow.index]?.modified_at) }}
+            {{ formatDate(filteredEntries[vRow.index]?.modified_at ?? undefined) }}
           </td>
 
           <!-- Permissions -->

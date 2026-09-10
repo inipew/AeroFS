@@ -5,6 +5,44 @@ use crate::errors::{AppError, VfsError};
 use std::io::Cursor;
 
 impl FileApplicationService {
+    /// Create an empty file without overwriting an existing destination.
+    ///
+    /// Editing uses `create_or_write_typed`; the REST create endpoint must not
+    /// share that overwrite behaviour because its public contract is 409 on an
+    /// existing path.
+    pub async fn create_file_typed(
+        &self,
+        user: &UserInfo,
+        connection: &crate::domain::ConnectionId,
+        raw_path: String,
+    ) -> Result<FileMetadata, AppError> {
+        let provider = self
+            .registry
+            .get(connection.as_str())
+            .await
+            .ok_or_else(|| {
+                VfsError::ConnectionError(format!(
+                    "Connection '{}' not found",
+                    connection.as_str()
+                ))
+            })?;
+        let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
+
+        match provider.stat(&vfs_path).await {
+            Ok(_) => {
+                return Err(AppError::Vfs(VfsError::AlreadyExists(format!(
+                    "File '{}' already exists",
+                    vfs_path.path
+                ))));
+            }
+            Err(VfsError::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        self.create_or_write_typed(user, connection, raw_path, Vec::new(), None)
+            .await
+    }
+
     /// Owned write — no AppState, explicit ports (Phase 3.2).
     pub async fn create_or_write_typed(
         &self,

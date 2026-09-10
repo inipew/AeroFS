@@ -120,6 +120,25 @@ async fn test_auth_and_file_api_flow() {
     let resp = app.clone().oneshot(mkfile_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
+    // Repeating the same create request must surface the public conflict
+    // contract, rather than leaking provider-specific error semantics.
+    let duplicate_file_req = Request::builder()
+        .uri("/api/v1/connections/local/files")
+        .method("POST")
+        .header(header::COOKIE, session_cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "path": "/projects/notes.txt" }).to_string(),
+        ))
+        .unwrap();
+
+    let resp = app.clone().oneshot(duplicate_file_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let duplicate_error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(duplicate_error["error"]["code"], "ALREADY_EXISTS");
+    assert_eq!(duplicate_error["error"]["category"], "conflict");
+
     // 7. Test List Files in /projects -> 200
     let list_req = Request::builder()
         .uri("/api/v1/connections/local/files?path=/projects")

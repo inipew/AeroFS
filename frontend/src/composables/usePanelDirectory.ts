@@ -4,6 +4,7 @@ import { useDirectoryQuery } from './useDirectoryQuery';
 import type { PanelId } from '../types/workspace';
 import type { FileEntry } from '../types/vfs';
 import { queryClient } from '../queryClient';
+import { queryKeys } from '../api/queryKeys';
 import { directoryQueryOptions } from './useDirectoryQuery';
 
 export function getCachedDirectoryEntries(
@@ -11,7 +12,7 @@ export function getCachedDirectoryEntries(
   path: string
 ): FileEntry[] {
   const matches = queryClient.getQueriesData<{ pages?: Array<{ entries: FileEntry[] }> }>({
-    queryKey: ['directory', connectionId, path],
+    queryKey: queryKeys.directoryPrefix(connectionId, path),
     exact: false,
   });
   for (const [_, data] of matches) {

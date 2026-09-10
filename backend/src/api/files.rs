@@ -592,7 +592,7 @@ pub async fn create_file(
     let conn = crate::domain::ConnectionId::new(connection_id.clone())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let meta = crate::application::FileApplicationService::from_state(&state)
-        .create_or_write_typed(&user.0, &conn, payload.path, Vec::new(), None)
+        .create_file_typed(&user.0, &conn, payload.path)
         .await?;
 
     Ok((

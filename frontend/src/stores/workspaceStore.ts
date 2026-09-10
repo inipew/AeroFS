@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia';
 import { ref, computed, reactive, watch } from 'vue';
 import { queryClient } from '../queryClient';
+import { queryKeys } from '../api/queryKeys';
 import { directoryQueryOptions } from '../composables/useDirectoryQuery';
 import { ensureDirectoryData, getCachedDirectoryEntries } from '../composables/usePanelDirectory';
-import { realtimeClient } from '../transport/websocket';
 import { realtimeSync } from '../services/realtimeSync';
 import { useTransferStore } from './transferStore';
 import { useUiStore } from './uiStore';
@@ -53,7 +53,6 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
   });
 
   const runtime = reactive<PanelRuntimeState>({
-    entries: [] as FileEntry[],
     status: 'idle',
     get loading() { return this.status === 'loading' || this.status === 'refreshing'; },
     set loading(_v: boolean) {},
@@ -66,6 +65,10 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     hasMore: false,
     nextCursor: undefined,
     totalCount: undefined,
+    get entries() {
+      return getCachedDirectoryEntries(location.connectionId, location.path);
+    },
+    set entries(_v: FileEntry[] | undefined) {},
   });
 
   const panel: Panel = {
@@ -83,11 +86,11 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     set path(val: string) { location.path = val; },
 
     get entries(): FileEntry[] {
-      const cached = getCachedDirectoryEntries(location.connectionId, location.path);
-      if (cached.length > 0) return cached;
-      return runtime.entries ?? [];
+      return getCachedDirectoryEntries(location.connectionId, location.path);
     },
-    set entries(val: FileEntry[]) { runtime.entries = val; },
+    set entries(_val: FileEntry[]) {
+      // Invariant: TanStack Query cache is single source of truth
+    },
 
     get selectedEntries(): string[] { return selection.paths; },
     set selectedEntries(val: string[]) { selection.paths = val; },
@@ -119,7 +122,7 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     get error(): string | null { return runtime.error ?? null; },
     set error(val: string | null) { runtime.error = val; },
 
-    get stale() { return !!runtime.error && (runtime.entries?.length ?? 0) > 0; },
+    get stale() { return !!runtime.error && getCachedDirectoryEntries(location.connectionId, location.path).length > 0; },
 
     get history() { return navigation.history; },
     set history(val: string[]) { navigation.history = val; },
@@ -243,7 +246,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const s = sessionFor(panelId);
     s.connectionId = p.location.connectionId;
     s.path = p.location.path;
-    s.entries = p.runtime.entries ? p.runtime.entries.slice() : [];
+    s.entries = getCachedDirectoryEntries(p.location.connectionId, p.location.path);
     s.status = p.runtime.status;
     s.error = p.runtime.error ?? null;
   }
@@ -349,7 +352,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     saveState();
     if (enable && !rightPanel.value.runtime.initialized) {
-      fetchPanelEntries('right');
+      refreshPanel('right');
     }
   }
 
@@ -451,20 +454,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   // --- TRANSACTIONAL NAVIGATION ENGINE ---
 
-  async function fetchPanelEntries(
+  async function navigateTo(
     panelId: PanelId,
-    targetPath?: string
+    targetPath: string,
+    addToHistory: boolean = true
   ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
-    const sess = sessionFor(panelId);
-    const queryPath = targetPath !== undefined ? targetPath : p.location.path;
+    const normalizedTarget = normalizePath(targetPath);
+    const previousPath = p.location.path;
+    const currentPath = p.location.path;
+    let direction: 'forward' | 'back' | 'replace' = 'replace';
+    if (normalizedTarget.startsWith(currentPath) && normalizedTarget.length > currentPath.length) {
+      direction = 'forward';
+    } else if (currentPath.startsWith(normalizedTarget) && currentPath.length > normalizedTarget.length) {
+      direction = 'back';
+    }
+    p.navigation.direction = direction;
+    p.navigationDirection = direction;
 
-    // Reload preserves snapshot — status refreshing keeps old entries visible (66.md §6)
+    const sess = sessionFor(panelId);
     p.runtime.status = p.runtime.initialized ? 'refreshing' : 'loading';
     sess.status = p.runtime.status;
     p.runtime.error = null;
 
-    // PanelSession owns generation + abort (66.md §5) — legacy counters synced for compat
     const { generation: currentGen } = sess.newRequest();
     if (panelId === 'left') {
       leftRequestGen = currentGen;
@@ -475,7 +487,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     try {
       const data = await queryClient.fetchInfiniteQuery(
-        directoryQueryOptions(p.location.connectionId, queryPath, {
+        directoryQueryOptions(p.location.connectionId, normalizedTarget, {
           show_hidden: p.view.showHidden,
           sort: p.view.sortField,
           order: p.view.sortOrder,
@@ -493,12 +505,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const allEntries: FileEntry[] = data.pages.flatMap((pg: any) => pg.entries);
       const lastPage = data.pages[data.pages.length - 1];
 
-      // TRANSACTIONAL COMMIT: commit path and entries only upon verified success!
-      p.location.path = lastPage?.path || queryPath;
-      p.runtime.entries = allEntries;
+      // TRANSACTIONAL COMMIT: commit path only upon verified success!
+      p.location.path = lastPage?.path || normalizedTarget;
       p.runtime.hasMore = lastPage?.has_more ?? false;
-      p.runtime.nextCursor = lastPage?.next_cursor;
-      p.runtime.totalCount = lastPage?.total_count;
+      p.runtime.nextCursor = lastPage?.next_cursor ?? undefined;
+      p.runtime.totalCount = lastPage?.total_count ?? undefined;
 
       // Reconcile selection: preserve items that still exist
       const previousSelection = new Set(p.selection.paths);
@@ -512,6 +523,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.runtime.lastLoadedAt = Date.now();
       p.runtime.initialized = true;
       try { saveSnapshot(p.location.connectionId, p.location.path, allEntries); } catch {}
+
+      if (addToHistory && p.location.path !== p.navigation.history[p.navigation.historyIndex]) {
+        p.navigation.history = p.navigation.history.slice(0, p.navigation.historyIndex + 1);
+        p.navigation.history.push(p.location.path);
+        p.navigation.historyIndex = p.navigation.history.length - 1;
+      }
+      saveState();
       return { ok: true, path: p.location.path };
     } catch (err: unknown) {
       if (isAbortError(err)) {
@@ -525,20 +543,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       const norm = normalizeApiError(err);
       // Offline cached snapshot fallback (66.md §22) — show last cached if available
-      if (!p.runtime.entries || p.runtime.entries.length === 0) {
-        const cached = loadSnapshot(p.location.connectionId, queryPath);
+      if (p.entries.length === 0) {
+        const cached = loadSnapshot(p.location.connectionId, normalizedTarget);
         if (cached && cached.length > 0) {
-          p.runtime.entries = cached;
+          queryClient.setQueryData(
+            queryKeys.directory(p.location.connectionId, normalizedTarget, {
+              show_hidden: p.view.showHidden,
+              sort: p.view.sortField,
+              order: p.view.sortOrder,
+            }),
+            {
+              pages: [{ entries: cached, path: normalizedTarget, has_more: false, total_count: cached.length }],
+              pageParams: [undefined],
+            }
+          );
           p.runtime.status = 'offline';
           p.runtime.error = norm.message;
           p.runtime.lastError = norm.message;
           return { ok: false, error: norm.message };
         }
       }
-      p.runtime.status = (p.runtime.entries?.length ?? 0) > 0 ? 'degraded' : 'error';
+      p.runtime.status = p.entries.length > 0 ? 'degraded' : 'error';
       p.runtime.error = norm.message;
       p.runtime.lastError = norm.message;
-      return { ok: false, error: p.runtime.error || undefined };
+
+      // Rollback path
+      p.location.path = previousPath;
+      if (norm.message) {
+        const uiStore = useUiStore();
+        uiStore.showToast(norm.message || 'Failed to open directory', 'error');
+      }
+      return { ok: false, error: norm.message };
     }
   }
 
@@ -582,10 +617,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const allEntries: FileEntry[] = data.pages.flatMap((pg: any) => pg.entries);
       const lastPage = data.pages[data.pages.length - 1];
 
-      p.runtime.entries = allEntries;
       p.runtime.hasMore = lastPage?.has_more ?? false;
-      p.runtime.nextCursor = lastPage?.next_cursor;
-      p.runtime.totalCount = lastPage?.total_count;
+      p.runtime.nextCursor = lastPage?.next_cursor ?? undefined;
+      p.runtime.totalCount = lastPage?.total_count ?? undefined;
       p.runtime.status = 'idle';
       return { ok: true, count: allEntries.length };
     } catch (err: unknown) {
@@ -593,45 +627,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const norm = normalizeApiError(err);
       return { ok: false, error: norm.message };
     }
-  }
-
-  async function navigateTo(
-    panelId: PanelId,
-    targetPath: string,
-    addToHistory: boolean = true
-  ): Promise<{ ok: boolean; path?: string; error?: string }> {
-    const p = getPanel(panelId);
-    const previousPath = p.location.path;
-    const currentPath = p.location.path;
-    let direction: 'forward' | 'back' | 'replace' = 'replace';
-    if (targetPath.startsWith(currentPath) && targetPath.length > currentPath.length) {
-      direction = 'forward';
-    } else if (currentPath.startsWith(targetPath) && currentPath.length > targetPath.length) {
-      direction = 'back';
-    }
-    p.navigation.direction = direction;
-    p.navigationDirection = direction;
-
-    const res = await fetchPanelEntries(panelId, targetPath);
-
-    if (!res.ok) {
-      // Atomic rollback on failure
-      p.location.path = previousPath;
-      if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
-        const uiStore = useUiStore();
-        uiStore.showToast(res.error || 'Failed to open directory', 'error');
-      }
-      return res;
-    }
-
-    if (addToHistory && p.location.path !== p.navigation.history[p.navigation.historyIndex]) {
-      // Truncate forward history on new verified navigation
-      p.navigation.history = p.navigation.history.slice(0, p.navigation.historyIndex + 1);
-      p.navigation.history.push(p.location.path);
-      p.navigation.historyIndex = p.navigation.history.length - 1;
-    }
-    saveState();
-    return res;
   }
 
   async function navigatePanel(panelId: PanelId, targetPath: string, addToHistory: boolean = true) {
@@ -649,9 +644,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     p.selection.paths = [];
     p.selection.focusedPath = undefined;
     p.runtime.initialized = false;
-    const res = await fetchPanelEntries(panelId, basePath);
+    const res = await navigateTo(panelId, basePath, false);
     if (!res.ok) {
-      // Still set base path fallback if fetch failed
       p.location.path = basePath;
     }
     saveState();
@@ -664,13 +658,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.navigationDirection = 'back';
       const targetIdx = p.navigation.historyIndex - 1;
       const targetPath = p.navigation.history[targetIdx];
-      const res = await fetchPanelEntries(panelId, targetPath);
+      const res = await navigateTo(panelId, targetPath, false);
       if (res.ok) {
         p.navigation.historyIndex = targetIdx;
         saveState();
-      } else if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
-        const uiStore = useUiStore();
-        uiStore.showToast(res.error || `Failed to navigate back to ${targetPath}`, 'error');
       }
     }
   }
@@ -682,13 +673,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       p.navigationDirection = 'forward';
       const targetIdx = p.navigation.historyIndex + 1;
       const targetPath = p.navigation.history[targetIdx];
-      const res = await fetchPanelEntries(panelId, targetPath);
+      const res = await navigateTo(panelId, targetPath, false);
       if (res.ok) {
         p.navigation.historyIndex = targetIdx;
         saveState();
-      } else if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
-        const uiStore = useUiStore();
-        uiStore.showToast(res.error || `Failed to navigate forward to ${targetPath}`, 'error');
       }
     }
   }
@@ -710,18 +698,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const p = getPanel(panelId);
     try {
       queryClient.invalidateQueries({
-        queryKey: ['directory', p.location.connectionId, p.location.path],
+        queryKey: queryKeys.directoryPrefix(p.location.connectionId, p.location.path),
       });
     } catch {}
   }
 
-  async function refresh(panelId: PanelId) {
+  async function refresh(panelId: PanelId): Promise<{ ok: boolean; path?: string; error?: string }> {
     invalidatePanel(panelId);
-    await fetchPanelEntries(panelId);
+    const p = getPanel(panelId);
+    return await navigateTo(panelId, p.location.path, false);
   }
 
-  async function refreshPanel(panelId: PanelId) {
-    await refresh(panelId);
+  async function refreshPanel(panelId: PanelId): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return await refresh(panelId);
   }
 
   async function refreshActive() {
@@ -949,12 +938,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     layout.value = preset.layout;
     leftPanel.value.location.connectionId = preset.leftConn;
     leftPanel.value.location.path = preset.leftPath;
-    await fetchPanelEntries('left');
+    await refreshPanel('left');
 
     if (preset.layout === 'split' && preset.rightConn) {
       rightPanel.value.location.connectionId = preset.rightConn;
       rightPanel.value.location.path = preset.rightPath || '/';
-      await fetchPanelEntries('right');
+      await refreshPanel('right');
     }
     saveState();
   }
@@ -967,18 +956,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const parentDir = parentPath(normalizePath(filePath));
     realtimeSync.queueDirectoryInvalidation(connectionId, parentDir);
   }
-
-  // Re-synchronize visible panels upon server buffer expiration or visibility resumption
-  const unsubscribeResync = realtimeClient.onResyncRequired(async () => {
-    try {
-      queryClient.invalidateQueries({ queryKey: ['directory'] });
-      queryClient.invalidateQueries({ queryKey: ['metadata'] });
-    } catch {}
-    await Promise.all([
-      fetchPanelEntries('left'),
-      ...(isDualPane.value ? [fetchPanelEntries('right')] : []),
-    ]);
-  });
 
   // Connection orphan detection (66.md §24-25) — panel becomes orphaned if connection removed/disabled
   const connStoreRef = useConnectionStore();
@@ -993,7 +970,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           p.runtime.error = 'Connection unavailable';
         } else if (exists && p.runtime.status === 'orphaned') {
           p.runtime.status = 'idle';
-          fetchPanelEntries(pid);
+          refreshPanel(pid);
         }
       });
     },
@@ -1041,7 +1018,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     rightSession.dispose();
     abortPanel('left');
     abortPanel('right');
-    unsubscribeResync();
   }
 
   return {
@@ -1062,7 +1038,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     closePanel,
     swapPanels,
     openInOtherPanel,
-    fetchPanelEntries,
     fetchNextPage,
     navigateTo,
     navigatePanel,

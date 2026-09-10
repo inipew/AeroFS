@@ -24,12 +24,12 @@ export async function getConnectionApi(id: string): Promise<ConnectionDetail> {
   return resp.data;
 }
 
-export async function createConnectionApi(payload: any): Promise<CreateConnectionResponse> {
+export async function createConnectionApi(payload: CreateConnectionRequest): Promise<CreateConnectionResponse> {
   const resp = await apiClient.post<CreateConnectionResponse>('/connections', payload);
   return resp.data;
 }
 
-export async function updateConnectionApi(id: string, payload: any): Promise<ConnectionActionResponse> {
+export async function updateConnectionApi(id: string, payload: UpdateConnectionRequest): Promise<ConnectionActionResponse> {
   const resp = await apiClient.put<ConnectionActionResponse>(`/connections/${encodeURIComponent(id)}`, payload);
   return resp.data;
 }

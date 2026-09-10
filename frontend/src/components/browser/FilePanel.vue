@@ -696,7 +696,7 @@
                       'px-2 text-right text-gray-400 dark:text-slate-500 text-xs truncate'
                     ]"
                   >
-                    {{ formatDate(displayedEntries[vRow.index]?.modified_at) }}
+                    {{ formatDate(displayedEntries[vRow.index]?.modified_at ?? undefined) }}
                   </td>
                 </tr>
 
@@ -810,48 +810,14 @@ const queryParamsRef = computed(() => ({
 
 const dirQuery = useDirectoryQuery(connectionIdRef, pathRef, queryParamsRef);
 
-// Keep panel runtime synchronized for backward compatibility with dialogs & modals
+// Keep selection synchronized with valid entries
 watch(
   () => dirQuery.entries.value,
   (newEntries) => {
-    panel.value.entries = newEntries || [];
     const validPaths = new Set((newEntries || []).map((e) => e.path));
     panel.value.selectedEntries = panel.value.selectedEntries.filter((p: string) => validPaths.has(p));
   },
   { immediate: true, deep: true }
-);
-
-watch(
-  () => dirQuery.isLoading.value,
-  (loading) => {
-    panel.value.runtime.status = loading ? 'loading' : (dirQuery.isFetchingNextPage.value ? 'loading_more' : 'idle');
-    panel.value.runtime.initialized = true;
-  },
-  { immediate: true }
-);
-
-watch(
-  () => dirQuery.error.value,
-  (err) => {
-    panel.value.runtime.error = err ? err.message : null;
-  },
-  { immediate: true }
-);
-
-watch(
-  () => dirQuery.hasMore.value,
-  (hm) => {
-    panel.value.runtime.hasMore = hm;
-  },
-  { immediate: true }
-);
-
-watch(
-  () => dirQuery.totalCount.value,
-  (tc) => {
-    panel.value.runtime.totalCount = tc;
-  },
-  { immediate: true }
 );
 
 const addressInput = ref('');
@@ -1255,7 +1221,7 @@ async function onContainerTouchEnd() {
     isPullRefreshing.value = true;
     pullDistance.value = 45;
     try {
-      await workspaceStore.fetchPanelEntries(props.panelId);
+      await workspaceStore.refreshPanel(props.panelId);
     } finally {
       setTimeout(() => {
         isPullRefreshing.value = false;
@@ -1609,7 +1575,7 @@ async function handleExternalFilesDrop(e: DragEvent, targetDir: string) {
   await Promise.all(workers);
 
   uiStore.showToast(`Uploaded ${successCount} file(s) to ${targetDir}`, 'success');
-  await workspaceStore.fetchPanelEntries(props.panelId);
+  await workspaceStore.refreshPanel(props.panelId);
 }
 
 async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
@@ -1700,9 +1666,9 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
     }
     uiStore.showToast(`Queued ${data.paths.length} ${opLabel.toLowerCase()}(s)`, 'info');
     setTimeout(() => {
-      workspaceStore.fetchPanelEntries(props.panelId);
+      workspaceStore.refreshPanel(props.panelId);
       if (isMove && data.sourcePanelId && data.sourcePanelId !== props.panelId) {
-        workspaceStore.fetchPanelEntries(data.sourcePanelId);
+        workspaceStore.refreshPanel(data.sourcePanelId);
       }
     }, 1000);
   } catch (err: any) {

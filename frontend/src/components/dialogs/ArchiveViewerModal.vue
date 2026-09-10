@@ -557,7 +557,7 @@ async function extractSingle(entry: VirtualArchiveEntry) {
       [entry.path]
     );
     uiStore.showToast(`Extracted ${entry.name}`, 'success');
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
     close();
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
@@ -578,7 +578,7 @@ async function extractSelected() {
       selectedPaths.value
     );
     uiStore.showToast(`Extracted ${selectedPaths.value.length} item(s)`, 'success');
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
     close();
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
@@ -593,7 +593,7 @@ async function extractAll() {
     const targetDir = props.archivePath.substring(0, props.archivePath.lastIndexOf('/')) || '/';
     await extractArchiveApi(props.connectionId, props.archivePath, targetDir);
     uiStore.showToast('Archive extracted successfully', 'success');
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
     close();
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');

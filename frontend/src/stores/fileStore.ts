@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { queryClient } from '../queryClient';
 import { useWorkspaceStore } from './workspaceStore';
 import {
@@ -12,8 +12,10 @@ import {
   getPresignedUploadUrlApi,
   completePresignedUploadApi,
 } from '../api/files';
+import type { DirectoryListing } from '../api/files';
 import { streamUpload } from '../services/transfer/fetchStream';
-import { joinPath, parentPath } from '../utils/path';
+import { joinPath, parentPath, normalizePath } from '../utils/path';
+import { queryKeys } from '../api/queryKeys';
 import type { FileEntry } from '../types/vfs';
 
 /**
@@ -22,10 +24,16 @@ import type { FileEntry } from '../types/vfs';
  */
 export const useFileStore = defineStore('file', () => {
   const workspaceStore = useWorkspaceStore();
+  // Vue does not track QueryClient reads. This revision makes computed accessors
+  // reactive while keeping directory data exclusively in TanStack Query.
+  const cacheRevision = ref(0);
+  queryClient.getQueryCache().subscribe(() => {
+    cacheRevision.value++;
+  });
 
   /** Invalidate TanStack Query directory cache for a given path after mutations */
   function invalidateDirectory(connectionId: string, path: string) {
-    queryClient.invalidateQueries({ queryKey: ['directory', connectionId, path] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(connectionId, path) });
   }
 
   const currentConnectionId = computed({
@@ -42,12 +50,29 @@ export const useFileStore = defineStore('file', () => {
     },
   });
 
-  const entries = computed<FileEntry[]>({
-    get: () => workspaceStore.activePanel.entries,
-    set: (val: FileEntry[]) => {
-      workspaceStore.activePanel.entries = val;
-    },
+  const activeDirectoryQuery = computed(() => {
+    // Read the revision so cache writes/refetches invalidate this derived view.
+    cacheRevision.value;
+    const panel = workspaceStore.activePanel;
+    return queryClient.getQueryCache().find({
+      queryKey: queryKeys.directory(panel.connectionId, panel.path, {
+        show_hidden: panel.showHidden,
+        sort: panel.sortField,
+        order: panel.sortOrder,
+      }),
+      exact: true,
+    });
   });
+
+  const activeDirectoryData = computed(() =>
+    activeDirectoryQuery.value?.state.data as
+      | { pages: DirectoryListing[]; pageParams: unknown[] }
+      | undefined
+  );
+
+  const entries = computed<FileEntry[]>(() =>
+    activeDirectoryData.value?.pages.flatMap((page) => page.entries) ?? []
+  );
 
   const selectedEntries = computed<string[]>({
     get: () => workspaceStore.activePanel.selection.paths,
@@ -91,11 +116,23 @@ export const useFileStore = defineStore('file', () => {
     },
   });
 
-  const loading = computed(() => workspaceStore.activePanel.runtime.loading);
-  const loadingMore = computed(() => workspaceStore.activePanel.runtime.loadingMore);
-  const hasMore = computed(() => workspaceStore.activePanel.runtime.hasMore);
-  const totalCount = computed(() => workspaceStore.activePanel.runtime.totalCount);
-  const error = computed(() => workspaceStore.activePanel.runtime.error);
+  const loading = computed(() =>
+    activeDirectoryQuery.value?.state.status === 'pending'
+  );
+  const loadingMore = computed(() =>
+    activeDirectoryQuery.value?.state.fetchStatus === 'fetching' &&
+    (activeDirectoryData.value?.pages.length ?? 0) > 0
+  );
+  const hasMore = computed(() =>
+    activeDirectoryData.value?.pages.at(-1)?.has_more ?? false
+  );
+  const totalCount = computed(() =>
+    activeDirectoryData.value?.pages.at(-1)?.total_count
+  );
+  const error = computed(() => {
+    const value = activeDirectoryQuery.value?.state.error;
+    return value instanceof Error ? value.message : value ? String(value) : null;
+  });
 
   const history = computed(() => workspaceStore.activePanel.navigation.history);
   const historyIndex = computed(() => workspaceStore.activePanel.navigation.historyIndex);
@@ -112,7 +149,11 @@ export const useFileStore = defineStore('file', () => {
   const selectedCount = computed(() => selectedEntries.value.length);
 
   async function fetchEntries(path?: string) {
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId, path);
+    if (path && path !== workspaceStore.activePanel.location.path) {
+      await workspaceStore.navigateTo(workspaceStore.activePanelId, path);
+    } else {
+      await workspaceStore.refreshPanel(workspaceStore.activePanelId);
+    }
   }
 
   async function fetchNextPage() {
@@ -164,7 +205,7 @@ export const useFileStore = defineStore('file', () => {
     updater: (entries: FileEntry[]) => FileEntry[]
   ): Array<[readonly unknown[], unknown]> {
     const matchingQueries = queryClient.getQueriesData<{ pages: Array<{ entries: FileEntry[] }> }>({
-      queryKey: ['directory', connectionId, dirPath],
+      queryKey: queryKeys.directoryPrefix(connectionId, dirPath),
       exact: false,
     });
     const snapshots: Array<[readonly unknown[], unknown]> = [];
@@ -215,8 +256,8 @@ export const useFileStore = defineStore('file', () => {
 
     try {
       await createFileApi(currentConnectionId.value, fullPath);
-      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, currentPath.value] });
-      queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, fullPath] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, currentPath.value) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.metadata(currentConnectionId.value, fullPath) });
     } catch (err) {
       restoreQueryDirectoryCache(snapshots);
       throw err;
@@ -241,7 +282,7 @@ export const useFileStore = defineStore('file', () => {
 
     try {
       await createDirectoryApi(currentConnectionId.value, fullPath);
-      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, currentPath.value] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, currentPath.value) });
     } catch (err) {
       restoreQueryDirectoryCache(snapshots);
       throw err;
@@ -264,9 +305,9 @@ export const useFileStore = defineStore('file', () => {
 
     try {
       await deleteFilesApi(currentConnectionId.value, targets);
-      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, currentPath.value] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, currentPath.value) });
       for (const target of targets) {
-        queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, target] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.metadata(currentConnectionId.value, target) });
       }
     } catch (err) {
       restoreQueryDirectoryCache(snapshots);
@@ -298,9 +339,14 @@ export const useFileStore = defineStore('file', () => {
 
     try {
       await renameEntryApi(currentConnectionId.value, from, to);
-      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, parent] });
-      queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, from] });
-      queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, to] });
+      const fromParent = parentPath(normalizePath(from));
+      const toParent = parentPath(normalizePath(to));
+      queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, fromParent) });
+      if (toParent !== fromParent) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, toParent) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.metadata(currentConnectionId.value, from) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.metadata(currentConnectionId.value, to) });
     } catch (err) {
       restoreQueryDirectoryCache(snapshots);
       throw err;
@@ -311,8 +357,13 @@ export const useFileStore = defineStore('file', () => {
     const fileName = from.split('/').pop() || 'file';
     const to = joinPath(destDir, fileName);
     await copyEntryApi(currentConnectionId.value, from, to);
-    queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, destDir] });
-    queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, to] });
+    const fromParent = parentPath(normalizePath(from));
+    const normalizedDest = normalizePath(destDir);
+    queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, normalizedDest) });
+    if (fromParent !== normalizedDest) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.directoryPrefix(currentConnectionId.value, fromParent) });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.metadata(currentConnectionId.value, to) });
     await workspaceStore.refreshActive();
   }
 

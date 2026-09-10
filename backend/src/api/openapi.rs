@@ -250,3 +250,27 @@ pub async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 pub fn openapi_router() -> Router<AppState> {
     Router::new().route("/openapi.json", get(openapi_json))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_openapi_spec_contains_all_sync_routes() {
+        let openapi = ApiDoc::openapi();
+        let paths = &openapi.paths.paths;
+        assert!(paths.contains_key("/api/v1/sync"), "Missing /api/v1/sync path");
+        assert!(paths.contains_key("/api/v1/sync/{id}/operations"), "Missing /api/v1/sync/{{id}}/operations path");
+        assert!(paths.contains_key("/api/v1/sync/{id}/resolve"), "Missing /api/v1/sync/{{id}}/resolve path");
+
+        let sync_path = paths.get("/api/v1/sync").expect("/api/v1/sync path item");
+        assert!(sync_path.get.is_some(), "GET /api/v1/sync missing");
+        assert!(sync_path.post.is_some(), "POST /api/v1/sync missing");
+
+        let ops_path = paths.get("/api/v1/sync/{id}/operations").expect("/api/v1/sync/{id}/operations path item");
+        assert!(ops_path.get.is_some(), "GET /api/v1/sync/{{id}}/operations missing");
+
+        let resolve_path = paths.get("/api/v1/sync/{id}/resolve").expect("/api/v1/sync/{id}/resolve path item");
+        assert!(resolve_path.post.is_some(), "POST /api/v1/sync/{{id}}/resolve missing");
+    }
+}

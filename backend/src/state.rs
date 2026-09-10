@@ -249,7 +249,8 @@ impl AppState {
                                             let _ = sync_manager_ev.notify_transfer_completed(id, true).await;
                                         }
                                     }
-                                    crate::events::DomainEvent::TransferFailed(ref v) => {
+                                    crate::events::DomainEvent::TransferFailed(ref v)
+                                    | crate::events::DomainEvent::TransferCancelled(ref v) => {
                                         if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
                                             let _ = sync_manager_ev.notify_transfer_completed(id, false).await;
                                         }

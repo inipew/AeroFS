@@ -200,7 +200,7 @@ impl TransferManager {
                             if job.status == TransferStatus::Cancelled {
                                 let _ = Self::save_job_to_db(&db_worker, &job).await;
                                 let _ = event_journal_worker.append(
-                                    DomainEvent::transfer_failed(&job),
+                                    DomainEvent::transfer_cancelled(&job),
                                     Some(&job.id),
                                 ).await;
                             }
@@ -243,7 +243,7 @@ impl TransferManager {
                                 }
                                 let _ = Self::save_job_conditional(&db_worker, &job, &["cancelled", "cancellation_requested", "running", "queued"]).await;
                                 let _ = event_journal_worker.append(
-                                    DomainEvent::transfer_failed(&job),
+                                    DomainEvent::transfer_cancelled(&job),
                                     Some(&job.id),
                                 ).await;
                             } else {
@@ -264,7 +264,7 @@ impl TransferManager {
                                                 map.insert(job.id.clone(), job.clone());
                                             }
                                             let _ = Self::save_job_to_db(&db_worker, &job).await;
-                                            let _ = event_journal_worker.append(DomainEvent::transfer_failed(&job), Some(&job.id)).await;
+                                            let _ = event_journal_worker.append(DomainEvent::transfer_cancelled(&job), Some(&job.id)).await;
                                         } else {
                                             let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(&db_worker, &job.id).await;
                                             job.status = TransferStatus::Completed;
@@ -723,7 +723,7 @@ impl TransferManager {
             let _ = Self::save_job_to_db(&self.db, &job).await;
             let _ = self
                 .event_journal
-                .append(DomainEvent::transfer_failed(&job), Some(&job.id))
+                .append(DomainEvent::transfer_cancelled(&job), Some(&job.id))
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
         }
@@ -842,7 +842,7 @@ impl TransferManager {
             if is_queued {
                 let _ = self
                     .event_journal
-                    .append(DomainEvent::transfer_failed(&job), Some(&job.id))
+                    .append(DomainEvent::transfer_cancelled(&job), Some(&job.id))
                     .await;
             } else {
                 let _ = self

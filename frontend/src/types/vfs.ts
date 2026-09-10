@@ -9,12 +9,12 @@ export interface FileEntry {
   name: string;
   path: string;
   kind: FileKind;
-  size?: number;
-  modified_at?: string;
-  permissions?: string;
-  mime_type?: string;
+  size?: number | null;
+  modified_at?: string | null;
+  permissions?: string | null;
+  mime_type?: string | null;
   is_hidden: boolean;
-  symlink_target?: string;
+  symlink_target?: string | null;
 }
 
 export interface FileMetadata {
@@ -22,23 +22,23 @@ export interface FileMetadata {
   path: string;
   kind: FileKind;
   size: number;
-  modified_at?: string;
-  created_at?: string;
-  permissions?: string;
-  mime_type?: string;
+  modified_at?: string | null;
+  created_at?: string | null;
+  permissions?: string | null;
+  mime_type?: string | null;
   etag: string;
   is_readonly: boolean;
   is_hidden: boolean;
-  symlink_target?: string;
+  symlink_target?: string | null;
 }
 
 export interface DirectoryListing {
   path: string;
   connection_id: string;
   entries: FileEntry[];
-  total_count?: number;
+  total_count?: number | null;
   has_more?: boolean;
-  next_cursor?: string;
+  next_cursor?: string | null;
 }
 
 export interface ChecksumCapabilities {

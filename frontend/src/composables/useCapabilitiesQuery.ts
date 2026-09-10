@@ -9,11 +9,12 @@ import { computed } from 'vue';
 import type { Ref } from 'vue';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { getConnectionApi } from '../api/connections';
+import { queryKeys } from '../api/queryKeys';
 
 export function useCapabilitiesQuery(connectionId: Ref<string>) {
   const queryClient = useQueryClient();
 
-  const queryKey = computed(() => ['capabilities', connectionId.value]);
+  const queryKey = computed(() => queryKeys.capabilities(connectionId.value));
 
   const query = useQuery({
     queryKey,

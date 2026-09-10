@@ -129,6 +129,18 @@ html.dark {
   transition-duration: var(--motion-emphasized);
 }
 
+/* Transfer ticks arrive every ~100 ms. A long spring transition keeps the bar
+   permanently behind the actual byte count, so use a short linear catch-up. */
+.transfer-progress-bar {
+  transition: width 70ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transfer-progress-bar {
+    transition: none;
+  }
+}
+
 /* ==========================================================================
    1. Universal iOS/macOS Modal Dialog Transitions (Choreographed Dual-Surface)
    ========================================================================== */
@@ -476,4 +488,3 @@ html.dark {
 .safe-bottom-nav {
   padding-bottom: max(0.25rem, env(safe-area-inset-bottom, 0px));
 }
-

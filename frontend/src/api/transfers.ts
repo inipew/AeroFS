@@ -1,20 +1,11 @@
 import apiClient from './client';
-import type { TransferJob, TransferType } from '../types/transfer';
+import type { components } from './generated/openapi';
 
-export interface CreateTransferPayload {
-  name: string;
-  transfer_type: TransferType;
-  source_connection_id: string;
-  source_path: string;
-  destination_connection_id: string;
-  destination_path: string;
-}
-
-export interface CreateTransferResponse {
-  success: boolean;
-  job_id: string;
-  message: string;
-}
+export type CreateTransferPayload = components['schemas']['CreateTransferRequest'];
+export type CreateTransferResponse = components['schemas']['CreateTransferResponse'];
+export type TransferJob = components['schemas']['TransferJob'];
+export type TransferActionResponse = components['schemas']['TransferActionResponse'];
+export type ClearFinishedTransfersResponse = components['schemas']['ClearFinishedTransfersResponse'];
 
 export async function createTransferApi(
   payload: CreateTransferPayload,
@@ -33,23 +24,23 @@ export async function listTransfersApi(): Promise<TransferJob[]> {
   return resp.data;
 }
 
-export async function cancelTransferApi(jobId: string): Promise<{ success: boolean; message: string }> {
-  const resp = await apiClient.post<{ success: boolean; message: string }>(`/transfers/${jobId}/cancel`);
+export async function cancelTransferApi(jobId: string): Promise<TransferActionResponse> {
+  const resp = await apiClient.post<TransferActionResponse>(`/transfers/${jobId}/cancel`);
   return resp.data;
 }
 
-export async function retryTransferApi(jobId: string): Promise<{ success: boolean; message: string }> {
-  const resp = await apiClient.post<{ success: boolean; message: string }>(`/transfers/${jobId}/retry`);
+export async function retryTransferApi(jobId: string): Promise<TransferActionResponse> {
+  const resp = await apiClient.post<TransferActionResponse>(`/transfers/${jobId}/retry`);
   return resp.data;
 }
 
-export async function dismissTransferApi(jobId: string): Promise<{ success: boolean; message: string }> {
-  const resp = await apiClient.post<{ success: boolean; message: string }>(`/transfers/${jobId}/dismiss`);
+export async function dismissTransferApi(jobId: string): Promise<TransferActionResponse> {
+  const resp = await apiClient.post<TransferActionResponse>(`/transfers/${jobId}/dismiss`);
   return resp.data;
 }
 
-export async function clearFinishedTransfersApi(): Promise<{ success: boolean; cleared: number; message: string }> {
-  const resp = await apiClient.post<{ success: boolean; cleared: number; message: string }>(
+export async function clearFinishedTransfersApi(): Promise<ClearFinishedTransfersResponse> {
+  const resp = await apiClient.post<ClearFinishedTransfersResponse>(
     '/transfers/clear-finished'
   );
   return resp.data;

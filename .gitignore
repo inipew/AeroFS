@@ -17,7 +17,9 @@ filemanager.db
 .DS_Store
 .vscode/
 .idea/
+.agents
 *.log
 plan
 aerofs.lock
 backend/aerofs.lock
+GEMINI.md

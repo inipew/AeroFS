@@ -12,7 +12,7 @@
     "test": "bun test",
     "api:export": "cargo run --manifest-path ../backend/Cargo.toml --bin export-openapi > ../backend/openapi.json",
     "api:generate": "bunx openapi-typescript ../backend/openapi.json -o ./src/api/generated/openapi.ts",
-    "api:check": "bun run api:export && bun run api:generate && git diff --exit-code ../backend/openapi.json ./src/api/generated/openapi.ts"
+    "api:check": "bun run api:export && bun run api:generate && git diff --exit-code ../backend/openapi.json ./src/api/generated/openapi.ts && bun run typecheck && bun test"
   },
   "dependencies": {
     "@tanstack/vue-query": "^5.102.8",

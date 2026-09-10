@@ -91,9 +91,9 @@ async function handleLogin() {
     if (ok) {
       transferStore.connectWs();
       await transferStore.fetchJobs();
-      await workspaceStore.fetchPanelEntries('left');
+      await workspaceStore.refreshPanel('left');
       if (workspaceStore.isDualPane) {
-        await workspaceStore.fetchPanelEntries('right');
+        await workspaceStore.refreshPanel('right');
       }
     }
   } finally {

@@ -1,6 +1,15 @@
 import { apiClient } from './client';
-import type { DirectoryListing, FileMetadata } from '../types/vfs';
+import type { components } from './generated/openapi';
 import { streamUpload } from '../services/transfer/fetchStream';
+
+export type DirectoryListing = components['schemas']['DirectoryListing'];
+export type FileMetadata = components['schemas']['FileMetadata'];
+export type SuccessResponse = components['schemas']['SuccessResponse'];
+export type ChmodPayload = components['schemas']['ChmodRequest'];
+export type ChmodResponse = components['schemas']['ChmodResponse'];
+export type StorageInfoResponse = components['schemas']['StorageInfoResponse'];
+export type UpdateContentRequest = components['schemas']['UpdateContentRequest'];
+export type UploadSessionResponse = components['schemas']['CreateUploadSessionResponse'];
 
 export interface ListFilesParams {
   path?: string;
@@ -31,10 +40,7 @@ export async function getMetadataApi(connectionId: string, path: string): Promis
   return resp.data;
 }
 
-export interface PresignResponse {
-  url: string;
-  expires_in_seconds: number;
-}
+export type PresignResponse = components['schemas']['PresignResponse'];
 
 export async function getPresignedDownloadUrlApi(
   connectionId: string,
@@ -100,11 +106,6 @@ export function getDownloadUrl(connectionId: string, path: string): string {
 export function getApiBaseUrl(): string {
   const configured = apiClient.defaults.baseURL || '/api/v1';
   return configured.startsWith('http') ? configured.replace(/\/$/, '') : `${window.location.origin}${configured}`;
-}
-
-export interface UploadSessionResponse {
-  job_id: string;
-  upload_url: string;
 }
 
 /** Upload through a job-bound session so the transfer drawer and cancellation
@@ -204,25 +205,19 @@ export async function uploadFileApi(
   });
 }
 
-export interface ChmodPayload {
-  path: string;
-  mode: number;
-  recursive?: boolean;
-}
-
 export async function chmodFileApi(
   connectionId: string,
   payload: ChmodPayload
-): Promise<any> {
-  const resp = await apiClient.post(
+): Promise<ChmodResponse> {
+  const resp = await apiClient.post<ChmodResponse>(
     `/connections/${connectionId}/files/chmod`,
     payload
   );
   return resp.data;
 }
 
-export async function getStorageInfoApi(connectionId: string): Promise<any> {
-  const resp = await apiClient.get(
+export async function getStorageInfoApi(connectionId: string): Promise<StorageInfoResponse> {
+  const resp = await apiClient.get<StorageInfoResponse>(
     `/connections/${connectionId}/storage-info`
   );
   return resp.data;
@@ -236,7 +231,7 @@ export async function updateFileContentApi(
     ifMatch?: string;
     forceOverwrite?: boolean;
   }
-): Promise<{ success: boolean; message: string; etag: string }> {
+): Promise<SuccessResponse & { etag: string }> {
   const headers: Record<string, string> = {};
   if (options?.forceOverwrite) {
     headers['X-Force-Overwrite'] = 'true';
@@ -244,7 +239,7 @@ export async function updateFileContentApi(
     headers['If-Match'] = options.ifMatch;
   }
 
-  const resp = await apiClient.put<{ success: boolean; message: string }>(
+  const resp = await apiClient.put<SuccessResponse>(
     `/connections/${connectionId}/files/content`,
     { path, content },
     { headers }
@@ -256,4 +251,3 @@ export async function updateFileContentApi(
     etag: (resp.headers['etag'] as string) || '',
   };
 }
-

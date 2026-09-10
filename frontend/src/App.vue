@@ -850,9 +850,9 @@ onMounted(async () => {
   if (authStore.isAuthenticated) {
     await preferencesStore.fetchPreferences();
     await connStore.fetchConnections();
-    await workspaceStore.fetchPanelEntries('left');
+    await workspaceStore.refreshPanel('left');
     if (workspaceStore.isDualPane) {
-      await workspaceStore.fetchPanelEntries('right');
+      await workspaceStore.refreshPanel('right');
     }
     transferStore.connectWs();
     await transferStore.fetchJobs();

@@ -16,6 +16,8 @@ pub enum DomainEvent {
     TransferCompleted(serde_json::Value),
     #[serde(rename = "transfer_failed")]
     TransferFailed(serde_json::Value),
+    #[serde(rename = "transfer_cancelled")]
+    TransferCancelled(serde_json::Value),
     #[serde(rename = "file_change")]
     FileChange {
         connection_id: String,
@@ -113,11 +115,16 @@ impl DomainEvent {
         DomainEvent::TransferFailed(serde_json::to_value(job).unwrap_or_default())
     }
 
+    pub fn transfer_cancelled(job: &crate::transfer::TransferJob) -> Self {
+        DomainEvent::TransferCancelled(serde_json::to_value(job).unwrap_or_default())
+    }
+
     pub fn event_type_name(&self) -> &'static str {
         match self {
             DomainEvent::TransferProgress(_) => "transfer_progress",
             DomainEvent::TransferCompleted(_) => "transfer_completed",
             DomainEvent::TransferFailed(_) => "transfer_failed",
+            DomainEvent::TransferCancelled(_) => "transfer_cancelled",
             DomainEvent::FileChange { .. } => "file_change",
             DomainEvent::PermissionChanged { .. } => "permission_changed",
             DomainEvent::ResyncRequired { .. } => "resync_required",
@@ -333,5 +340,17 @@ impl EventJournal {
             .await?;
 
         Ok(res.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DomainEvent;
+
+    #[test]
+    fn transfer_cancelled_has_a_distinct_wire_type() {
+        let event = DomainEvent::TransferCancelled(serde_json::json!({ "id": "job-1" }));
+        assert_eq!(event.event_type_name(), "transfer_cancelled");
+        assert_eq!(serde_json::to_value(event).unwrap()["type"], "transfer_cancelled");
     }
 }

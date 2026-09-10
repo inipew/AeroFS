@@ -1,23 +1,10 @@
 import { apiClient } from './client';
 import { getApiBaseUrl } from './files';
+import type { components } from './generated/openapi';
 
-export interface VirtualArchiveEntry {
-  name: string;
-  path: string;
-  kind: 'file' | 'directory';
-  size: number;
-  compressed_size?: number;
-  modified_at?: string;
-}
-
-export interface ArchiveResponse {
-  success: boolean;
-  message: string;
-  entries_count?: number;
-  skipped_count?: number;
-}
-
-export type ArchiveOverwriteMode = 'overwrite' | 'skip' | 'keep_both';
+export type VirtualArchiveEntry = components['schemas']['VirtualArchiveEntry'];
+export type ArchiveResponse = components['schemas']['ArchiveResponse'];
+export type ArchiveOverwriteMode = components['schemas']['ArchiveOverwriteMode'];
 
 /**
  * List virtual contents inside an archive without full extraction

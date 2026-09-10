@@ -52,12 +52,22 @@ fn is_event_authorized(
     match event {
         crate::events::DomainEvent::TransferProgress(val)
         | crate::events::DomainEvent::TransferCompleted(val)
-        | crate::events::DomainEvent::TransferFailed(val) => {
+        | crate::events::DomainEvent::TransferFailed(val)
+        | crate::events::DomainEvent::TransferCancelled(val) => {
             let src = val.get("source_connection_id").and_then(|v| v.as_str());
             let dst = val
                 .get("destination_connection_id")
                 .and_then(|v| v.as_str());
-            // Align with TransferService::authorize_transfer_visibility: require both if known
+            // Browser uploads have a synthetic `upload` source, not a storage
+            // connection. Their visibility is determined solely by the target
+            // connection; requiring access to `upload` silently dropped every
+            // live progress event and made the UI jump straight to completed.
+            if val.get("transfer_type").and_then(|v| v.as_str()) == Some("upload") {
+                return dst.is_some_and(|connection_id| authorized_conns.contains(connection_id));
+            }
+
+            // Copy/move/sync must remain visible only when both real endpoints
+            // are authorized, matching TransferService visibility checks.
             match (src, dst) {
                 (Some(s), Some(d)) => authorized_conns.contains(s) && authorized_conns.contains(d),
                 (Some(s), None) => authorized_conns.contains(s),
@@ -71,6 +81,35 @@ fn is_event_authorized(
         crate::events::DomainEvent::ResyncRequired { .. } => true,
         crate::events::DomainEvent::PermissionChanged { .. } => true,
         crate::events::DomainEvent::FullSync { .. } => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_event_authorized;
+    use crate::events::DomainEvent;
+    use std::collections::HashSet;
+
+    #[test]
+    fn upload_progress_is_authorized_by_its_destination_only() {
+        let allowed = HashSet::from(["destination".to_string()]);
+        let upload = DomainEvent::TransferProgress(serde_json::json!({
+            "transfer_type": "upload",
+            "source_connection_id": "upload",
+            "destination_connection_id": "destination"
+        }));
+        assert!(is_event_authorized(&upload, false, &allowed));
+    }
+
+    #[test]
+    fn non_upload_transfer_still_requires_both_endpoints() {
+        let allowed = HashSet::from(["destination".to_string()]);
+        let copy = DomainEvent::TransferProgress(serde_json::json!({
+            "transfer_type": "copy",
+            "source_connection_id": "source",
+            "destination_connection_id": "destination"
+        }));
+        assert!(!is_event_authorized(&copy, false, &allowed));
     }
 }
 

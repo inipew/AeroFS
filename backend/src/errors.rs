@@ -324,7 +324,7 @@ impl IntoResponse for AppError {
             AppError::Vfs(VfsError::AlreadyExists(_)) => (
                 StatusCode::CONFLICT,
                 "ALREADY_EXISTS",
-                ErrorCategory::TransferCancelled,
+                ErrorCategory::Conflict,
                 false,
                 Some("rename_or_overwrite".to_string()),
                 self.to_string(),
@@ -469,3 +469,23 @@ impl IntoResponse for AppError {
         (status, body).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn test_already_exists_maps_to_conflict_category() {
+        let err = AppError::Vfs(VfsError::AlreadyExists("file exists".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error_resp: ErrorResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(error_resp.error.code, "ALREADY_EXISTS");
+        assert_eq!(error_resp.error.category, ErrorCategory::Conflict);
+        assert!(!error_resp.error.retryable);
+    }
+}
+

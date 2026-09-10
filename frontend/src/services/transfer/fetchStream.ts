@@ -12,6 +12,8 @@
  *   - `duplex: 'half'` required for streaming upload not yet supported in Axios
  */
 
+import { normalizeFetchError } from '../../utils/errorNormalizer';
+
 export interface ProgressCallback {
   (loaded: number, total: number): void;
 }
@@ -73,8 +75,18 @@ export async function streamUpload(
   });
 
   if (!response.ok) {
-    const errText = await response.text().catch(() => response.statusText);
-    throw new Error(`Upload failed: HTTP ${response.status} — ${errText}`);
+    const norm = await normalizeFetchError(response);
+    const err = new Error(norm.message);
+    (err as any).normalizedError = norm;
+    (err as any).status = norm.statusCode;
+    (err as any).code = norm.code;
+    (err as any).category = norm.category;
+    (err as any).response = {
+      status: norm.statusCode,
+      statusText: response.statusText,
+      data: norm.details,
+    };
+    throw err;
   }
 }
 
@@ -97,7 +109,18 @@ export async function streamDownload(
   const response = await fetch(url, { signal });
 
   if (!response.ok) {
-    throw new Error(`Download failed: HTTP ${response.status}`);
+    const norm = await normalizeFetchError(response);
+    const err = new Error(norm.message);
+    (err as any).normalizedError = norm;
+    (err as any).status = norm.statusCode;
+    (err as any).code = norm.code;
+    (err as any).category = norm.category;
+    (err as any).response = {
+      status: norm.statusCode,
+      statusText: response.statusText,
+      data: norm.details,
+    };
+    throw err;
   }
 
   const contentLength = response.headers.get('Content-Length');

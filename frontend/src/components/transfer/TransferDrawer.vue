@@ -1,5 +1,5 @@
 <template>
-  <div v-if="transferStore.isDrawerOpen || transferStore.jobs.length > 0">
+  <div v-if="transferStore.isDrawerOpen || transferStore.displayJobs.length > 0">
     <!-- Mobile Backdrop Overlay -->
     <Transition name="ios-fade">
       <div
@@ -75,7 +75,7 @@
           <!-- Body Content (Mobile) -->
           <div class="max-h-80 overflow-y-auto p-3 space-y-3 custom-scrollbar">
             <div
-              v-if="transferStore.jobs.length === 0"
+              v-if="transferStore.displayJobs.length === 0"
               class="py-8 px-4 text-center text-gray-400 dark:text-slate-500 text-xs font-medium flex flex-col items-center justify-center space-y-2 rounded-xl bg-gray-50/50 dark:bg-slate-900/30 border border-dashed border-gray-200 dark:border-slate-800/60"
             >
               <div class="w-10 h-10 rounded-full bg-blue-500/10 dark:bg-blue-500/15 text-blue-500 dark:text-blue-400 flex items-center justify-center text-lg shadow-inner">
@@ -109,7 +109,7 @@
                     </button>
                   </div>
                   <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                    <div class="h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-[width] duration-standard ease-spring" :style="{ width: `${calculatePercent(job)}%` }"></div>
+                    <div class="transfer-progress-bar h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-400" :style="{ width: `${calculatePercent(job)}%` }"></div>
                   </div>
                   <div class="flex items-center justify-between text-[10px] text-gray-500 font-mono">
                     <span>{{ formatBytes(job.transferred_bytes) }} / {{ formatBytes(job.total_bytes) }} ({{ calculatePercent(job) }}%)</span>
@@ -179,10 +179,10 @@
 
             <!-- History count when idle -->
             <span
-              v-else-if="transferStore.jobs.length > 0"
+              v-else-if="transferStore.displayJobs.length > 0"
               class="px-1.5 py-0.2 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 font-semibold text-[10px]"
             >
-              {{ transferStore.jobs.length }}
+              {{ transferStore.displayJobs.length }}
             </span>
           </button>
         </Transition>
@@ -259,7 +259,7 @@
             <div class="max-h-80 overflow-y-auto p-3 space-y-3 custom-scrollbar">
               <!-- Empty State Illustration -->
               <div
-                v-if="transferStore.jobs.length === 0"
+                v-if="transferStore.displayJobs.length === 0"
                 class="py-8 px-4 text-center text-gray-400 dark:text-slate-500 text-xs font-medium flex flex-col items-center justify-center space-y-2 rounded-xl bg-gray-50/50 dark:bg-slate-900/30 border border-dashed border-gray-200 dark:border-slate-800/60"
               >
                 <div class="w-10 h-10 rounded-full bg-blue-500/10 dark:bg-blue-500/15 text-blue-500 dark:text-blue-400 flex items-center justify-center text-lg shadow-inner">
@@ -326,7 +326,7 @@
                     <!-- Progress Bar -->
                     <div class="w-full bg-gray-200/80 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
                       <div
-                        class="h-1.5 rounded-full bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-400 transition-[width] duration-standard ease-spring"
+                        class="transfer-progress-bar h-1.5 rounded-full bg-gradient-to-r from-blue-600 via-indigo-500 to-cyan-400"
                         :style="{ width: `${calculatePercent(job)}%` }"
                       ></div>
                     </div>
@@ -459,15 +459,17 @@
 import { computed } from 'vue';
 import { useTransferStore } from '../../stores/transferStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useTransfersQuery } from '../../composables/useTransfersQuery';
 import FbIcon from '../common/FbIcon.vue';
 import type { TransferJob, TransferPhase, TransferType } from '../../types/transfer';
 import type { IconName } from '../../utils/icons';
 
 const transferStore = useTransferStore();
 const uiStore = useUiStore();
+useTransfersQuery();
 
 const activeJobs = computed(() => {
-  return transferStore.jobs.filter(
+  return transferStore.displayJobs.filter(
     (j) =>
       j.status === 'running' ||
       j.status === 'queued' ||
@@ -476,7 +478,7 @@ const activeJobs = computed(() => {
 });
 
 const finishedJobs = computed(() => {
-  return transferStore.jobs.filter(
+  return transferStore.displayJobs.filter(
     (j) =>
       j.status === 'completed' ||
       j.status === 'failed' ||
@@ -522,6 +524,9 @@ function getLiveSpeed(job: TransferJob): string {
   let str = formatSpeed(speed);
   if (eta !== null && eta !== undefined && eta > 0) {
     str += ` • ETA ${eta}s`;
+  }
+  if (transferStore.liveProgress[job.id]?.stale) {
+    str += ' • Syncing…';
   }
   return str;
 }

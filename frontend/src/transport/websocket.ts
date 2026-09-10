@@ -28,6 +28,7 @@ export class RealtimeClient {
   private progressListeners: Set<RealtimeListener<TransferJob>> = new Set();
   private completedListeners: Set<RealtimeListener<TransferJob>> = new Set();
   private failedListeners: Set<RealtimeListener<TransferJob>> = new Set();
+  private cancelledListeners: Set<RealtimeListener<TransferJob>> = new Set();
   private fileChangeListeners: Set<RealtimeListener<FileChangeEvent>> = new Set();
   private resyncListeners: Set<RealtimeListener<ResyncRequiredEvent>> = new Set();
   private statusListeners: Set<RealtimeListener<boolean>> = new Set();
@@ -91,6 +92,7 @@ export class RealtimeClient {
     this.progressListeners.clear();
     this.completedListeners.clear();
     this.failedListeners.clear();
+    this.cancelledListeners.clear();
     this.fileChangeListeners.clear();
     this.resyncListeners.clear();
     this.statusListeners.clear();
@@ -173,6 +175,9 @@ export class RealtimeClient {
               break;
             case 'transfer_failed':
               this.failedListeners.forEach((l) => l(payload.data));
+              break;
+            case 'transfer_cancelled':
+              this.cancelledListeners.forEach((l) => l(payload.data));
               break;
             case 'file_change':
               this.fileChangeListeners.forEach((l) => l(payload.data));
@@ -260,6 +265,11 @@ export class RealtimeClient {
   public onFailed(listener: RealtimeListener<TransferJob>): () => void {
     this.failedListeners.add(listener);
     return () => this.failedListeners.delete(listener);
+  }
+
+  public onCancelled(listener: RealtimeListener<TransferJob>): () => void {
+    this.cancelledListeners.add(listener);
+    return () => this.cancelledListeners.delete(listener);
   }
 
   public onFileChange(listener: RealtimeListener<FileChangeEvent>): () => void {

@@ -113,7 +113,7 @@ async function handleSubmit() {
     uiStore.isCreateOpen = false;
 
     // Refresh active panel
-    await workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
   } catch (err: any) {
     uiStore.showToast(err.response?.data?.error?.message || 'Creation failed', 'error');
   } finally {

@@ -4,6 +4,7 @@ import { listTransfersApi } from '../api/transfers';
 import { queryKeys } from '../api/queryKeys';
 import { queryClient } from '../queryClient';
 import type { TransferJob } from '../types/transfer';
+import { useTransferStore } from '../stores/transferStore';
 
 export function transfersQueryOptions() {
   return {
@@ -14,6 +15,7 @@ export function transfersQueryOptions() {
 }
 
 export function useTransfersQuery() {
+  const transferStore = useTransferStore();
   const query = useQuery({
     queryKey: queryKeys.transfers(),
     queryFn: () => listTransfersApi(),
@@ -23,7 +25,10 @@ export function useTransfersQuery() {
       const hasActive = data?.some(
         (j) => j.status === 'queued' || j.status === 'running'
       );
-      return hasActive ? 2_000 : false;
+      if (!hasActive) return false;
+      // When the socket is unavailable REST is the fallback transport. Keep
+      // the last visible value, but reconcile it more aggressively.
+      return transferStore.isConnected ? 2_000 : 1_000;
     },
   });
 

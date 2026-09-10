@@ -189,7 +189,7 @@ const commands = computed<PaletteCommand[]>(() => {
         const p = workspaceStore.getPanel(workspaceStore.activePanelId);
         p.showHidden = !p.showHidden;
         workspaceStore.saveState();
-        workspaceStore.fetchPanelEntries(workspaceStore.activePanelId);
+        workspaceStore.refreshPanel(workspaceStore.activePanelId);
       },
     },
     {

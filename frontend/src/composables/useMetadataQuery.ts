@@ -6,6 +6,7 @@ import { computed } from 'vue';
 import type { Ref } from 'vue';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { getMetadataApi } from '../api/files';
+import { queryKeys } from '../api/queryKeys';
 
 export function useMetadataQuery(
   connectionId: Ref<string>,
@@ -14,7 +15,7 @@ export function useMetadataQuery(
 ) {
   const queryClient = useQueryClient();
 
-  const queryKey = computed(() => ['metadata', connectionId.value, path.value]);
+  const queryKey = computed(() => queryKeys.metadata(connectionId.value, path.value));
 
   const query = useQuery({
     queryKey,
