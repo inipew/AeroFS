@@ -619,6 +619,24 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   const target = e.target as HTMLElement;
   const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 
+  // If typing in input or any modal is open, don't trigger file manager workspace shortcuts
+  const isAnyModalOpen =
+    uiStore.isEditorOpen ||
+    uiStore.isMediaViewerOpen ||
+    isConnDialogOpen.value ||
+    isArchiveDialogOpen.value ||
+    isArchiveViewerOpen.value ||
+    isSearchDialogOpen.value ||
+    isSettingsDialogOpen.value ||
+    isSharesDialogOpen.value ||
+    isTrashDialogOpen.value ||
+    isStarredDialogOpen.value ||
+    isRecentDialogOpen.value ||
+    isPropertiesDialogOpen.value ||
+    isCreateShareDialogOpen.value;
+
+  if (isInput || isAnyModalOpen) return;
+
   // 1. Ctrl+K / Cmd+K: Universal Command Palette
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
@@ -639,24 +657,6 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     workspaceStore.toggleShowHidden(workspaceStore.activePanelId);
     return;
   }
-
-  // If typing in input or any modal is open, don't trigger file manager workspace shortcuts
-  const isAnyModalOpen =
-    uiStore.isEditorOpen ||
-    uiStore.isMediaViewerOpen ||
-    isConnDialogOpen.value ||
-    isArchiveDialogOpen.value ||
-    isArchiveViewerOpen.value ||
-    isSearchDialogOpen.value ||
-    isSettingsDialogOpen.value ||
-    isSharesDialogOpen.value ||
-    isTrashDialogOpen.value ||
-    isStarredDialogOpen.value ||
-    isRecentDialogOpen.value ||
-    isPropertiesDialogOpen.value ||
-    isCreateShareDialogOpen.value;
-
-  if (isInput || isAnyModalOpen) return;
 
   const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
 

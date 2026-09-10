@@ -124,9 +124,17 @@ async function handleCompress() {
       ? `/${archiveName.value.trim()}`
       : `${props.basePath}/${archiveName.value.trim()}`;
 
+    const basePrefix = props.basePath.endsWith('/') ? props.basePath : `${props.basePath}/`;
+    const relativePaths = props.selectedPaths.map((p) => {
+      if (p.startsWith(basePrefix)) {
+        return p.slice(basePrefix.length);
+      }
+      return p.replace(/^\/+/, '');
+    });
+
     await apiClient.post(`/connections/${props.connectionId}/archive/compress`, {
       base_path: props.basePath,
-      relative_paths: props.selectedPaths,
+      relative_paths: relativePaths,
       destination_file: destFile,
       format: format.value,
     });

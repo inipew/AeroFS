@@ -1,7 +1,7 @@
 import type { FileEntry } from '../types/vfs';
 import { useUiStore } from '../stores/uiStore';
 import { useRecentStore } from '../stores/recentStore';
-import { readFileApi, getDownloadUrl } from '../api/files';
+import { readFileApi, getDownloadUrl, getContentUrl } from '../api/files';
 import { isArchiveFile } from '../utils/archive';
 
 export type PreviewKind =
@@ -93,10 +93,10 @@ export class PreviewResolver {
         canPreview: true,
         open: () => {
           recentStore.addRecent(connectionId, entry);
-          const downloadUrl = getDownloadUrl(connectionId, entry.path);
+          const contentUrl = getContentUrl(connectionId, entry.path);
           uiStore.openMediaViewer(
             entry.name,
-            downloadUrl,
+            contentUrl,
             entry,
             allEntries.filter((e) => e.kind === 'file'),
             connectionId
@@ -111,8 +111,8 @@ export class PreviewResolver {
         canPreview: true,
         open: () => {
           recentStore.addRecent(connectionId, entry);
-          const downloadUrl = getDownloadUrl(connectionId, entry.path);
-          window.open(downloadUrl, '_blank');
+          const contentUrl = getContentUrl(connectionId, entry.path);
+          window.open(contentUrl, '_blank');
         },
       };
     }

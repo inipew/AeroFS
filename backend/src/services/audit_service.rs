@@ -42,9 +42,11 @@ impl AuditService {
             ));
         }
 
-        let rows = sqlx::query_as::<_, (String, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<String>, String)>(
-            "SELECT id, user_id, action, connection_id, path, status, ip_address, details, created_at 
-             FROM audit_logs ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<String>, String)>(
+            "SELECT a.id, a.user_id, u.username, a.action, a.connection_id, a.path, a.status, a.ip_address, a.details, a.created_at 
+             FROM audit_logs a
+             LEFT JOIN users u ON a.user_id = u.id
+             ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
         )
         .bind(limit as i64)
         .bind(offset as i64)
@@ -58,6 +60,7 @@ impl AuditService {
                 |(
                     id,
                     user_id,
+                    username,
                     action,
                     connection_id,
                     path,
@@ -69,6 +72,7 @@ impl AuditService {
                     AuditLogEntry {
                         id,
                         user_id,
+                        username,
                         action,
                         connection_id,
                         path,

@@ -1,4 +1,4 @@
-export type ProviderKind = 'local' | 'ftp' | 'ftps' | 'sftp';
+export type ProviderKind = 'local' | 'ftp' | 'ftps' | 'sftp' | 's3';
 
 export type ProviderState =
   | 'initializing'

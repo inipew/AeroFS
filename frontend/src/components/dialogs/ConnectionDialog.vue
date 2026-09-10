@@ -12,7 +12,7 @@
         </div>
         <div>
           <h3 class="text-base font-bold text-gray-900 dark:text-white">Add Storage Source</h3>
-          <p class="text-gray-500 dark:text-slate-400 text-xs">Connect to FTP, FTPS, or SFTP servers.</p>
+          <p class="text-gray-500 dark:text-slate-400 text-xs">Connect to FTP, FTPS, SFTP, or S3 storage.</p>
         </div>
       </div>
 
@@ -23,7 +23,7 @@
           <input
             v-model="form.name"
             type="text"
-            placeholder="e.g. My FTP Server"
+            placeholder="e.g. My Storage Server"
             class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-xs shadow-inner"
             required
           />
@@ -39,11 +39,22 @@
             <option value="ftp">FTP (Standard File Transfer Protocol - Port 21)</option>
             <option value="ftps">FTPS (Explicit/Implicit TLS - Port 990/21)</option>
             <option value="sftp">SFTP (SSH File Transfer Protocol - Port 22)</option>
+            <option value="s3">S3 / Object Storage (Amazon S3, MinIO, Wasabi, etc.)</option>
           </select>
         </div>
 
-        <!-- Host & Port -->
-        <div class="grid grid-cols-3 gap-2">
+        <!-- Host & Port or S3 Bucket -->
+        <div v-if="form.provider === 's3'">
+          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">Bucket Name</label>
+          <input
+            v-model="form.host"
+            type="text"
+            placeholder="e.g. my-s3-bucket"
+            class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-xs shadow-inner"
+            required
+          />
+        </div>
+        <div v-else class="grid grid-cols-3 gap-2">
           <div class="col-span-2">
             <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">Host / IP</label>
             <input
@@ -65,21 +76,24 @@
           </div>
         </div>
 
-        <!-- Username -->
+        <!-- Username / Access Key ID -->
         <div>
-          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">Username</label>
+          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">
+            {{ form.provider === 's3' ? 'Access Key ID' : 'Username' }}
+          </label>
           <input
             v-model="form.username"
             type="text"
-            placeholder="anonymous or ftpuser"
+            :placeholder="form.provider === 's3' ? 'AKIA... or MinIO access key' : 'anonymous or ftpuser'"
             class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-xs shadow-inner"
-            required
           />
         </div>
 
-        <!-- Password / Secret -->
+        <!-- Password / Secret Access Key -->
         <div>
-          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">Password or Private Key</label>
+          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">
+            {{ form.provider === 's3' ? 'Secret Access Key' : 'Password or Private Key' }}
+          </label>
           <input
             v-model="form.secret"
             type="password"
@@ -88,13 +102,15 @@
           />
         </div>
 
-        <!-- Remote Base Path -->
+        <!-- Remote Base Path / Bucket Prefix -->
         <div>
-          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">Remote Base Path</label>
+          <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-semibold mb-1">
+            {{ form.provider === 's3' ? 'Bucket Prefix / Root Path' : 'Remote Base Path' }}
+          </label>
           <input
             v-model="form.base_path"
             type="text"
-            placeholder="/ or /public_html"
+            :placeholder="form.provider === 's3' ? '/ or /data' : '/ or /public_html'"
             class="w-full bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 text-xs shadow-inner"
           />
         </div>
@@ -184,6 +200,7 @@ watch(
     if (prov === 'ftp') form.value.port = 21;
     if (prov === 'ftps') form.value.port = 990;
     if (prov === 'sftp') form.value.port = 22;
+    if (prov === 's3') form.value.port = 443;
   }
 );
 

@@ -366,9 +366,9 @@
             >
               <div class="truncate flex-1 space-y-0.5">
                 <p class="font-semibold text-gray-800 dark:text-slate-200 truncate">{{ log.action }}</p>
-                <p class="text-gray-400 font-mono text-[10px] truncate">{{ log.user_id }} · {{ log.details }}</p>
+                <p class="text-gray-400 font-mono text-[10px] truncate">{{ log.username || log.user_id || 'System' }} · {{ log.details || log.status }}</p>
               </div>
-              <span class="text-[10px] text-gray-400 font-mono shrink-0 ml-3">{{ formatTime(log.timestamp) }}</span>
+              <span class="text-[10px] text-gray-400 font-mono shrink-0 ml-3">{{ formatTime(log.created_at || log.timestamp) }}</span>
             </div>
           </div>
         </div>

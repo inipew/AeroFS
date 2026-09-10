@@ -364,7 +364,7 @@ async fn test_plan36_specialized_services() {
     assert!(!search_out.results.is_empty());
 
     // 5. TrashService
-    let trash_count = TrashService::move_to_trash(
+    let moved_items = TrashService::move_to_trash(
         &state,
         &admin,
         backend::services::trash_service::MoveToTrashRequest {
@@ -374,7 +374,7 @@ async fn test_plan36_specialized_services() {
     )
     .await
     .unwrap();
-    assert_eq!(trash_count, 1);
+    assert_eq!(moved_items.len(), 1);
 
     let trash_items = TrashService::list_trash(&state, &admin).await.unwrap();
     assert_eq!(trash_items.len(), 1);

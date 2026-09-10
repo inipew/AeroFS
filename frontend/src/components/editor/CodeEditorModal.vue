@@ -65,19 +65,19 @@
 
         <!-- Center / Right Controls -->
         <div class="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
-          <!-- Find & Replace Button (Ctrl+F) -->
+          <!-- Find & Replace Button (Ctrl+F / Ctrl+H) -->
           <button
-            @click.stop="toggleSearchBar"
+            @click.stop="toggleSearchBar(false)"
             :class="[
               'p-2 sm:px-2.5 sm:py-1.5 rounded-xl border text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer shadow-2xs',
               isSearchOpen
                 ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-500/40'
                 : 'bg-white dark:bg-slate-900 text-gray-700 dark:text-slate-300 border-gray-200/80 dark:border-slate-700/80 hover:bg-gray-50 dark:hover:bg-slate-800'
             ]"
-            title="Find & Replace (Ctrl+F)"
+            title="Find & Replace (Ctrl+F / Ctrl+H)"
           >
             <FbIcon name="search" size="13px" />
-            <span class="hidden md:inline">Find</span>
+            <span class="hidden md:inline">Find & Replace</span>
           </button>
 
           <!-- Go to Line Button (Ctrl+G) -->
@@ -413,6 +413,7 @@
           <!-- Replace Input Row -->
           <div class="flex items-center space-x-1.5">
             <input
+              ref="replaceInputRef"
               v-model="replaceQuery"
               @keydown.enter="replaceCurrent"
               type="text"
@@ -838,6 +839,7 @@ const matchCount = ref(0);
 const currentMatchIdx = ref(0);
 
 const searchInputRef = ref<HTMLInputElement | null>(null);
+const replaceInputRef = ref<HTMLInputElement | null>(null);
 const gotoInputRef = ref<HTMLInputElement | null>(null);
 
 // Configurable Preferences (Loaded from localStorage)
@@ -1023,21 +1025,33 @@ function detectMode(filename: string): string {
   return mode || 'ace/mode/text';
 }
 
-function toggleSearchBar() {
-  isSearchOpen.value = !isSearchOpen.value;
-  if (isSearchOpen.value) {
-    isGotoOpen.value = false;
-    isSyntaxMenuOpen.value = false;
-    nextTick(() => {
+function toggleSearchBar(focusReplace = false) {
+  if (isSearchOpen.value && !focusReplace) {
+    isSearchOpen.value = false;
+    editor.value?.focus();
+    return;
+  }
+  isSearchOpen.value = true;
+  isGotoOpen.value = false;
+  isSyntaxMenuOpen.value = false;
+  nextTick(() => {
+    if (editor.value) {
+      const selected = editor.value.getSelectedText();
+      if (selected && !selected.includes('\n')) {
+        searchQuery.value = selected;
+      }
+    }
+    if (searchQuery.value) {
+      executeSearch();
+    }
+    if (focusReplace) {
+      replaceInputRef.value?.focus();
+      replaceInputRef.value?.select();
+    } else {
       searchInputRef.value?.focus();
       searchInputRef.value?.select();
-      if (searchQuery.value) {
-        executeSearch();
-      }
-    });
-  } else {
-    editor.value?.focus();
-  }
+    }
+  });
 }
 
 function executeSearch() {
@@ -1235,7 +1249,15 @@ function initAce() {
     name: 'find',
     bindKey: { win: 'Ctrl-F', mac: 'Command-F' },
     exec: () => {
-      toggleSearchBar();
+      toggleSearchBar(false);
+    },
+  });
+
+  editor.value.commands.addCommand({
+    name: 'replace',
+    bindKey: { win: 'Ctrl-H', mac: 'Command-H' },
+    exec: () => {
+      toggleSearchBar(true);
     },
   });
 
@@ -1311,7 +1333,44 @@ function updateActiveLine() {
   }
 }
 
+function handleEditorKeyDown(e: KeyboardEvent) {
+  if (!uiStore.isEditorOpen) return;
+
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const isCtrlOrCmd = isMac ? e.metaKey : e.ctrlKey;
+
+  if (isCtrlOrCmd && (e.key === 'h' || e.key === 'H')) {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSearchBar(true);
+  } else if (isCtrlOrCmd && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSearchBar(false);
+  } else if (isCtrlOrCmd && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault();
+    e.stopPropagation();
+    handleSave();
+  } else if (isCtrlOrCmd && (e.key === 'g' || e.key === 'G')) {
+    e.preventDefault();
+    e.stopPropagation();
+    isGotoOpen.value = true;
+    isSearchOpen.value = false;
+    nextTick(() => {
+      gotoInputRef.value?.focus();
+    });
+  } else if (e.key === 'Escape') {
+    if (isSearchOpen.value || isGotoOpen.value || isSyntaxMenuOpen.value || isSettingsOpen.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeAllPopovers();
+      editor.value?.focus();
+    }
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', handleEditorKeyDown, { capture: true });
   if (uiStore.isEditorOpen && uiStore.editorFile) {
     isDirty.value = false;
     showMarkdownPreview.value = false;
@@ -1465,6 +1524,7 @@ async function handleSaveAndClose() {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleEditorKeyDown, { capture: true });
   editor.value?.destroy();
 });
 </script>

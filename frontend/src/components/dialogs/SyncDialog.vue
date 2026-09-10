@@ -38,7 +38,7 @@
                     :key="conn.id"
                     :value="conn.id"
                   >
-                    {{ conn.name }} ({{ conn.provider_type }})
+                    {{ conn.name }} ({{ conn.provider }})
                   </option>
                 </select>
               </div>
@@ -71,7 +71,7 @@
                     :key="conn.id"
                     :value="conn.id"
                   >
-                    {{ conn.name }} ({{ conn.provider_type }})
+                    {{ conn.name }} ({{ conn.provider }})
                   </option>
                 </select>
               </div>

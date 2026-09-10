@@ -76,6 +76,7 @@ impl AuditOutcome {
 pub struct AuditLogEntry {
     pub id: String,
     pub user_id: Option<String>,
+    pub username: Option<String>,
     pub action: String,
     pub connection_id: Option<String>,
     pub path: Option<String>,

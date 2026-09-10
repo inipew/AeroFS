@@ -1531,9 +1531,13 @@ async function handleExternalFilesDrop(e: DragEvent, targetDir: string) {
     while (nextIdx < uploadItems.length) {
       const item = uploadItems[nextIdx++];
       const cleanRel = item.relativePath.replace(/^\/+/, '');
-      const fullDest = targetDir === '/' ? `/${cleanRel}` : `${targetDir}/${cleanRel}`;
+      const lastSlash = cleanRel.lastIndexOf('/');
+      const subDir = lastSlash > -1 ? cleanRel.substring(0, lastSlash) : '';
+      const destDir = subDir
+        ? (targetDir === '/' ? `/${subDir}` : `${targetDir}/${subDir}`)
+        : targetDir;
       try {
-        await uploadFileApi(connId, fullDest, item.file);
+        await uploadFileApi(connId, destDir, item.file);
         successCount++;
       } catch (err) {
         console.error('Failed uploading item', cleanRel, err);

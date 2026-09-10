@@ -26,6 +26,12 @@ pub struct MoveToTrashRequest {
     pub paths: Vec<String>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MovedTrashItem {
+    pub id: String,
+    pub original_path: String,
+}
+
 type TrashDbRow = (String, String, String, String, i64, Option<i64>, String);
 
 pub struct TrashService;
@@ -66,12 +72,12 @@ impl TrashService {
         state: &AppState,
         user: &AuthenticatedUser,
         payload: MoveToTrashRequest,
-    ) -> Result<usize, AppError> {
+    ) -> Result<Vec<MovedTrashItem>, AppError> {
         check_permission(
             &state.db,
             user,
             &payload.connection_id,
-            PermissionAction::Delete,
+            PermissionAction::Write,
         )
         .await?;
 
@@ -85,7 +91,7 @@ impl TrashService {
         let trash_dir_vfs = VfsPath::new(&payload.connection_id, "/.trash")?;
         let _ = provider.create_dir(&trash_dir_vfs).await;
 
-        let mut moved_count = 0;
+        let mut moved_items = Vec::new();
 
         for path_str in &payload.paths {
             let vfs_path = match VfsPath::new(&payload.connection_id, path_str) {
@@ -149,12 +155,15 @@ impl TrashService {
                         ))
                         .await;
 
-                    moved_count += 1;
+                    moved_items.push(MovedTrashItem {
+                        id: item_id,
+                        original_path: path_str.clone(),
+                    });
                 }
             }
         }
 
-        Ok(moved_count)
+        Ok(moved_items)
     }
 
     pub async fn restore_item(

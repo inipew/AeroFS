@@ -56,7 +56,7 @@
             </tr>
             <tr v-for="log in logs" :key="log.id" class="hover:bg-slate-900/60 transition">
               <td class="py-2 px-3 text-slate-500 text-[10px]">{{ formatDate(log.created_at) }}</td>
-              <td class="py-2 px-3 text-indigo-300 font-semibold">{{ log.username }}</td>
+              <td class="py-2 px-3 text-indigo-300 font-semibold">{{ log.username || log.user_id || 'System' }}</td>
               <td class="py-2 px-3">
                 <span class="px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px]">
                   {{ log.action }}
@@ -79,7 +79,7 @@ import { apiClient } from '../../api/client';
 export interface AuditLogEntry {
   id: string;
   user_id?: string;
-  username: string;
+  username?: string;
   action: string;
   ip_address?: string;
   details?: string;

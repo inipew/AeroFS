@@ -23,11 +23,13 @@ pub async fn move_to_trash(
     user: AuthenticatedUser,
     Json(payload): Json<MoveToTrashRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let moved_count = TrashService::move_to_trash(&state, &user, payload).await?;
+    let moved_items = TrashService::move_to_trash(&state, &user, payload).await?;
+    let moved_count = moved_items.len();
 
     Ok(Json(serde_json::json!({
         "success": true,
         "moved_count": moved_count,
+        "moved_items": moved_items,
         "message": format!("Moved {} items to trash", moved_count),
     })))
 }

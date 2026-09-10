@@ -232,9 +232,8 @@ async function startUpload() {
     while (nextIdx < selectedFiles.value.length) {
       const i = nextIdx++;
       const file = selectedFiles.value[i];
-      const targetPath = targetFolder === '/' ? `/${file.name}` : `${targetFolder}/${file.name}`;
       try {
-        await uploadFileApi(connId, targetPath, file, (percent) => {
+        await uploadFileApi(connId, targetFolder, file, (percent) => {
           transferredBytesMap[i] = (percent / 100) * (file.size || 0);
           const currentTotalTransferred = Object.values(transferredBytesMap).reduce((a, b) => a + b, 0);
           if (totalBytesAll > 0) {

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { FileEntry } from '../types/vfs';
-import { getDownloadUrl } from '../api/files';
+import { getContentUrl } from '../api/files';
 
 export interface ToastMessage {
   id: string;
@@ -166,7 +166,7 @@ export const useUiStore = defineStore('ui', () => {
     const nextItem = mediaViewerList.value[nextIndex];
     mediaViewerFile.value = nextItem;
     mediaViewerTitle.value = nextItem.name;
-    mediaViewerUrl.value = getDownloadUrl(mediaViewerConnectionId.value, nextItem.path);
+    mediaViewerUrl.value = getContentUrl(mediaViewerConnectionId.value, nextItem.path);
   }
 
   function openContextMenu(

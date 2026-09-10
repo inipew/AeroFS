@@ -115,7 +115,7 @@
 
         <!-- Download Button -->
         <a
-          :href="uiStore.mediaViewerUrl"
+          :href="downloadUrl"
           download
           class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition shadow-xs flex items-center space-x-1.5"
           title="Download File"
@@ -250,7 +250,7 @@
         <p class="text-sm font-semibold text-white">Preview not available for this format</p>
         <p class="text-xs text-slate-500">You can download the file to view it locally.</p>
         <a
-          :href="uiStore.mediaViewerUrl"
+          :href="downloadUrl"
           download
           class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium inline-flex items-center space-x-2 shadow transition"
         >
@@ -267,8 +267,16 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { useUiStore } from '../../stores/uiStore';
+import { getDownloadUrl } from '../../api/files';
 
 const uiStore = useUiStore();
+
+const downloadUrl = computed(() => {
+  if (uiStore.mediaViewerFile && uiStore.mediaViewerConnectionId) {
+    return getDownloadUrl(uiStore.mediaViewerConnectionId, uiStore.mediaViewerFile.path);
+  }
+  return uiStore.mediaViewerUrl;
+});
 
 const viewportRef = ref<HTMLElement | null>(null);
 const videoPlayerRef = ref<HTMLVideoElement | null>(null);

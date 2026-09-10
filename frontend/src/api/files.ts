@@ -82,6 +82,15 @@ export async function completePresignedUploadApi(
   return resp.data;
 }
 
+export function getContentUrl(connectionId: string, path: string): string {
+  const base = apiClient.defaults.baseURL?.startsWith('http')
+    ? apiClient.defaults.baseURL
+    : `${window.location.origin}${apiClient.defaults.baseURL || '/api/v1'}`;
+  return `${base}/connections/${connectionId}/files/content?path=${encodeURIComponent(
+    path
+  )}`;
+}
+
 export function getDownloadUrl(connectionId: string, path: string): string {
   const base = apiClient.defaults.baseURL?.startsWith('http')
     ? apiClient.defaults.baseURL

@@ -3,6 +3,8 @@ import { ref, computed } from 'vue';
 import { apiClient } from '../api/client';
 import { useWorkspaceStore } from './workspaceStore';
 import { useUiStore } from './uiStore';
+import { renameEntryApi, createFileApi, createDirectoryApi, deleteFilesApi } from '../api/files';
+import { createTransferApi } from '../api/transfers';
 
 export type Operation =
   | {
@@ -63,25 +65,28 @@ export const useHistoryStore = defineStore('history', () => {
     try {
       switch (op.type) {
         case 'rename': {
-          await apiClient.post(`/connections/${op.connectionId}/files/rename`, {
-            source_path: op.newPath,
-            destination_path: op.oldPath,
-          });
+          await renameEntryApi(op.connectionId, op.newPath, op.oldPath);
           uiStore.showToast(`Undid rename: ${op.newPath.split('/').pop()} → ${op.oldPath.split('/').pop()}`, 'success');
           break;
         }
         case 'move': {
-          await apiClient.post(`/connections/${op.toConnectionId}/files/move`, {
-            source_path: op.destPath,
-            destination_path: op.sourcePath,
-          });
+          if (op.fromConnectionId === op.toConnectionId) {
+            await renameEntryApi(op.toConnectionId, op.destPath, op.sourcePath);
+          } else {
+            await createTransferApi({
+              name: `Undo move ${op.destPath.split('/').pop()}`,
+              transfer_type: 'move',
+              source_connection_id: op.toConnectionId,
+              source_path: op.destPath,
+              destination_connection_id: op.fromConnectionId,
+              destination_path: op.sourcePath.substring(0, op.sourcePath.lastIndexOf('/')) || '/',
+            });
+          }
           uiStore.showToast(`Undid move to ${op.sourcePath}`, 'success');
           break;
         }
         case 'create': {
-          await apiClient.delete(`/connections/${op.connectionId}/files`, {
-            params: { path: op.path },
-          });
+          await deleteFilesApi(op.connectionId, [op.path]);
           uiStore.showToast(`Undid creation of ${op.path.split('/').pop()}`, 'success');
           break;
         }
@@ -114,26 +119,31 @@ export const useHistoryStore = defineStore('history', () => {
     try {
       switch (op.type) {
         case 'rename': {
-          await apiClient.post(`/connections/${op.connectionId}/files/rename`, {
-            source_path: op.oldPath,
-            destination_path: op.newPath,
-          });
+          await renameEntryApi(op.connectionId, op.oldPath, op.newPath);
           uiStore.showToast(`Redid rename to ${op.newPath.split('/').pop()}`, 'success');
           break;
         }
         case 'move': {
-          await apiClient.post(`/connections/${op.fromConnectionId}/files/move`, {
-            source_path: op.sourcePath,
-            destination_path: op.destPath,
-          });
+          if (op.fromConnectionId === op.toConnectionId) {
+            await renameEntryApi(op.fromConnectionId, op.sourcePath, op.destPath);
+          } else {
+            await createTransferApi({
+              name: `Redo move ${op.sourcePath.split('/').pop()}`,
+              transfer_type: 'move',
+              source_connection_id: op.fromConnectionId,
+              source_path: op.sourcePath,
+              destination_connection_id: op.toConnectionId,
+              destination_path: op.destPath.substring(0, op.destPath.lastIndexOf('/')) || '/',
+            });
+          }
           uiStore.showToast(`Redid move to ${op.destPath}`, 'success');
           break;
         }
         case 'create': {
           if (op.kind === 'directory') {
-            await apiClient.post(`/connections/${op.connectionId}/directories`, { path: op.path });
+            await createDirectoryApi(op.connectionId, op.path);
           } else {
-            await apiClient.post(`/connections/${op.connectionId}/files`, { path: op.path, content: '' });
+            await createFileApi(op.connectionId, op.path);
           }
           uiStore.showToast(`Redid creation of ${op.path.split('/').pop()}`, 'success');
           break;
