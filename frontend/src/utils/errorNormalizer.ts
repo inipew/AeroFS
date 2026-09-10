@@ -43,6 +43,9 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
     const userAction = errObj?.user_action;
 
     let kind: NormalizedApiError['kind'] = 'unknown';
+    if (code === 'TRANSFER_CANCELLED') {
+      kind = 'canceled';
+    }
     switch (status) {
       case 401:
         kind = 'unauthorized';
@@ -54,7 +57,7 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
         kind = 'not_found';
         break;
       case 409:
-        kind = 'conflict';
+        kind = kind === 'canceled' ? 'canceled' : 'conflict';
         break;
       case 413:
         kind = 'payload_too_large';

@@ -142,6 +142,51 @@ export function getFileTypeMeta(file: { name: string }): FileTypeMeta {
     };
   }
 
+  // 7. Image
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'tiff', 'heic'].includes(ext)) {
+    return {
+      category: 'image',
+      label: ext.toUpperCase() || 'IMG',
+      badgeBg: 'bg-emerald-500/15 dark:bg-emerald-500/25',
+      badgeText: 'text-emerald-600 dark:text-emerald-400',
+      badgeBorder: 'border-emerald-500/30 dark:border-emerald-500/40',
+      cardBg: 'from-emerald-500/10 to-transparent',
+      iconBg: 'bg-emerald-500/10 dark:bg-emerald-500/20',
+      iconColor: 'text-emerald-500 dark:text-emerald-400',
+      symbol: '🖼️',
+    };
+  }
+
+  // 8. Video
+  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'm4v', '3gp', 'ogv'].includes(ext)) {
+    return {
+      category: 'video',
+      label: ext.toUpperCase() || 'VID',
+      badgeBg: 'bg-rose-500/15 dark:bg-rose-500/25',
+      badgeText: 'text-rose-600 dark:text-rose-400',
+      badgeBorder: 'border-rose-500/30 dark:border-rose-500/40',
+      cardBg: 'from-rose-500/10 to-transparent',
+      iconBg: 'bg-rose-500/10 dark:bg-rose-500/20',
+      iconColor: 'text-rose-500 dark:text-rose-400',
+      symbol: '🎬',
+    };
+  }
+
+  // 9. Audio
+  if (['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg', 'wma'].includes(ext)) {
+    return {
+      category: 'audio',
+      label: ext.toUpperCase() || 'AUD',
+      badgeBg: 'bg-violet-500/15 dark:bg-violet-500/25',
+      badgeText: 'text-violet-600 dark:text-violet-400',
+      badgeBorder: 'border-violet-500/30 dark:border-violet-500/40',
+      cardBg: 'from-violet-500/10 to-transparent',
+      iconBg: 'bg-violet-500/10 dark:bg-violet-500/20',
+      iconColor: 'text-violet-500 dark:text-violet-400',
+      symbol: '🎵',
+    };
+  }
+
   // 7. Documents (PDF, MD, TXT, DOC)
   if (ext === 'pdf') {
     return {

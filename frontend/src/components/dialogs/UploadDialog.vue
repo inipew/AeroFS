@@ -144,11 +144,10 @@
       <div class="flex justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-slate-800">
         <button
           type="button"
-          :disabled="uploading"
-          @click="uiStore.isUploadOpen = false"
+          @click="uploading ? cancelUploads() : (uiStore.isUploadOpen = false)"
           class="px-4 py-2.5 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer disabled:opacity-50"
         >
-          Cancel
+          {{ uploading ? 'Cancel Upload' : 'Cancel' }}
         </button>
         <button
           type="button"
@@ -170,10 +169,13 @@ import { ref, computed } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { uploadFileApi } from '../../api/files';
+import { uploadFileAsTransferApi } from '../../api/files';
+import { cancelTransferApi } from '../../api/transfers';
+import { useTransferStore } from '../../stores/transferStore';
 
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
+const transferStore = useTransferStore();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const cameraInputRef = ref<HTMLInputElement | null>(null);
@@ -183,6 +185,8 @@ const isDragging = ref(false);
 const selectedFiles = ref<File[]>([]);
 const uploading = ref(false);
 const progress = ref(0);
+const isCancelling = ref(false);
+const activeUploads = new Map<number, { controller: AbortController; jobId?: string }>();
 
 const currentTargetDirectory = computed(() => {
   const p = workspaceStore.getPanel(workspaceStore.activePanelId);
@@ -233,17 +237,24 @@ async function startUpload() {
       const i = nextIdx++;
       const file = selectedFiles.value[i];
       try {
-        await uploadFileApi(connId, targetFolder, file, (percent) => {
+        const controller = new AbortController();
+        activeUploads.set(i, { controller });
+        await uploadFileAsTransferApi(connId, targetFolder, file, controller.signal, (percent) => {
           transferredBytesMap[i] = (percent / 100) * (file.size || 0);
           const currentTotalTransferred = Object.values(transferredBytesMap).reduce((a, b) => a + b, 0);
           if (totalBytesAll > 0) {
             progress.value = Math.min(100, Math.round((currentTotalTransferred * 100) / totalBytesAll));
           }
+        }, (session) => {
+          activeUploads.set(i, { controller, jobId: session.job_id });
+          transferStore.isDrawerOpen = true;
         });
         transferredBytesMap[i] = file.size || 0;
         successfulCount++;
       } catch (e: any) {
-        errors.push(`${file.name}: ${e.response?.data?.error?.message || e.message}`);
+        if (!isCancelling.value) errors.push(`${file.name}: ${e.response?.data?.error?.message || e.message}`);
+      } finally {
+        activeUploads.delete(i);
       }
     }
   }
@@ -255,6 +266,11 @@ async function startUpload() {
       workers.push(uploadWorker());
     }
     await Promise.all(workers);
+
+    if (isCancelling.value) {
+      uiStore.showToast('Upload cancelled', 'warning');
+      return;
+    }
 
     if (errors.length === 0) {
       uiStore.showToast(`Successfully uploaded ${successfulCount} file(s)`, 'success');
@@ -273,7 +289,24 @@ async function startUpload() {
     uiStore.showToast(err.response?.data?.error?.message || 'Failed to upload files', 'error');
   } finally {
     uploading.value = false;
+    isCancelling.value = false;
+    activeUploads.clear();
     progress.value = 0;
   }
+}
+
+async function cancelUploads() {
+  if (!uploading.value || isCancelling.value) return;
+  isCancelling.value = true;
+  await Promise.allSettled(Array.from(activeUploads.values()).map(async ({ controller, jobId }) => {
+    try {
+      if (jobId) await cancelTransferApi(jobId);
+    } finally {
+      controller.abort();
+    }
+  }));
+  // WebSocket reconciliation is authoritative; fetching now handles a session
+  // that emitted its job before the UI recorded its id.
+  await transferStore.fetchJobs();
 }
 </script>

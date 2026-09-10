@@ -2,7 +2,7 @@ use axum::{routing::get, Json, Router};
 use utoipa::OpenApi;
 
 use crate::api::files::{
-    ChmodRequest, CreateEntryRequest, DeleteRequest, PresignRequest, PresignResponse,
+    ChmodRequest, CreateEntryRequest, CreateUploadSessionRequest, CreateUploadSessionResponse, DeleteRequest, PresignRequest, PresignResponse,
     SuccessResponse, TransferRequest, UpdateContentRequest,
 };
 use crate::domain::{
@@ -43,12 +43,17 @@ use crate::state::AppState;
         ChmodRequest,
         TransferRequest,
         SuccessResponse,
+        CreateUploadSessionRequest,
+        CreateUploadSessionResponse,
         // Sync schemas
         crate::sync::models::SyncStrategy,
         crate::sync::models::SyncStatus,
         crate::sync::models::FileManifest,
         crate::sync::models::SyncJob,
         crate::api::sync::CreateSyncRequest,
+        crate::transfer::TransferJob,
+        crate::transfer::TransferExecutionMode,
+        crate::transfer::TransferStaging,
     )),
     tags(
         (name = "files", description = "File and directory operations"),

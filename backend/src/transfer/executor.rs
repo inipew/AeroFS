@@ -15,10 +15,23 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
-/// Result of a successful inline streaming upload.
+/// Inputs which describe one inline upload. Keeping these together prevents
+/// positional-argument mixups at the application/transfer boundary.
 #[derive(Debug, Clone)]
-pub struct InlineUploadOutcome {
-    pub bytes_written: u64,
+pub struct InlineUploadContext {
+    pub target: VfsPath,
+    pub job_id: String,
+    pub plan: TransferPlan,
+    pub total_hint: Option<u64>,
+    pub max_bytes: u64,
+    pub target_exists: bool,
+    pub target_perms: Option<String>,
+}
+
+async fn cleanup_upload_target(provider: &dyn FileSystem, path: &VfsPath, job_id: &str) {
+    if let Err(error) = provider.delete(path).await {
+        tracing::warn!(job_id, path = %path.path, ?error, "failed to clean up upload artifact");
+    }
 }
 
 /// Pure executor for inline upload streaming.
@@ -28,34 +41,29 @@ pub struct InlineUploadOutcome {
 pub async fn execute_inline_upload_stream<S>(
     manager: &TransferManager,
     provider: Arc<dyn FileSystem>,
-    target: VfsPath,
-    job_id: &str,
-    plan: &TransferPlan,
-    total_hint: Option<u64>,
-    max_bytes: u64,
-    target_exists: bool,
-    target_perms: Option<String>,
+    context: InlineUploadContext,
     cancel_token: tokio_util::sync::CancellationToken,
     byte_stream: S,
-) -> Result<InlineUploadOutcome, AppError>
+) -> Result<u64, AppError>
 where
     S: Stream<Item = Result<Bytes, AppError>> + Send,
 {
     // Initial cancellation guard — handles race where cancel_job fired between create and executor start (P0)
     if cancel_token.is_cancelled() {
-        if plan.uses_staging() {
-            if let Some(staging) = plan.staging_path(&target, job_id) {
-                let _ = provider.delete(&staging).await;
+        if context.plan.uses_staging() {
+            if let Some(staging) = context.plan.staging_path(&context.target, &context.job_id) {
+                cleanup_upload_target(provider.as_ref(), &staging, &context.job_id).await;
             }
         }
-        return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled before start")));
+        return Err(AppError::Cancelled("upload cancelled before start".into()));
     }
 
     // Resolve staging target via plan (canonical naming)
-    let write_target = plan
-        .staging_path(&target, job_id)
-        .unwrap_or_else(|| target.clone());
-    let use_staging = plan.uses_staging();
+    let write_target = context
+        .plan
+        .staging_path(&context.target, &context.job_id)
+        .unwrap_or_else(|| context.target.clone());
+    let use_staging = context.plan.uses_staging();
 
     // Prepare duplex (cancellation token is manager-owned, not local)
     let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
@@ -76,18 +84,18 @@ where
     let mut stream_err: Option<AppError> = None;
     let start_time = Instant::now();
     let mut last_emit = Instant::now();
-    let total_for_progress = total_hint.unwrap_or(0);
+    let total_for_progress = context.total_hint.unwrap_or(0);
 
     futures::pin_mut!(byte_stream);
     loop {
         // Check cancellation before each poll (handles race where cancel fires between chunks)
         if cancel_token.is_cancelled() {
-            stream_err = Some(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+            stream_err = Some(AppError::Cancelled("upload cancelled".into()));
             break;
         }
         let item_opt = tokio::select! {
             _ = cancel_token.cancelled() => {
-                stream_err = Some(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+                stream_err = Some(AppError::Cancelled("upload cancelled".into()));
                 break;
             }
             item = byte_stream.next() => item,
@@ -101,10 +109,10 @@ where
             }
         };
         uploaded_bytes += chunk.len() as u64;
-        if uploaded_bytes > max_bytes {
+        if uploaded_bytes > context.max_bytes {
             stream_err = Some(AppError::PayloadTooLarge(format!(
                 "Uploaded file exceeded maximum upload size limit of {} bytes",
-                max_bytes
+                context.max_bytes
             )));
             break;
         }
@@ -112,7 +120,7 @@ where
         let write_fut = duplex_writer.write_all(&chunk);
         tokio::select! {
             _ = cancel_token.cancelled() => {
-                stream_err = Some(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+                stream_err = Some(AppError::Cancelled("upload cancelled".into()));
                 break;
             }
             res = write_fut => {
@@ -133,7 +141,7 @@ where
                 0
             };
             manager
-                .update_inline_progress(job_id, uploaded_bytes, total_for_progress, speed, None)
+                .update_inline_progress(&context.job_id, uploaded_bytes, total_for_progress, speed, None)
                 .await;
             last_emit = Instant::now();
         }
@@ -144,23 +152,23 @@ where
     if cancel_token.is_cancelled() {
         // Wake writer task via cancel_token (it selects on same token)
         let _ = tokio::time::timeout(std::time::Duration::from_millis(200), write_handle).await;
-        if use_staging || !target_exists {
-            let _ = provider.delete(&write_target).await;
+        if use_staging || !context.target_exists {
+            cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
         }
         // Prefer explicit cancelled error so caller can avoid fail->Failed overwrite
         if let Some(err) = stream_err {
             // If stream_err already is cancelled, return it; otherwise override with cancelled
-            if err.to_string().contains("cancelled") {
+            if matches!(err, AppError::Cancelled(_)) {
                 return Err(err);
             }
         }
-        return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled")));
+        return Err(AppError::Cancelled("upload cancelled".into()));
     }
 
     if let Some(err) = stream_err {
         let _ = write_handle.await;
-        if use_staging || !target_exists {
-            let _ = provider.delete(&write_target).await;
+        if use_staging || !context.target_exists {
+            cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
         }
         return Err(err);
     }
@@ -170,38 +178,43 @@ where
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Upload worker task error: {}", e)))?;
 
     if let Err(e) = write_res {
-        if use_staging || !target_exists {
-            let _ = provider.delete(&write_target).await;
+        if use_staging || !context.target_exists {
+            cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
         }
         return Err(AppError::from(e));
     }
 
     // Atomic commit boundary Opsi X: try_enter_finalizing under jobs.write() lock
     // Returns Ok(false) if already cancelled / Finalizing — must not rename
-    let can_commit = manager.try_enter_finalizing(job_id).await.map_err(|e| {
+    let can_commit = manager.try_enter_finalizing(&context.job_id).await.map_err(|e| {
         AppError::Internal(anyhow::anyhow!("try_enter_finalizing failed: {}", e))
     })?;
     if !can_commit {
         if use_staging {
-            let _ = provider.delete(&write_target).await;
-        } else if !target_exists {
-            let _ = provider.delete(&target).await;
+            cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
+        } else if !context.target_exists {
+            cleanup_upload_target(provider.as_ref(), &context.target, &context.job_id).await;
         }
-        return Err(AppError::Internal(anyhow::anyhow!("Upload cancelled / too late")));
+        return Err(AppError::Cancelled("upload cancelled before commit".into()));
     }
 
     if use_staging {
-        if let Err(rename_err) = provider.rename(&write_target, &target).await {
-            let _ = provider.delete(&write_target).await;
+        if let Err(rename_err) = provider.rename(&write_target, &context.target).await {
+            cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
             return Err(AppError::Internal(anyhow::anyhow!(format!(
                 "Failed to promote staging file to final destination '{}': {}",
-                target.path, rename_err
+                context.target.path, rename_err
             ))));
         }
     }
 
-    if let Some(ref perms) = target_perms {
-        let _ = provider.set_permissions(&target, perms).await;
+    if let Some(ref perms) = context.target_perms {
+        // Permission inheritance is best-effort: the committed file remains valid,
+        // but an operator must be able to diagnose a provider-side failure.
+        if let Err(error) = provider.set_permissions(&context.target, perms).await {
+            tracing::warn!(job_id = %context.job_id, path = %context.target.path, ?error,
+                "upload committed but inherited permissions could not be applied");
+        }
     }
 
     // Emit final progress
@@ -212,12 +225,10 @@ where
         0
     };
     manager
-        .update_inline_progress(job_id, uploaded_bytes, total_for_progress, speed, Some(0))
+        .update_inline_progress(&context.job_id, uploaded_bytes, total_for_progress, speed, Some(0))
         .await;
 
-    Ok(InlineUploadOutcome {
-        bytes_written: uploaded_bytes,
-    })
+    Ok(uploaded_bytes)
 }
 
 #[cfg(test)]
@@ -384,19 +395,20 @@ mod tests {
         let res = execute_inline_upload_stream(
             &state.transfer_manager,
             provider,
-            target,
-            &job.id,
-            &plan,
-            Some(1024),
-            10 * 1024 * 1024,
-            false,
-            None,
+            InlineUploadContext {
+                target,
+                job_id: job.id.clone(),
+                plan,
+                total_hint: Some(1024),
+                max_bytes: 10 * 1024 * 1024,
+                target_exists: false,
+                target_perms: None,
+            },
             token.clone(),
             byte_stream,
         )
         .await;
-        assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("cancelled"));
+        assert!(matches!(res, Err(AppError::Cancelled(_))));
         assert!(!mock.rename_called.load(Ordering::SeqCst));
     }
 
@@ -439,13 +451,15 @@ mod tests {
             execute_inline_upload_stream(
                 &manager_clone,
                 provider_clone,
-                target_clone,
-                &job_id_clone,
-                &plan_clone,
-                Some(1024 * 1024),
-                10 * 1024 * 1024,
-                false,
-                None,
+                InlineUploadContext {
+                    target: target_clone,
+                    job_id: job_id_clone,
+                    plan: plan_clone,
+                    total_hint: Some(1024 * 1024),
+                    max_bytes: 10 * 1024 * 1024,
+                    target_exists: false,
+                    target_perms: None,
+                },
                 token_clone,
                 byte_stream,
             )
@@ -460,8 +474,7 @@ mod tests {
             .await
             .expect("executor should finish after cancel")
             .unwrap();
-        assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("cancelled"));
+        assert!(matches!(res, Err(AppError::Cancelled(_))));
         assert!(!mock.rename_called.load(Ordering::SeqCst));
         assert!(mock.write_calls.load(Ordering::SeqCst) >= 1);
         mock.write_continue.notify_waiters();
@@ -502,13 +515,15 @@ mod tests {
             execute_inline_upload_stream(
                 &manager_clone,
                 provider_clone,
-                target_clone,
-                &job_id_clone,
-                &plan_clone,
-                Some(10),
-                10 * 1024 * 1024,
-                false,
-                None,
+                InlineUploadContext {
+                    target: target_clone,
+                    job_id: job_id_clone,
+                    plan: plan_clone,
+                    total_hint: Some(10),
+                    max_bytes: 10 * 1024 * 1024,
+                    target_exists: false,
+                    target_perms: None,
+                },
                 token_clone,
                 byte_stream,
             )
@@ -533,7 +548,7 @@ mod tests {
         // Final job should be Completed, not Cancelled
         let jobs = state.transfer_manager.list_jobs(Some("user1"), false, false).await;
         // Find job
-        let final_job = jobs.iter().find(|j| j.id == job.id).or_else(|| {
+        let _final_job = jobs.iter().find(|j| j.id == job.id).or_else(|| {
             // May need to check DB via list with include_dismissed? But job is completed not dismissed
             None
         });

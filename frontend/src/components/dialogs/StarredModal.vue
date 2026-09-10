@@ -81,7 +81,7 @@ import { useStarredStore } from '../../stores/starredStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useUiStore } from '../../stores/uiStore';
-import { readFileApi } from '../../api/files';
+import { getContentUrl, readFileApi } from '../../api/files';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -133,7 +133,7 @@ async function handleOpenItem(item: any) {
     } else {
       uiStore.openMediaViewer(
         item.entry.name,
-        `/api/v1/connections/${item.connectionId}/files/content?path=${encodeURIComponent(item.entry.path)}`,
+        getContentUrl(item.connectionId, item.entry.path),
         item.entry,
         [item.entry],
         item.connectionId

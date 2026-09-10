@@ -55,6 +55,5 @@ export interface CreateSyncRequest {
 export interface CreateSyncResponse {
   success: boolean;
   job: SyncJob;
-  transfers_submitted: number;
   message: string;
 }

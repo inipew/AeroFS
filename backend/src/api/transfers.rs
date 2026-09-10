@@ -66,6 +66,9 @@ pub async fn cancel_transfer(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     TransferService::cancel_transfer(&state, &user, &id).await?;
+    // An admitted upload may not have received its HTTP body yet. Releasing
+    // its reservation here prevents a permanently locked destination.
+    state.upload_locks.release(&id).await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": format!("Transfer job '{}' cancelled", id),

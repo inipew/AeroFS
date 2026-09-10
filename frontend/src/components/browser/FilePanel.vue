@@ -429,47 +429,61 @@
                           : 'bg-white dark:bg-[#0f1422] border-gray-200/90 dark:border-slate-800/90 hover:shadow-lg hover:shadow-blue-500/5 hover:-translate-y-1 hover:border-blue-400 dark:hover:border-blue-500'
                       ]"
                     >
-                      <div class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden shrink-0 border-b border-gray-100 dark:border-slate-800/80 flex items-center justify-center p-2 min-h-0">
-                        <template v-if="isImage(getGridItemAt(vRow.index, colIdx - 1)!)">
-                          <img
-                            :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path)"
-                            :alt="getGridItemAt(vRow.index, colIdx - 1)!.name"
-                            class="w-full h-full object-cover group-hover:scale-105 transition duration-300 rounded-lg"
-                            loading="lazy"
-                          />
-                          <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md border border-white/10">
+                      <div class="flex-1 w-full bg-slate-50/80 dark:bg-slate-950/70 relative overflow-hidden border-b border-gray-100 dark:border-slate-800/80 min-h-0">
+                        <!-- Image with Thumbnail -->
+                        <template v-if="isImage(getGridItemAt(vRow.index, colIdx - 1)!) && !failedThumbnails.has(getGridItemAt(vRow.index, colIdx - 1)!.path)">
+                          <div class="absolute inset-0 p-2 flex items-center justify-center">
+                            <img
+                              :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path)"
+                              :alt="getGridItemAt(vRow.index, colIdx - 1)!.name"
+                              @error="handleThumbnailError(getGridItemAt(vRow.index, colIdx - 1)!.path)"
+                              class="max-w-full max-h-full object-contain rounded drop-shadow-xs group-hover:scale-105 transition duration-300 pointer-events-none select-none"
+                              loading="lazy"
+                            />
+                          </div>
+                          <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md border border-white/10 select-none pointer-events-none">
                             {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
                           </span>
                         </template>
-                        <template v-else-if="isVideo(getGridItemAt(vRow.index, colIdx - 1)!)">
-                          <video
-                            :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) + '#t=0.5'"
-                            preload="metadata"
-                            muted
-                            playsinline
-                            class="w-full h-full object-cover group-hover:scale-105 transition duration-300 pointer-events-none rounded-lg"
-                          ></video>
-                          <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent group-hover:opacity-90 transition"></div>
-                          <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <div class="w-8 h-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
-                              <FbIcon name="play" size="12px" class="fill-white" />
+
+                        <!-- Video with Playback Preview -->
+                        <template v-else-if="isVideo(getGridItemAt(vRow.index, colIdx - 1)!) && !failedThumbnails.has(getGridItemAt(vRow.index, colIdx - 1)!.path)">
+                          <div class="absolute inset-0 p-2 flex items-center justify-center">
+                            <video
+                              :src="getDownloadUrl(panel.connectionId, getGridItemAt(vRow.index, colIdx - 1)!.path) + '#t=0.5'"
+                              preload="metadata"
+                              muted
+                              playsinline
+                              @error="handleThumbnailError(getGridItemAt(vRow.index, colIdx - 1)!.path)"
+                              class="max-w-full max-h-full object-contain rounded group-hover:scale-105 transition duration-300 pointer-events-none"
+                            ></video>
+                            <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <div class="w-8 h-8 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white ring-1 ring-white/40 group-hover:scale-110 group-hover:bg-blue-600 transition duration-200 shadow-xl pl-0.5">
+                                <FbIcon name="play" size="12px" class="fill-white" />
+                              </div>
                             </div>
                           </div>
-                          <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md z-10 border border-white/10">
+                          <span class="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.2 rounded-md bg-black/75 backdrop-blur-xs text-white/90 font-mono font-bold uppercase tracking-wider shadow-md z-10 border border-white/10 select-none pointer-events-none">
                             {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
                           </span>
                         </template>
+
+                        <!-- Audio with Art & Wave Badge -->
                         <template v-else-if="isAudio(getGridItemAt(vRow.index, colIdx - 1)!)">
-                          <div class="w-full h-full bg-gradient-to-br from-indigo-500/15 via-purple-500/15 to-pink-500/15 dark:from-indigo-950/50 dark:to-purple-950/50 flex flex-col items-center justify-center space-y-1 rounded-lg">
-                            <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-sm shadow-md group-hover:scale-110 transition duration-200">
-                              🎵
+                          <div class="absolute inset-0 p-2 flex items-center justify-center">
+                            <div class="w-full h-full bg-gradient-to-br from-violet-500/15 via-purple-500/15 to-pink-500/15 dark:from-violet-950/50 dark:to-purple-950/50 flex flex-col items-center justify-center space-y-1 rounded-lg">
+                              <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center text-white text-sm shadow-md group-hover:scale-110 transition duration-200">
+                                🎵
+                              </div>
+                              <span class="text-[8px] font-mono font-bold uppercase text-violet-600 dark:text-violet-400 tracking-wider">
+                                {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
+                              </span>
                             </div>
-                            <span class="text-[8px] font-mono font-bold uppercase text-indigo-600 dark:text-indigo-400 tracking-wider">
-                              {{ getFileExt(getGridItemAt(vRow.index, colIdx - 1)!) }}
-                            </span>
                           </div>
                         </template>
-                        <div v-else class="flex flex-col items-center justify-center w-full h-full relative">
+
+                        <!-- Document Sheet Fallback -->
+                        <div v-else class="absolute inset-0 flex flex-col items-center justify-center">
                           <div :class="['absolute inset-0 bg-gradient-to-b opacity-40 dark:opacity-30 pointer-events-none rounded-t-2xl', getFileTypeMeta(getGridItemAt(vRow.index, colIdx - 1)!).cardBg]"></div>
                           <div class="relative flex flex-col items-center justify-center group-hover:scale-105 transition-transform duration-200 ease-spring">
                             <!-- Soft glow halo -->
@@ -644,7 +658,13 @@
                       <FbIcon
                         :name="displayedEntries[vRow.index].kind === 'directory' ? 'folder' : getCategoryIcon(displayedEntries[vRow.index])"
                         :size="uiStore.listDensity === 'dense' ? '15px' : '18px'"
-                        :class="isItemHidden(displayedEntries[vRow.index]) ? 'text-gray-400 dark:text-slate-500' : (displayedEntries[vRow.index].kind === 'directory' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-slate-500')"
+                        :class="[
+                          isItemHidden(displayedEntries[vRow.index])
+                            ? 'text-gray-400 dark:text-slate-500'
+                            : (displayedEntries[vRow.index].kind === 'directory'
+                              ? 'text-blue-600 dark:text-blue-400'
+                              : getCategoryIconColor(displayedEntries[vRow.index]))
+                        ]"
                       />
                       <div class="truncate flex items-center space-x-1.5">
                         <span
@@ -1072,30 +1092,66 @@ function isItemHidden(entry: FileEntry): boolean {
   return entry.is_hidden || entry.name.startsWith('.');
 }
 
+const failedThumbnails = ref<Set<string>>(new Set());
+
+function handleThumbnailError(path: string) {
+  failedThumbnails.value.add(path);
+}
+
+watch(
+  () => panel.value.path,
+  () => {
+    failedThumbnails.value.clear();
+  }
+);
+
 function isImage(entry: FileEntry): boolean {
   const ext = getFileExt(entry);
-  return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico'].includes(ext);
+  return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'tiff', 'heic'].includes(ext);
 }
 
 function isVideo(entry: FileEntry): boolean {
   const ext = getFileExt(entry);
-  return ['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv'].includes(ext);
+  return ['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'm4v', '3gp', 'ogv'].includes(ext);
 }
 
 function isAudio(entry: FileEntry): boolean {
   const ext = getFileExt(entry);
-  return ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg'].includes(ext);
+  return ['mp3', 'wav', 'flac', 'aac', 'm4a', 'opus', 'ogg', 'wma'].includes(ext);
 }
 
 function getCategoryIcon(entry: FileEntry): IconName {
   const ext = getFileExt(entry);
-  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(ext)) return 'archive';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)) return 'image';
-  if (['mp4', 'webm', 'mov', 'mkv', 'avi'].includes(ext)) return 'video';
-  if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio';
+  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'bz2', 'xz'].includes(ext)) return 'archive';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'tiff', 'heic'].includes(ext)) return 'image';
+  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'm4v', '3gp', 'ogv'].includes(ext)) return 'video';
+  if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'opus', 'aac', 'wma'].includes(ext)) return 'audio';
   if (['pdf'].includes(ext)) return 'pdf';
   if (isTextOrCode(entry)) return 'code';
   return 'file';
+}
+
+function getCategoryIconColor(entry: FileEntry): string {
+  const ext = getFileExt(entry);
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'tiff', 'heic'].includes(ext)) {
+    return 'text-emerald-500 dark:text-emerald-400';
+  }
+  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'm4v', '3gp', 'ogv'].includes(ext)) {
+    return 'text-rose-500 dark:text-rose-400';
+  }
+  if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'opus', 'aac', 'wma'].includes(ext)) {
+    return 'text-violet-500 dark:text-violet-400';
+  }
+  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'bz2', 'xz'].includes(ext)) {
+    return 'text-amber-500 dark:text-amber-400';
+  }
+  if (['pdf'].includes(ext)) {
+    return 'text-red-500 dark:text-red-400';
+  }
+  if (isTextOrCode(entry)) {
+    return 'text-blue-500 dark:text-blue-400';
+  }
+  return 'text-gray-400 dark:text-slate-500';
 }
 
 function toggleSelectAll() {

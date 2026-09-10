@@ -94,12 +94,11 @@
               <span
                 class="w-1.5 h-1.5 rounded-full shrink-0"
                 :class="[
-                  conn.provider_state === 'degraded' ? 'bg-amber-500 animate-pulse' :
-                  conn.provider_state === 'failed' || conn.status === 'failed' ? 'bg-rose-500' :
-                  conn.provider_state === 'disconnected' || conn.status === 'disconnected' ? 'bg-gray-400' :
+                  conn.status === 'failed' ? 'bg-rose-500' :
+                  conn.status === 'disconnected' ? 'bg-gray-400' :
                   'bg-emerald-500'
                 ]"
-                :title="`Status: ${conn.provider_state || conn.status}`"
+                :title="`Status: ${conn.status}`"
               ></span>
               <span>{{ conn.provider }}</span>
             </span>

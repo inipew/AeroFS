@@ -36,5 +36,5 @@ pub use settings_service::SettingsService;
 pub use share_service::ShareService;
 pub use transfer_service::TransferService;
 pub use trash_service::TrashService;
-pub use upload_lock::{UploadGuard, UploadLockManager};
+pub use upload_lock::{UploadGuard, UploadLockManager, UploadSession};
 pub use user_service::UserService;

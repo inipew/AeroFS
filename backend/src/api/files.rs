@@ -16,6 +16,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use futures::StreamExt;
 use tokio_util::io::ReaderStream;
 use utoipa::{IntoParams, ToSchema};
 
@@ -100,6 +101,20 @@ pub struct TransferRequest {
 pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateUploadSessionRequest {
+    /// Full destination path, including the file name.
+    pub path: String,
+    pub file_name: String,
+    pub total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateUploadSessionResponse {
+    pub job_id: String,
+    pub upload_url: String,
 }
 
 // FileService facade remains for tests; handlers now use FileApplicationService directly
@@ -547,6 +562,50 @@ pub async fn copy_entry(
     Ok(Json(SuccessResponse {
         success: true,
         message: format!("Copied to: {}", to_vfs.path),
+    }))
+}
+
+/// Admit a streaming upload and return a job-bound URL for its bytes.
+pub async fn create_upload_session(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path(connection_id): Path<String>,
+    Json(payload): Json<CreateUploadSessionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    check_permission(&state.db, &user, &connection_id, PermissionAction::Upload).await?;
+    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
+        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
+    })?;
+    let target = crate::application::UploadApplicationService::validate_target(&connection_id, &payload.path)?;
+    let session = crate::application::UploadApplicationService::create_session(
+        &state, &user.id, &connection_id, &provider, target, payload.file_name, payload.total_bytes,
+    ).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CreateUploadSessionResponse {
+            upload_url: format!("/api/v1/connections/{}/uploads/{}/content", connection_id, session.job_id),
+            job_id: session.job_id,
+        }),
+    ))
+}
+
+/// Stream a previously admitted upload session. The client must use the job id
+/// returned by `create_upload_session`; a second PUT is rejected.
+pub async fn upload_session_content(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path((connection_id, job_id)): Path<(String, String)>,
+    body: Body,
+) -> Result<impl IntoResponse, AppError> {
+    let stream = body.into_data_stream().map(|chunk| {
+        chunk.map_err(|error| AppError::BadRequest(format!("Upload stream error: {}", error)))
+    });
+    let path = crate::application::UploadApplicationService::execute_session_stream(
+        &state, &user.id, &connection_id, &job_id, stream,
+    ).await?;
+    Ok(Json(SuccessResponse {
+        success: true,
+        message: format!("Uploaded: {}", path),
     }))
 }
 

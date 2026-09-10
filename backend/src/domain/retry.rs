@@ -84,6 +84,7 @@ impl RetryPolicy {
             | AppError::Forbidden(_)
             | AppError::Security(_)
             | AppError::BadRequest(_)
+            | AppError::Cancelled(_)
             | AppError::NotFound(_)
             | AppError::PreconditionFailed(_)
             | AppError::RangeNotSatisfiable(_)

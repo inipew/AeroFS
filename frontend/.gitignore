@@ -9,6 +9,7 @@ pnpm-debug.log*
 node_modules
 dist
 dist-ssr
+analisa
 *.local
 
 # Editor directories and files

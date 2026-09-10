@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import { getApiBaseUrl } from './files';
 
 export interface VirtualArchiveEntry {
   name: string;
@@ -13,7 +14,10 @@ export interface ArchiveResponse {
   success: boolean;
   message: string;
   entries_count?: number;
+  skipped_count?: number;
 }
+
+export type ArchiveOverwriteMode = 'overwrite' | 'skip' | 'keep_both';
 
 /**
  * List virtual contents inside an archive without full extraction
@@ -45,7 +49,7 @@ export function getArchiveEntryReadUrl(
     archive_path: archivePath,
     entry_path: entryPath,
   });
-  return `/api/v1/connections/${connectionId}/archive/read?${params.toString()}`;
+  return `${getApiBaseUrl()}/connections/${connectionId}/archive/read?${params.toString()}`;
 }
 
 /**
@@ -74,7 +78,8 @@ export async function extractSelectedArchiveApi(
   connectionId: string,
   archivePath: string,
   destinationDir: string,
-  entries: string[]
+  entries: string[],
+  overwriteMode?: ArchiveOverwriteMode
 ): Promise<ArchiveResponse> {
   const res = await apiClient.post<ArchiveResponse>(
     `/connections/${connectionId}/archive/extract-selected`,
@@ -82,6 +87,7 @@ export async function extractSelectedArchiveApi(
       archive_path: archivePath,
       destination_dir: destinationDir,
       entries,
+      overwrite_mode: overwriteMode,
     }
   );
   return res.data;
@@ -116,7 +122,8 @@ export async function extractArchiveApi(
   connectionId: string,
   archivePath: string,
   destinationDir: string,
-  format?: string
+  format?: string,
+  overwriteMode?: ArchiveOverwriteMode
 ): Promise<ArchiveResponse> {
   const res = await apiClient.post<ArchiveResponse>(
     `/connections/${connectionId}/archive/extract`,
@@ -124,6 +131,7 @@ export async function extractArchiveApi(
       archive_path: archivePath,
       destination_dir: destinationDir,
       format,
+      overwrite_mode: overwriteMode,
     }
   );
   return res.data;

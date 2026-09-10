@@ -33,6 +33,9 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Transfer cancelled: {0}")]
+    Cancelled(String),
+
     #[error("Precondition failed: {0}")]
     PreconditionFailed(String),
 
@@ -147,6 +150,7 @@ pub enum ErrorCategory {
     Authorization,
     NotFound,
     Conflict,
+    TransferCancelled,
     PayloadTooLarge,
     InsufficientStorage,
     RateLimited,
@@ -185,6 +189,7 @@ pub enum ErrorCode {
     AlreadyExists,
     BadRequest,
     Conflict,
+    TransferCancelled,
     PreconditionFailed,
     RangeNotSatisfiable,
     PayloadTooLarge,
@@ -210,6 +215,7 @@ impl ErrorCode {
             Self::AlreadyExists => "ALREADY_EXISTS",
             Self::BadRequest => "BAD_REQUEST",
             Self::Conflict => "CONFLICT",
+            Self::TransferCancelled => "TRANSFER_CANCELLED",
             Self::PreconditionFailed => "PRECONDITION_FAILED",
             Self::RangeNotSatisfiable => "RANGE_NOT_SATISFIABLE",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
@@ -308,7 +314,7 @@ impl IntoResponse for AppError {
             AppError::Vfs(VfsError::AlreadyExists(_)) => (
                 StatusCode::CONFLICT,
                 "ALREADY_EXISTS",
-                ErrorCategory::Conflict,
+                ErrorCategory::TransferCancelled,
                 false,
                 Some("rename_or_overwrite".to_string()),
                 self.to_string(),
@@ -327,6 +333,14 @@ impl IntoResponse for AppError {
                 ErrorCategory::Conflict,
                 false,
                 Some("reload_latest_version_and_retry".to_string()),
+                msg.clone(),
+            ),
+            AppError::Cancelled(msg) => (
+                StatusCode::CONFLICT,
+                "TRANSFER_CANCELLED",
+                ErrorCategory::TransferCancelled,
+                false,
+                Some("start_a_new_transfer_if_needed".to_string()),
                 msg.clone(),
             ),
             AppError::PreconditionFailed(msg) => (

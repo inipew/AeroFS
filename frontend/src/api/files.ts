@@ -1,5 +1,6 @@
 import { apiClient } from './client';
 import type { DirectoryListing, FileMetadata } from '../types/vfs';
+import { streamUpload } from '../services/transfer/fetchStream';
 
 export interface ListFilesParams {
   path?: string;
@@ -83,21 +84,52 @@ export async function completePresignedUploadApi(
 }
 
 export function getContentUrl(connectionId: string, path: string): string {
-  const base = apiClient.defaults.baseURL?.startsWith('http')
-    ? apiClient.defaults.baseURL
-    : `${window.location.origin}${apiClient.defaults.baseURL || '/api/v1'}`;
+  const base = getApiBaseUrl();
   return `${base}/connections/${connectionId}/files/content?path=${encodeURIComponent(
     path
   )}`;
 }
 
 export function getDownloadUrl(connectionId: string, path: string): string {
-  const base = apiClient.defaults.baseURL?.startsWith('http')
-    ? apiClient.defaults.baseURL
-    : `${window.location.origin}${apiClient.defaults.baseURL || '/api/v1'}`;
+  const base = getApiBaseUrl();
   return `${base}/connections/${connectionId}/files/content?path=${encodeURIComponent(
     path
   )}&download=true`;
+}
+
+export function getApiBaseUrl(): string {
+  const configured = apiClient.defaults.baseURL || '/api/v1';
+  return configured.startsWith('http') ? configured.replace(/\/$/, '') : `${window.location.origin}${configured}`;
+}
+
+export interface UploadSessionResponse {
+  job_id: string;
+  upload_url: string;
+}
+
+/** Upload through a job-bound session so the transfer drawer and cancellation
+ * endpoint operate on the same server-side transfer. */
+export async function uploadFileAsTransferApi(
+  connectionId: string,
+  targetDir: string,
+  file: File,
+  signal: AbortSignal,
+  onProgress?: (percent: number) => void,
+  onSession?: (session: UploadSessionResponse) => void
+): Promise<UploadSessionResponse> {
+  const path = targetDir === '/' ? `/${file.name}` : `${targetDir.replace(/\/$/, '')}/${file.name}`;
+  const session = await apiClient.post<UploadSessionResponse>(
+    `/connections/${connectionId}/uploads`,
+    { path, file_name: file.name, total_bytes: file.size },
+    { signal }
+  );
+  const response = session.data;
+  onSession?.(response);
+  const url = response.upload_url.startsWith('http') ? response.upload_url : `${getApiBaseUrl()}${response.upload_url}`;
+  await streamUpload(url, file, signal, (loaded, total) => {
+    if (total > 0) onProgress?.(Math.round((loaded * 100) / total));
+  });
+  return response;
 }
 
 export async function readFileApi(
@@ -145,14 +177,6 @@ export async function copyEntryApi(
   to: string
 ): Promise<void> {
   await apiClient.post(`/connections/${connectionId}/files/copy`, { from, to });
-}
-
-export async function moveEntryApi(
-  connectionId: string,
-  from: string,
-  to: string
-): Promise<void> {
-  await apiClient.post(`/connections/${connectionId}/files/move`, { from, to });
 }
 
 export async function uploadFileApi(

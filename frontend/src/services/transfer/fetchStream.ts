@@ -63,12 +63,12 @@ export async function streamUpload(
     method: 'PUT',
     body,
     signal,
+    credentials: 'include',
     // Required for streaming request body in Chromium-based browsers
     // @ts-expect-error — duplex is not yet in TypeScript's RequestInit types
     duplex: 'half',
     headers: {
       'Content-Type': file.type || 'application/octet-stream',
-      'Content-Length': String(total),
     },
   });
 

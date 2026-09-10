@@ -17,6 +17,9 @@ export type TransferPhase =
   | 'cleaning_up'
   | 'completed';
 
+export type TransferExecutionMode = 'inline' | 'background' | 'resumable';
+export type TransferStaging = 'none' | 'local_temp' | 'provider_temp';
+
 export interface TransferJob {
   id: string;
   user_id?: string;
@@ -28,6 +31,8 @@ export interface TransferJob {
   destination_path: string;
   status: TransferStatus;
   phase?: TransferPhase;
+  execution_mode: TransferExecutionMode;
+  staging: TransferStaging;
   transferred_bytes: number;
   total_bytes: number;
   speed_bytes_per_sec: number;

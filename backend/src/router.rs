@@ -249,6 +249,11 @@ pub fn create_router(state: AppState) -> Router {
             post(api_files::presign_complete_upload),
         )
         .route("/{id}/storage-info", get(api_files::get_storage_info))
+        .route("/{id}/uploads", post(api_files::create_upload_session))
+        .route(
+            "/{id}/uploads/{job_id}/content",
+            axum::routing::put(api_files::upload_session_content),
+        )
         .route("/{id}/upload", post(api_files::upload_file))
         .route("/{id}/archive/compress", post(api_archive::compress_files))
         .route(

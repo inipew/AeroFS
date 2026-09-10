@@ -43,7 +43,7 @@ impl TransferPlanner {
     }
 
     /// Select staging strategy for Upload based on provider capabilities — implementation detail of TransferEngine
-    pub fn upload_staging(capabilities: &crate::domain::Capabilities) -> TransferStaging {
+    fn upload_staging(capabilities: &crate::domain::Capabilities) -> TransferStaging {
         if capabilities.atomic_rename {
             TransferStaging::LocalTemp
         } else if capabilities.atomic_write {
@@ -54,7 +54,7 @@ impl TransferPlanner {
     }
 
     /// Select execution mode for Upload based on size & config — small inline, large resumable
-    pub fn upload_execution_mode(total_bytes: Option<u64>, inline_threshold: u64) -> TransferExecutionMode {
+    fn upload_execution_mode(total_bytes: Option<u64>, inline_threshold: u64) -> TransferExecutionMode {
         match total_bytes {
             Some(n) if n > inline_threshold => TransferExecutionMode::Resumable,
             _ => TransferExecutionMode::Inline,
@@ -112,20 +112,5 @@ impl TransferPlanner {
             staging: effective_staging,
             commit: write_strategy.semantics,
         }
-    }
-
-    /// Legacy shim for callers still passing raw total_hint (multipart inline).
-    pub fn plan_upload_inline(
-        capabilities: &Capabilities,
-        total_hint: Option<u64>,
-        inline_threshold: u64,
-        target_exists: bool,
-    ) -> TransferPlan {
-        Self::plan_upload(
-            capabilities,
-            UploadConstraints::inline(total_hint),
-            inline_threshold,
-            target_exists,
-        )
     }
 }

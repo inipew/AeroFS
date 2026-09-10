@@ -601,11 +601,6 @@ impl TransferManager {
         .await
     }
 
-    /// Helper: canonical staging target for an upload job (unified naming).
-    pub fn upload_staging_target(&self, target: &crate::domain::VfsPath, job_id: &str, plan: &crate::transfer::plan::TransferPlan) -> Option<crate::domain::VfsPath> {
-        plan.staging_path(target, job_id)
-    }
-
     pub async fn update_inline_progress(&self, job_id: &str, transferred: u64, total: u64, speed: u64, eta: Option<u64>) {
         let mut map = self.jobs.write().await;
         if let Some(j) = map.get_mut(job_id) {
@@ -654,6 +649,34 @@ impl TransferManager {
                 j.updated_at = Utc::now();
                 Some(j.clone())
             } else { None }
+        };
+        if let Some(job) = job_opt {
+            let _ = Self::save_job_to_db(&self.db, &job).await;
+            let _ = self.event_journal.append(DomainEvent::transfer_failed(&job), Some(&job.id)).await;
+            let _ = self.completion_tx.send((job.id.clone(), false));
+        }
+        self.cancel_tokens.write().await.remove(job_id);
+    }
+
+    /// Finalize an inline upload that observed its manager-owned cancellation token.
+    /// This is deliberately separate from `fail_inline_job`: cancellation is a
+    /// terminal user action, not an execution failure.
+    pub async fn cancel_inline_job(&self, job_id: &str) {
+        let job_opt = {
+            let mut map = self.jobs.write().await;
+            if let Some(job) = map.get_mut(job_id) {
+                if matches!(job.phase, TransferPhase::Finalizing | TransferPhase::Verifying | TransferPhase::Completed) {
+                    None
+                } else {
+                    job.status = TransferStatus::Cancelled;
+                    job.speed_bytes_per_sec = 0;
+                    job.eta_seconds = None;
+                    job.updated_at = Utc::now();
+                    Some(job.clone())
+                }
+            } else {
+                None
+            }
         };
         if let Some(job) = job_opt {
             let _ = Self::save_job_to_db(&self.db, &job).await;
