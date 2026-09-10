@@ -217,7 +217,7 @@
             </div>
             <input
               type="checkbox"
-              v-model="userPrefs.remember_last_dir"
+              v-model="userPrefs.remember_last_directories"
               class="h-5 w-5 rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
             />
           </div>
@@ -400,7 +400,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { getSettings, updateSettings } from '../../api/settings';
+import { listAuditLogs } from '../../api/audit';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useAuthStore } from '../../stores/authStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -470,8 +472,7 @@ const fullSettings = ref<any>({});
 
 async function fetchAdminSettings() {
   try {
-    const resp = await apiClient.get('/settings');
-    const data = resp.data;
+    const data = await getSettings();
     if (data.max_editable_size) {
       uiStore.setMaxEditableSize(data.max_editable_size);
     } else if (data.settings?.file_manager?.max_editable_size) {
@@ -497,8 +498,7 @@ async function fetchAdminSettings() {
 
 async function fetchAuditLogs() {
   try {
-    const resp = await apiClient.get('/audit-logs');
-    auditLogs.value = resp.data;
+    auditLogs.value = await listAuditLogs();
   } catch {}
 }
 
@@ -516,7 +516,7 @@ async function handleSaveSettings() {
         connections: adminForm.value.connections,
         security: adminForm.value.security,
       };
-      await apiClient.put('/settings', {
+      await updateSettings({
         settings: mergedSettings,
         local_root: adminForm.value.connections.default_local_root,
         temp_dir: adminForm.value.connections.temp_dir,
@@ -531,7 +531,7 @@ async function handleSaveSettings() {
     // 3. Refresh Workspace with updated preferences
     await workspaceStore.refreshAll();
   } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to save settings', 'error');
+    uiStore.showToast(normalizeApiError(err).message || 'Failed to save settings', 'error');
   } finally {
     saving.value = false;
   }

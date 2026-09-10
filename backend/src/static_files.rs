@@ -10,6 +10,14 @@ pub struct FrontendAssets;
 
 /// Handler for serving embedded frontend static files with SPA fallback
 pub async fn static_handler(uri: Uri) -> Response {
+    if uri.path().starts_with("/api/") {
+        return crate::errors::AppError::NotFound(format!(
+            "API endpoint not found: {}",
+            uri.path()
+        ))
+        .into_response();
+    }
+
     let mut path = uri.path().trim_start_matches('/').to_string();
     if path.is_empty() {
         path = "index.html".to_string();

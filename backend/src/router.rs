@@ -104,21 +104,40 @@ async fn shutdown_guard(
                 method,
                 path
             );
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                [("Retry-After", "5")],
-                axum::Json(serde_json::json!({
-                    "error": {
-                        "code": "SERVICE_UNAVAILABLE",
-                        "message": "Server is shutting down. Please retry after restart.",
-                        "retryable": true
-                    }
-                })),
+            let mut response = crate::errors::AppError::ServiceUnavailable(
+                "Server is shutting down. Please retry after restart.".to_string(),
             )
-                .into_response();
+            .into_response();
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("5"),
+            );
+            return response;
         }
     }
     next.run(req).await
+}
+
+/// Middleware ensuring 405 Method Not Allowed on API routes returns standard ErrorResponse JSON
+async fn api_error_response_middleware(req: axum::extract::Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let resp = next.run(req).await;
+    if (path.starts_with("/api/") || path.starts_with("/health"))
+        && resp.status() == axum::http::StatusCode::METHOD_NOT_ALLOWED
+    {
+        let (parts, _) = resp.into_parts();
+        let mut err_resp = crate::errors::AppError::MethodNotAllowed(
+            "Method not allowed for this endpoint".to_string(),
+        )
+        .into_response();
+        for (k, v) in parts.headers.iter() {
+            if k == axum::http::header::ALLOW {
+                err_resp.headers_mut().insert(k.clone(), v.clone());
+            }
+        }
+        return err_resp;
+    }
+    resp
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -323,7 +342,10 @@ pub fn create_router(state: AppState) -> Router {
             get(crate::api::preferences::get_user_preferences)
                 .put(crate::api::preferences::update_user_preferences),
         )
-        .route("/audit-logs", get(audit::list_audit_logs));
+        .route("/audit-logs", get(audit::list_audit_logs))
+        .fallback(|uri: axum::http::Uri| async move {
+            crate::errors::AppError::NotFound(format!("API route not found: {}", uri.path()))
+        });
 
     Router::new()
         .route("/health", get(crate::api::health::health_check))
@@ -342,6 +364,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(openapi::openapi_router())
         .nest("/api/v1", api_v1)
         .fallback(crate::static_files::static_handler)
+        .layer(axum::middleware::from_fn(api_error_response_middleware))
         .layer(axum::middleware::from_fn(
             crate::middleware::idempotency_middleware,
         ))

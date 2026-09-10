@@ -70,7 +70,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { createShare } from '../../api/shares';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useUiStore } from '../../stores/uiStore';
 
 const props = defineProps<{
@@ -110,19 +111,19 @@ watch(
 async function handleCreateShare() {
   creating.value = true;
   try {
-    const resp = await apiClient.post('/shares', {
+    const data = await createShare({
       connection_id: props.connectionId,
       path: props.path,
-      password: password.value.trim() ? password.value : null,
-      expires_in_hours: expiresInHours.value,
+      password: password.value.trim() ? password.value : undefined,
+      expires_in_hours: expiresInHours.value ?? undefined,
     });
 
-    const shareUrl = `${window.location.origin}${resp.data.share_url}`;
+    const shareUrl = `${window.location.origin}${data.share_url}`;
     await navigator.clipboard.writeText(shareUrl);
     uiStore.showToast('Share link created and copied to clipboard!', 'success');
     isOpen.value = false;
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to create share', 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   } finally {
     creating.value = false;
   }

@@ -74,17 +74,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
-import { apiClient } from '../../api/client';
-
-export interface AuditLogEntry {
-  id: string;
-  user_id?: string;
-  username?: string;
-  action: string;
-  ip_address?: string;
-  details?: string;
-  created_at: string;
-}
+import { listAuditLogs, type AuditLogEntry } from '../../api/audit';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -118,8 +108,7 @@ watch(
 async function fetchLogs() {
   loading.value = true;
   try {
-    const resp = await apiClient.get<AuditLogEntry[]>('/audit-logs');
-    logs.value = resp.data;
+    logs.value = await listAuditLogs();
   } catch {
     logs.value = [];
   } finally {

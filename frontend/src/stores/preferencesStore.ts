@@ -1,32 +1,24 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { apiClient } from '../api/client';
+import { getUserPreferences, updateUserPreferences, type UserPreferences } from '../api/preferences';
 import { useThemeStore } from './themeStore';
 import { useUiStore } from './uiStore';
 import { useWorkspaceStore } from './workspaceStore';
 
-export interface UserPreferences {
-  theme: string;
-  language: string;
-  default_view: 'grid' | 'list';
-  list_density: 'comfortable' | 'compact' | 'dense';
-  default_layout: 'single' | 'split';
-  show_hidden: boolean;
-  sort_field: string;
-  sort_order: 'asc' | 'desc';
-  remember_last_dir: boolean;
-}
-
 const DEFAULT_PREFERENCES: UserPreferences = {
-  theme: 'system',
+  theme: 'dark',
   language: 'en',
   default_view: 'grid',
   list_density: 'comfortable',
   default_layout: 'single',
   show_hidden: false,
-  sort_field: 'name',
-  sort_order: 'asc',
-  remember_last_dir: true,
+  default_sort: 'name',
+  sort_direction: 'asc',
+  remember_last_directories: true,
+  confirm_destructive: true,
+  show_breadcrumbs: true,
+  show_file_size: true,
+  show_permissions: true,
 };
 
 export const usePreferencesStore = defineStore('preferences', () => {
@@ -52,17 +44,18 @@ export const usePreferencesStore = defineStore('preferences', () => {
     // 2. Apply UI Density
     const uiStore = useUiStore();
     if (prefs.list_density && ['comfortable', 'compact', 'dense'].includes(prefs.list_density)) {
-      uiStore.listDensity = prefs.list_density;
+      uiStore.listDensity = prefs.list_density as 'comfortable' | 'compact' | 'dense';
     }
 
     // 3. Apply to Workspace Panels if not already initialized
     const workspaceStore = useWorkspaceStore();
     if (prefs.default_view) {
+      const mode = (prefs.default_view === 'list' ? 'list' : 'grid') as 'grid' | 'list';
       if (!workspaceStore.leftPanel.runtime.initialized) {
-        workspaceStore.leftPanel.view.viewMode = prefs.default_view;
+        workspaceStore.leftPanel.view.viewMode = mode;
       }
       if (!workspaceStore.rightPanel.runtime.initialized) {
-        workspaceStore.rightPanel.view.viewMode = prefs.default_view;
+        workspaceStore.rightPanel.view.viewMode = mode;
       }
     }
     if (prefs.show_hidden !== undefined) {
@@ -77,9 +70,9 @@ export const usePreferencesStore = defineStore('preferences', () => {
 
   async function fetchPreferences(): Promise<UserPreferences> {
     try {
-      const resp = await apiClient.get<UserPreferences>('/user/preferences');
-      if (resp.data) {
-        preferences.value = { ...DEFAULT_PREFERENCES, ...resp.data };
+      const data = await getUserPreferences();
+      if (data) {
+        preferences.value = { ...DEFAULT_PREFERENCES, ...data };
         localStorage.setItem('fb:user_preferences', JSON.stringify(preferences.value));
         applyPreferencesToStores(preferences.value);
         isLoaded.value = true;
@@ -97,7 +90,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
     applyPreferencesToStores(preferences.value);
 
     try {
-      await apiClient.put('/user/preferences', preferences.value);
+      await updateUserPreferences(preferences.value);
       return true;
     } catch (err) {
       console.error('Failed to persist user preferences to backend', err);

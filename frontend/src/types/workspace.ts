@@ -33,18 +33,19 @@ export interface SelectionState {
 }
 
 export interface PanelRuntimeState {
-  entries: FileEntry[];
   status: PanelStatus;
-  loading: boolean;
   refreshing: boolean;
   loadingMore: boolean;
-  error: string | null;
   initialized: boolean;
-  hasMore: boolean;
-  nextCursor?: string;
-  totalCount?: number;
   lastLoadedAt?: number;
   lastError?: string;
+  // Optional compat accessors backed by TanStack Query
+  entries?: FileEntry[];
+  loading?: boolean;
+  error?: string | null;
+  hasMore?: boolean;
+  nextCursor?: string;
+  totalCount?: number;
 }
 
 export interface Panel {

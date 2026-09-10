@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { apiClient } from '../api/client';
+import { restoreTrashItem } from '../api/trash';
 import { useWorkspaceStore } from './workspaceStore';
 import { useUiStore } from './uiStore';
 import { renameEntryApi, createFileApi, createDirectoryApi, deleteFilesApi } from '../api/files';
@@ -91,7 +91,7 @@ export const useHistoryStore = defineStore('history', () => {
           break;
         }
         case 'trash': {
-          await apiClient.post(`/trash/restore/${op.trashItemId}`);
+          await restoreTrashItem(op.trashItemId);
           uiStore.showToast(`Restored ${op.originalPath.split('/').pop()} from trash`, 'success');
           break;
         }

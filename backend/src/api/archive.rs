@@ -1,16 +1,16 @@
+use crate::api::extractors::{Json, Path, Query};
 use crate::auth::AuthenticatedUser;
-use crate::errors::AppError;
-use crate::filesystem::archive::ArchiveOverwriteMode;
+use crate::errors::{AppError, ErrorResponse};
+use crate::filesystem::archive::{ArchiveOverwriteMode, VirtualArchiveEntry};
 use crate::services::ArchiveService;
 use crate::state::AppState;
 use axum::{
-    extract::{Path, Query, State},
+    extract::State,
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CompressRequest {
@@ -37,6 +37,25 @@ pub struct ArchiveResponse {
 }
 
 /// Compress files into a ZIP or TAR.GZ archive
+#[utoipa::path(
+    post,
+    path = "/api/v1/connections/{connection_id}/archive/compress",
+    params(
+        ("connection_id" = String, Path, description = "Connection ID"),
+    ),
+    request_body = CompressRequest,
+    responses(
+        (status = 201, description = "Archive created", body = ArchiveResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "archive"
+)]
 pub async fn compress_files(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
@@ -66,6 +85,25 @@ pub async fn compress_files(
 }
 
 /// Extract an archive into a target directory (Requires Create + Write permissions)
+#[utoipa::path(
+    post,
+    path = "/api/v1/connections/{connection_id}/archive/extract",
+    params(
+        ("connection_id" = String, Path, description = "Connection ID"),
+    ),
+    request_body = ExtractRequest,
+    responses(
+        (status = 200, description = "Archive extracted", body = ArchiveResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "archive"
+)]
 pub async fn extract_archive_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
@@ -95,13 +133,32 @@ pub async fn extract_archive_endpoint(
     ))
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct ListArchiveQuery {
     pub archive_path: String,
     pub subpath: Option<String>,
 }
 
 /// List virtual directory contents inside an archive without full extraction
+#[utoipa::path(
+    get,
+    path = "/api/v1/connections/{connection_id}/archive/entries",
+    params(
+        ("connection_id" = String, Path, description = "Connection ID"),
+        ListArchiveQuery
+    ),
+    responses(
+        (status = 200, description = "Virtual archive entries", body = Vec<VirtualArchiveEntry>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "archive"
+)]
 pub async fn list_virtual_archive_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
@@ -116,13 +173,32 @@ pub async fn list_virtual_archive_endpoint(
     Ok((StatusCode::OK, Json(entries)))
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct ReadArchiveQuery {
     pub archive_path: String,
     pub entry_path: String,
 }
 
 /// Stream or download a single entry directly from an archive
+#[utoipa::path(
+    get,
+    path = "/api/v1/connections/{connection_id}/archive/read",
+    params(
+        ("connection_id" = String, Path, description = "Connection ID"),
+        ReadArchiveQuery
+    ),
+    responses(
+        (status = 200, description = "Virtual archive entry file content", content_type = "application/octet-stream"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "archive"
+)]
 pub async fn read_virtual_archive_entry_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
@@ -168,6 +244,25 @@ pub struct ExtractSelectedRequest {
 }
 
 /// Extract specific selected entries from an archive into a destination directory (Requires Create + Write permissions)
+#[utoipa::path(
+    post,
+    path = "/api/v1/connections/{connection_id}/archive/extract-selected",
+    params(
+        ("connection_id" = String, Path, description = "Connection ID"),
+    ),
+    request_body = ExtractSelectedRequest,
+    responses(
+        (status = 200, description = "Selected entries extracted", body = ArchiveResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "archive"
+)]
 pub async fn extract_selected_archive_endpoint(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,

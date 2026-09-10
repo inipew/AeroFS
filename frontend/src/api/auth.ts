@@ -1,22 +1,19 @@
 import { apiClient } from './client';
-import type { UserInfo } from '../types/auth';
+import type { components } from './generated/openapi';
 
-export interface LoginPayload {
-  username: string;
-  password: string;
-}
-
-export interface AuthResponse {
-  user: UserInfo;
-}
+export type UserInfo = components['schemas']['UserInfo'];
+export type LoginPayload = components['schemas']['LoginRequest'];
+export type AuthResponse = components['schemas']['AuthResponse'];
+export type LogoutResponse = components['schemas']['LogoutResponse'];
 
 export async function loginApi(payload: LoginPayload): Promise<AuthResponse> {
   const resp = await apiClient.post<AuthResponse>('/auth/login', payload);
   return resp.data;
 }
 
-export async function logoutApi(): Promise<void> {
-  await apiClient.post('/auth/logout');
+export async function logoutApi(): Promise<LogoutResponse> {
+  const resp = await apiClient.post<LogoutResponse>('/auth/logout');
+  return resp.data;
 }
 
 export async function meApi(): Promise<UserInfo> {

@@ -1,26 +1,68 @@
+use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorResponse};
 use crate::services::connection_service::{
-    ConnectionService, CreateConnectionRequest, UpdateConnectionRequest,
+    ConnectionDetailResponse, ConnectionService, CreateConnectionRequest, TestConnectionResponse,
+    UpdateConnectionRequest,
 };
 use crate::state::AppState;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateConnectionResponse {
+    pub success: bool,
+    pub id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConnectionActionResponse {
+    pub success: bool,
+    pub message: String,
+}
 
 /// List all available connections from database (scoped to user's permissions)
+#[utoipa::path(
+    get,
+    path = "/api/v1/connections",
+    responses(
+        (status = 200, description = "List of storage connections", body = Vec<ConnectionDetailResponse>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "connections"
+)]
 pub async fn list_connections(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
     let connections = ConnectionService::list_connections(&state, &user).await?;
-    Ok(Json(connections))
+    Ok(axum::Json(connections))
 }
 
 /// Create a new connection with encrypted credential storage (Admin only, Fail-Closed Transactional)
+#[utoipa::path(
+    post,
+    path = "/api/v1/connections",
+    request_body = CreateConnectionRequest,
+    responses(
+        (status = 201, description = "Connection created successfully", body = CreateConnectionResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Forbidden - Admin required", body = ErrorResponse),
+        (status = 409, description = "Conflict - Connection name already exists", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "connections"
+)]
 pub async fn create_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -31,15 +73,35 @@ pub async fn create_connection(
 
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({
-            "success": true,
-            "id": id,
-            "message": format!("Connection '{}' created successfully", name),
-        })),
+        axum::Json(CreateConnectionResponse {
+            success: true,
+            id,
+            message: format!("Connection '{}' created successfully", name),
+        }),
     ))
 }
 
 /// Update an existing connection (Admin only, with atomic hot-swap)
+#[utoipa::path(
+    put,
+    path = "/api/v1/connections/{id}",
+    params(
+        ("id" = String, Path, description = "Connection identifier")
+    ),
+    request_body = UpdateConnectionRequest,
+    responses(
+        (status = 200, description = "Connection updated successfully", body = ConnectionActionResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Forbidden - Admin required", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "connections"
+)]
 pub async fn update_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -48,13 +110,31 @@ pub async fn update_connection(
 ) -> Result<impl IntoResponse, AppError> {
     ConnectionService::update_connection(&state, &user, &id, payload).await?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": format!("Connection '{}' updated successfully", id),
-    })))
+    Ok(axum::Json(ConnectionActionResponse {
+        success: true,
+        message: format!("Connection '{}' updated successfully", id),
+    }))
 }
 
 /// Delete a connection
+#[utoipa::path(
+    delete,
+    path = "/api/v1/connections/{id}",
+    params(
+        ("id" = String, Path, description = "Connection identifier")
+    ),
+    responses(
+        (status = 200, description = "Connection deleted successfully", body = ConnectionActionResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Forbidden - Admin required", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "connections"
+)]
 pub async fn delete_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -62,28 +142,62 @@ pub async fn delete_connection(
 ) -> Result<impl IntoResponse, AppError> {
     ConnectionService::delete_connection(&state, &user, &id).await?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": format!("Connection '{}' deleted", id),
-    })))
+    Ok(axum::Json(ConnectionActionResponse {
+        success: true,
+        message: format!("Connection '{}' deleted", id),
+    }))
 }
 
 /// Test connection connectivity
+#[utoipa::path(
+    post,
+    path = "/api/v1/connections/{id}/test",
+    params(
+        ("id" = String, Path, description = "Connection identifier")
+    ),
+    responses(
+        (status = 200, description = "Connection test completed", body = TestConnectionResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "connections"
+)]
 pub async fn test_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let res = ConnectionService::test_connection(&state, &user, &id).await?;
-    Ok(Json(res))
+    Ok(axum::Json(res))
 }
 
 /// Get a specific connection and its capabilities
+#[utoipa::path(
+    get,
+    path = "/api/v1/connections/{id}",
+    params(
+        ("id" = String, Path, description = "Connection identifier")
+    ),
+    responses(
+        (status = 200, description = "Connection details and capabilities", body = ConnectionDetailResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "connections"
+)]
 pub async fn get_connection(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let res = ConnectionService::get_connection(&state, &user, &id).await?;
-    Ok(Json(res))
+    Ok(axum::Json(res))
 }

@@ -67,7 +67,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { compressFilesApi } from '../../api/archive';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useUiStore } from '../../stores/uiStore';
 
@@ -118,7 +119,6 @@ watch(
 async function handleCompress() {
   if (!archiveName.value.trim()) return;
   compressing.value = true;
-
   try {
     const destFile = props.basePath === '/'
       ? `/${archiveName.value.trim()}`
@@ -132,18 +132,19 @@ async function handleCompress() {
       return p.replace(/^\/+/, '');
     });
 
-    await apiClient.post(`/connections/${props.connectionId}/archive/compress`, {
-      base_path: props.basePath,
-      relative_paths: relativePaths,
-      destination_file: destFile,
-      format: format.value,
-    });
+    await compressFilesApi(
+      props.connectionId,
+      props.basePath,
+      relativePaths,
+      destFile,
+      format.value
+    );
 
     uiStore.showToast(`Created archive: ${archiveName.value}`, 'success');
     isOpen.value = false;
     await workspaceStore.refreshAll();
   } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Compression failed', 'error');
+    uiStore.showToast(normalizeApiError(err).message || 'Compression failed', 'error');
   } finally {
     compressing.value = false;
   }

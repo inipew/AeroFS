@@ -231,7 +231,7 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useThemeStore } from '../../stores/themeStore';
 import { useUiStore } from '../../stores/uiStore';
-import { apiClient } from '../../api/client';
+import { getStorageInfoApi } from '../../api/files';
 
 const emit = defineEmits<{
   (e: 'openConnectionDialog'): void;
@@ -268,9 +268,9 @@ const storageInfo = ref({
 async function fetchStorageInfo() {
   const connId = activePanel.value.connectionId || 'local';
   try {
-    const resp = await apiClient.get(`/connections/${connId}/storage-info`);
-    if (resp.data) {
-      storageInfo.value = resp.data;
+    const data = await getStorageInfoApi(connId);
+    if (data) {
+      storageInfo.value = data;
     }
   } catch {
     // Fallback based on connection

@@ -790,7 +790,8 @@ import 'ace-builds/src-noconflict/mode-sql';
 import 'ace-builds/src-noconflict/mode-dockerfile';
 
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { updateFileContentApi } from '../../api/files';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useUiStore } from '../../stores/uiStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useThemeStore } from '../../stores/themeStore';
@@ -1425,23 +1426,18 @@ async function handleSave(): Promise<boolean> {
   const currentText = editor.value.getValue();
 
   try {
-    const headers: Record<string, string> = {};
-    if (uiStore.editorEtag) {
-      headers['If-Match'] = uiStore.editorEtag;
-    }
-
     const connId = uiStore.editorConnectionId || fileStore.currentConnectionId || 'local';
-    const resp = await apiClient.put(
-      `/connections/${connId}/files/content`,
+    const resp = await updateFileContentApi(
+      connId,
+      uiStore.editorFile.path,
+      currentText,
       {
-        path: uiStore.editorFile.path,
-        content: currentText,
-      },
-      { headers }
+        ifMatch: uiStore.editorEtag || undefined,
+      }
     );
 
-    if (resp.headers['etag']) {
-      uiStore.editorEtag = resp.headers['etag'];
+    if (resp.etag) {
+      uiStore.editorEtag = resp.etag;
     }
 
     savedContent.value = currentText;
@@ -1457,7 +1453,7 @@ async function handleSave(): Promise<boolean> {
     if (err.response?.status === 409 || err.response?.status === 412) {
       isConflictModalOpen.value = true;
     } else {
-      uiStore.showToast(err.response?.data?.error?.message || 'Failed to save file', 'error');
+      uiStore.showToast(normalizeApiError(err).message || 'Failed to save file', 'error');
     }
     return false;
   } finally {
@@ -1472,20 +1468,16 @@ async function handleForceSave() {
 
   try {
     const connId = uiStore.editorConnectionId || fileStore.currentConnectionId || 'local';
-    const forceResp = await apiClient.put(
-      `/connections/${connId}/files/content`,
+    const forceResp = await updateFileContentApi(
+      connId,
+      uiStore.editorFile.path,
+      currentText,
       {
-        path: uiStore.editorFile.path,
-        content: currentText,
-      },
-      {
-        headers: {
-          'X-Force-Overwrite': 'true',
-        },
+        forceOverwrite: true,
       }
     );
-    if (forceResp.headers['etag']) {
-      uiStore.editorEtag = forceResp.headers['etag'];
+    if (forceResp.etag) {
+      uiStore.editorEtag = forceResp.etag;
     }
     savedContent.value = currentText;
     uiStore.editorContent = currentText;
@@ -1495,7 +1487,7 @@ async function handleForceSave() {
     uiStore.showToast(`Force saved ${uiStore.editorFile.name}`, 'warning');
     await workspaceStore.refreshAll();
   } catch (forceErr: any) {
-    uiStore.showToast(forceErr.response?.data?.error?.message || 'Force save failed', 'error');
+    uiStore.showToast(normalizeApiError(forceErr).message || 'Force save failed', 'error');
   } finally {
     saving.value = false;
   }

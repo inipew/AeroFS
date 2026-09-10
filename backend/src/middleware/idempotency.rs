@@ -104,12 +104,10 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
                     }
                     CacheEntry::InProgress(t) if t.elapsed() < IN_FLIGHT_TIMEOUT => {
                         // Concurrent request with same idempotency key is currently processing
-                        return Response::builder()
-                            .status(StatusCode::CONFLICT)
-                            .body(Body::from(
-                                r#"{"error":{"code":"CONCURRENT_IDEMPOTENT_REQUEST","message":"An identical request is currently being processed"}}"#,
-                            ))
-                            .unwrap_or_else(|_| StatusCode::CONFLICT.into_response());
+                        return crate::errors::AppError::ConcurrentIdempotentRequest(
+                            "An identical request is currently being processed".to_string(),
+                        )
+                        .into_response();
                     }
                     _ => {}
                 }

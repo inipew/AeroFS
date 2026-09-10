@@ -91,7 +91,14 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import {
+  listTrash,
+  restoreTrashItem,
+  deleteTrashItem,
+  emptyTrash,
+  type TrashItem,
+} from '../../api/trash';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 
@@ -107,7 +114,7 @@ const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
 
 const isOpen = ref(props.modelValue);
-const trashItems = ref<any[]>([]);
+const trashItems = ref<TrashItem[]>([]);
 const loading = ref(false);
 
 watch(
@@ -130,10 +137,9 @@ watch(
 async function fetchTrash() {
   loading.value = true;
   try {
-    const resp = await apiClient.get('/trash');
-    trashItems.value = resp.data;
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to load trash', 'error');
+    trashItems.value = await listTrash();
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   } finally {
     loading.value = false;
   }
@@ -141,33 +147,33 @@ async function fetchTrash() {
 
 async function handleRestore(id: string) {
   try {
-    await apiClient.post(`/trash/restore/${id}`);
+    await restoreTrashItem(id);
     uiStore.showToast('Item restored successfully', 'success');
     await fetchTrash();
     await workspaceStore.refreshAll();
-  } catch (err: any) {
-    uiStore.showToast('Failed to restore item', 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   }
 }
 
 async function handlePermanentDelete(id: string) {
   try {
-    await apiClient.delete(`/trash/${id}`);
+    await deleteTrashItem(id);
     uiStore.showToast('Item permanently deleted', 'info');
     await fetchTrash();
-  } catch (err: any) {
-    uiStore.showToast('Failed to delete item', 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   }
 }
 
 async function handleEmptyTrash() {
   if (confirm('Are you sure you want to permanently empty the entire trash?')) {
     try {
-      await apiClient.delete('/trash/empty');
+      await emptyTrash();
       uiStore.showToast('Trash emptied', 'success');
       await fetchTrash();
-    } catch (err: any) {
-      uiStore.showToast('Failed to empty trash', 'error');
+    } catch (err: unknown) {
+      uiStore.showToast(normalizeApiError(err).message, 'error');
     }
   }
 }

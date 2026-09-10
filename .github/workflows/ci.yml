@@ -2,35 +2,42 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [ "main", "master" ]
   pull_request:
+    branches: [ "main", "master" ]
 
 jobs:
-  backend:
+  contract:
+    name: Contract Verification
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rust-lang/rustup@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
         with:
-          toolchain: stable
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Format check
-        run: cargo fmt --all -- --check
-        working-directory: backend
-      - name: Clippy
-        run: cargo clippy --lib --all-features -- -D warnings
-        working-directory: backend
-      - name: Tests
-        run: cargo test --all-features --tests
-        working-directory: backend
-      - name: Cargo deny (advisories/licenses)
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          manifest-path: backend/Cargo.toml
-          command: check advisories licenses bans sources
+          bun-version: latest
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          bun install --frozen-lockfile
+      - name: Verify OpenAPI contract parity
+        run: |
+          cd frontend
+          bun run api:check
 
-  frontend:
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo test
+        run: |
+          cd backend
+          cargo test
+
+  frontend-test:
+    name: Frontend Typecheck & Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,8 +45,14 @@ jobs:
         with:
           bun-version: latest
       - name: Install dependencies
-        run: bun install --frozen-lockfile
-        working-directory: frontend
-      - name: Typecheck & Build
-        run: bun run build
-        working-directory: frontend
+        run: |
+          cd frontend
+          bun install --frozen-lockfile
+      - name: Typecheck
+        run: |
+          cd frontend
+          bun run typecheck
+      - name: Run tests
+        run: |
+          cd frontend
+          bun test

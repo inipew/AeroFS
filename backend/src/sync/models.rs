@@ -81,7 +81,7 @@ pub struct FileManifest {
     pub etag: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncOpKind {
     Create,
@@ -92,7 +92,7 @@ pub enum SyncOpKind {
     Conflict,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SyncOperation {
     pub relative_path: String,
     pub kind: SyncOpKind,

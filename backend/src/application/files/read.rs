@@ -1,6 +1,6 @@
 use super::FileApplicationService;
 use crate::auth::UserInfo;
-use crate::domain::{VfsPath, FileMetadata};
+use crate::domain::{FileMetadata, VfsPath};
 use crate::errors::{AppError, VfsError};
 
 #[derive(Debug, Clone)]
@@ -19,14 +19,20 @@ impl FileApplicationService {
     ) -> Result<FileMetadata, AppError> {
         use crate::auth::permissions::{check_permission, PermissionAction};
         check_permission(&self.db, user, connection.as_str(), PermissionAction::Read).await?;
-        let provider = self.registry.get(connection.as_str()).await.ok_or_else(|| {
-            VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-        })?;
+        let provider = self
+            .registry
+            .get(connection.as_str())
+            .await
+            .ok_or_else(|| {
+                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
+            })?;
         let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
-        self.metadata_cache.get_or_fetch(connection.as_str(), &raw_path, || async {
-            let meta = provider.stat(&vfs_path).await?;
-            Ok(meta)
-        }).await
+        self.metadata_cache
+            .get_or_fetch(connection.as_str(), &raw_path, || async {
+                let meta = provider.stat(&vfs_path).await?;
+                Ok(meta)
+            })
+            .await
     }
 
     pub async fn read_typed(

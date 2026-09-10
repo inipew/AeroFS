@@ -1,23 +1,44 @@
+use crate::api::extractors::{Json, Path, Query};
 use crate::auth::AuthenticatedUser;
 use crate::domain::VfsPath;
-use crate::errors::AppError;
-use crate::services::share_service::{CreateShareRequest, ShareService};
+use crate::errors::{AppError, ErrorResponse};
+use crate::services::share_service::{CreateShareRequest, ShareItem, ShareService};
 use crate::state::AppState;
 use axum::{
-    extract::{Path, Query, State},
+    extract::State,
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
-    Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
+use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct PublicShareQuery {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ShareActionResponse {
+    pub success: bool,
+    pub message: String,
+}
+
 /// List shares with strict user ownership filter (Admins can view all)
+#[utoipa::path(
+    get,
+    path = "/api/v1/shares",
+    responses(
+        (status = 200, description = "List of shares", body = Vec<ShareItem>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "shares"
+)]
 pub async fn list_shares(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -27,6 +48,22 @@ pub async fn list_shares(
 }
 
 /// Create a new shared link for a file or directory
+#[utoipa::path(
+    post,
+    path = "/api/v1/shares",
+    request_body = CreateShareRequest,
+    responses(
+        (status = 201, description = "Share created", body = ShareItem),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "shares"
+)]
 pub async fn create_share(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -37,6 +74,25 @@ pub async fn create_share(
 }
 
 /// Delete / revoke a shared link
+#[utoipa::path(
+    delete,
+    path = "/api/v1/shares/{id}",
+    params(
+        ("id" = String, Path, description = "Share ID"),
+    ),
+    responses(
+        (status = 200, description = "Share revoked", body = ShareActionResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "shares"
+)]
 pub async fn delete_share(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -44,13 +100,29 @@ pub async fn delete_share(
 ) -> Result<impl IntoResponse, AppError> {
     ShareService::delete_share(&state, &user, &share_id).await?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Share link revoked",
-    })))
+    Ok(Json(ShareActionResponse {
+        success: true,
+        message: "Share link revoked".to_string(),
+    }))
 }
 
 /// Public access endpoint for downloading shared files without authentication
+#[utoipa::path(
+    get,
+    path = "/api/v1/shares/public/{token}",
+    params(
+        ("token" = String, Path, description = "Public share token"),
+        PublicShareQuery
+    ),
+    responses(
+        (status = 200, description = "File content stream", content_type = "application/octet-stream"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Password required or invalid", body = ErrorResponse),
+        (status = 404, description = "Share expired or not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    tag = "shares"
+)]
 pub async fn public_get_share(
     State(state): State<AppState>,
     Path(token): Path<String>,

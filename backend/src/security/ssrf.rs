@@ -151,7 +151,8 @@ pub async fn validate_after_dns(
         if is_private_ip(addr.ip()) {
             return Err(VfsError::Security(SecurityError::SsrfBlocked(format!(
                 "Host '{}' resolves to private IP {} blocked by SSRF policy",
-                host, addr.ip()
+                host,
+                addr.ip()
             ))));
         }
     }

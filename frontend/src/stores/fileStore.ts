@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { computed } from 'vue';
-import { useQueryClient } from '@tanstack/vue-query';
+import { queryClient } from '../queryClient';
 import { useWorkspaceStore } from './workspaceStore';
 import {
   createFileApi,
@@ -17,12 +17,11 @@ import { joinPath, parentPath } from '../utils/path';
 import type { FileEntry } from '../types/vfs';
 
 /**
- * FileStore acts as an ergonomic facade directly bound to the canonical
+ * FileStore acts as an ergonomic mutation facade directly bound to the canonical
  * `workspaceStore.activePanel`, ensuring single source of truth across all components.
  */
 export const useFileStore = defineStore('file', () => {
   const workspaceStore = useWorkspaceStore();
-  const queryClient = useQueryClient();
 
   /** Invalidate TanStack Query directory cache for a given path after mutations */
   function invalidateDirectory(connectionId: string, path: string) {
@@ -44,9 +43,9 @@ export const useFileStore = defineStore('file', () => {
   });
 
   const entries = computed<FileEntry[]>({
-    get: () => workspaceStore.activePanel.runtime.entries,
+    get: () => workspaceStore.activePanel.entries,
     set: (val: FileEntry[]) => {
-      workspaceStore.activePanel.runtime.entries = val;
+      workspaceStore.activePanel.entries = val;
     },
   });
 
@@ -157,7 +156,45 @@ export const useFileStore = defineStore('file', () => {
     workspaceStore.activePanel.selection.paths = [];
   }
 
-  // --- OPTIMISTIC MUTATION ENGINE (Plan 54 P0.16, P1.41) ---
+  // --- OPTIMISTIC MUTATION ENGINE ON QUERY CACHE ---
+
+  function updateQueryDirectoryCache(
+    connectionId: string,
+    dirPath: string,
+    updater: (entries: FileEntry[]) => FileEntry[]
+  ): Array<[readonly unknown[], unknown]> {
+    const matchingQueries = queryClient.getQueriesData<{ pages: Array<{ entries: FileEntry[] }> }>({
+      queryKey: ['directory', connectionId, dirPath],
+      exact: false,
+    });
+    const snapshots: Array<[readonly unknown[], unknown]> = [];
+
+    for (const [key, oldData] of matchingQueries) {
+      if (!oldData?.pages) continue;
+      snapshots.push([key, oldData]);
+
+      queryClient.setQueryData(key, {
+        ...oldData,
+        pages: oldData.pages.map((page, idx) => {
+          if (idx === 0) {
+            return {
+              ...page,
+              entries: updater(page.entries),
+            };
+          }
+          return page;
+        }),
+      });
+    }
+
+    return snapshots;
+  }
+
+  function restoreQueryDirectoryCache(snapshots: Array<[readonly unknown[], unknown]>) {
+    for (const [key, oldData] of snapshots) {
+      queryClient.setQueryData(key, oldData);
+    }
+  }
 
   async function createFile(name: string) {
     const fullPath = joinPath(currentPath.value, name);
@@ -170,15 +207,18 @@ export const useFileStore = defineStore('file', () => {
       is_hidden: name.startsWith('.'),
     };
 
-    // Optimistic addition
-    entries.value = [...entries.value, optimisticEntry];
+    const snapshots = updateQueryDirectoryCache(
+      currentConnectionId.value,
+      currentPath.value,
+      (current) => [optimisticEntry, ...current.filter((e) => e.path !== fullPath)]
+    );
 
     try {
       await createFileApi(currentConnectionId.value, fullPath);
-      invalidateDirectory(currentConnectionId.value, currentPath.value);
+      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, currentPath.value] });
+      queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, fullPath] });
     } catch (err) {
-      // Revert on failure
-      entries.value = entries.value.filter((e) => e.path !== fullPath);
+      restoreQueryDirectoryCache(snapshots);
       throw err;
     }
   }
@@ -193,15 +233,17 @@ export const useFileStore = defineStore('file', () => {
       is_hidden: name.startsWith('.'),
     };
 
-    // Optimistic addition
-    entries.value = [...entries.value, optimisticEntry];
+    const snapshots = updateQueryDirectoryCache(
+      currentConnectionId.value,
+      currentPath.value,
+      (current) => [optimisticEntry, ...current.filter((e) => e.path !== fullPath)]
+    );
 
     try {
       await createDirectoryApi(currentConnectionId.value, fullPath);
-      invalidateDirectory(currentConnectionId.value, currentPath.value);
+      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, currentPath.value] });
     } catch (err) {
-      // Revert on failure
-      entries.value = entries.value.filter((e) => e.path !== fullPath);
+      restoreQueryDirectoryCache(snapshots);
       throw err;
     }
   }
@@ -210,20 +252,24 @@ export const useFileStore = defineStore('file', () => {
     const targets = [...selectedEntries.value];
     if (targets.length === 0) return;
 
-    const previousEntries = [...entries.value];
     const previousSelection = [...selectedEntries.value];
     const targetSet = new Set(targets);
 
-    // Optimistic removal
-    entries.value = entries.value.filter((e) => !targetSet.has(e.path));
+    const snapshots = updateQueryDirectoryCache(
+      currentConnectionId.value,
+      currentPath.value,
+      (current) => current.filter((e) => !targetSet.has(e.path))
+    );
     selectedEntries.value = [];
 
     try {
       await deleteFilesApi(currentConnectionId.value, targets);
-      invalidateDirectory(currentConnectionId.value, currentPath.value);
+      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, currentPath.value] });
+      for (const target of targets) {
+        queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, target] });
+      }
     } catch (err) {
-      // Revert on failure
-      entries.value = previousEntries;
+      restoreQueryDirectoryCache(snapshots);
       selectedEntries.value = previousSelection;
       throw err;
     }
@@ -233,26 +279,30 @@ export const useFileStore = defineStore('file', () => {
     const parent = parentPath(from);
     const to = joinPath(parent, newName);
 
-    const previousEntries = [...entries.value];
-    // Optimistic rename
-    entries.value = entries.value.map((e) => {
-      if (e.path === from) {
-        return {
-          ...e,
-          name: newName,
-          path: to,
-          is_hidden: newName.startsWith('.'),
-        };
-      }
-      return e;
-    });
+    const snapshots = updateQueryDirectoryCache(
+      currentConnectionId.value,
+      parent,
+      (current) =>
+        current.map((e) => {
+          if (e.path === from) {
+            return {
+              ...e,
+              name: newName,
+              path: to,
+              is_hidden: newName.startsWith('.'),
+            };
+          }
+          return e;
+        })
+    );
 
     try {
       await renameEntryApi(currentConnectionId.value, from, to);
-      invalidateDirectory(currentConnectionId.value, parent);
+      queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, parent] });
+      queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, from] });
+      queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, to] });
     } catch (err) {
-      // Revert on failure
-      entries.value = previousEntries;
+      restoreQueryDirectoryCache(snapshots);
       throw err;
     }
   }
@@ -261,6 +311,8 @@ export const useFileStore = defineStore('file', () => {
     const fileName = from.split('/').pop() || 'file';
     const to = joinPath(destDir, fileName);
     await copyEntryApi(currentConnectionId.value, from, to);
+    queryClient.invalidateQueries({ queryKey: ['directory', currentConnectionId.value, destDir] });
+    queryClient.invalidateQueries({ queryKey: ['metadata', currentConnectionId.value, to] });
     await workspaceStore.refreshActive();
   }
 

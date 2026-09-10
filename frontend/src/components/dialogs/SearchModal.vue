@@ -127,7 +127,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { searchFiles } from '../../api/search';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import type { FileEntry } from '../../types/vfs';
@@ -248,16 +248,14 @@ async function performSearch() {
       const allResults: SearchResultItem[] = [];
       for (const conn of connStore.connections) {
         try {
-          const resp = await apiClient.get<any>(`/connections/${conn.id}/search`, {
-            params: {
-              path: '/',
-              query: query.value.trim(),
-              regex: isRegex.value,
-            },
+          const data = await searchFiles(conn.id, {
+            path: '/',
+            query: query.value.trim(),
+            regex: isRegex.value,
           });
-          const items: FileEntry[] = Array.isArray(resp.data) ? resp.data : resp.data.results || [];
+          const items = (data.results as any[]) || [];
           for (const item of items) {
-            allResults.push({ connectionId: conn.id, entry: item });
+            allResults.push({ connectionId: conn.id, entry: item as FileEntry });
           }
         } catch {
           // Continue searching other connections
@@ -266,17 +264,15 @@ async function performSearch() {
       results.value = allResults;
     } else {
       const searchPath = scope.value === 'current_dir' ? activeP.location.path : '/';
-      const resp = await apiClient.get<any>(`/connections/${activeP.location.connectionId}/search`, {
-        params: {
-          path: searchPath,
-          query: query.value.trim(),
-          regex: isRegex.value,
-        },
+      const data = await searchFiles(activeP.location.connectionId, {
+        path: searchPath,
+        query: query.value.trim(),
+        regex: isRegex.value,
       });
-      const items: FileEntry[] = Array.isArray(resp.data) ? resp.data : resp.data.results || [];
+      const items = (data.results as any[]) || [];
       results.value = items.map((item) => ({
         connectionId: activeP.location.connectionId,
-        entry: item,
+        entry: item as FileEntry,
       }));
     }
   } catch {

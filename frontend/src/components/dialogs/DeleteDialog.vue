@@ -131,7 +131,8 @@
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { deleteFilesApi } from '../../api/files';
-import { apiClient } from '../../api/client';
+import { moveToTrash } from '../../api/trash';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -164,13 +165,10 @@ async function handleConfirmDelete() {
 
     if (deleteMode.value === 'trash') {
       // Soft delete: move to .trash
-      const resp = await apiClient.post('/trash/move', {
-        connection_id: connId,
-        paths: uiStore.deleteTargets,
-      });
+      const data = await moveToTrash(connId, uiStore.deleteTargets);
 
-      if (resp.data.moved_items) {
-        for (const item of resp.data.moved_items) {
+      if (data.moved_items) {
+        for (const item of data.moved_items) {
           historyStore.pushOperation({
             type: 'trash',
             description: `Moved ${item.original_path.split('/').pop()} to Trash`,
@@ -181,7 +179,7 @@ async function handleConfirmDelete() {
         }
       }
 
-      uiStore.showToast(resp.data.message || 'Moved item(s) to Recycle Bin', 'success');
+      uiStore.showToast(data.message || 'Moved item(s) to Recycle Bin', 'success');
     } else {
       // Permanent delete
       await deleteFilesApi(connId, uiStore.deleteTargets);
@@ -193,7 +191,7 @@ async function handleConfirmDelete() {
     // Immediately refresh workspace
     await workspaceStore.refreshAll();
   } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Delete failed', 'error');
+    uiStore.showToast(normalizeApiError(err).message || 'Delete failed', 'error');
   } finally {
     loading.value = false;
   }

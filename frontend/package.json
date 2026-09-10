@@ -8,7 +8,11 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "bun test",
+    "api:export": "cargo run --manifest-path ../backend/Cargo.toml --bin export-openapi > ../backend/openapi.json",
+    "api:generate": "bunx openapi-typescript ../backend/openapi.json -o ./src/api/generated/openapi.ts",
+    "api:check": "bun run api:export && bun run api:generate && git diff --exit-code ../backend/openapi.json ./src/api/generated/openapi.ts"
   },
   "dependencies": {
     "@tanstack/vue-query": "^5.102.8",
@@ -25,6 +29,7 @@
     "@types/node": "^24.13.3",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.2.2",

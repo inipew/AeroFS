@@ -1,6 +1,6 @@
 use super::FileApplicationService;
 use crate::auth::UserInfo;
-use crate::domain::{VfsPath, PermissionInheritanceMode, FileMetadata};
+use crate::domain::{FileMetadata, PermissionInheritanceMode, VfsPath};
 use crate::errors::{AppError, VfsError};
 use std::io::Cursor;
 
@@ -18,11 +18,21 @@ impl FileApplicationService {
         use crate::domain::policy::resolve_destination_permissions;
 
         check_permission(&self.db, user, connection.as_str(), PermissionAction::Write).await?;
-        check_permission(&self.db, user, connection.as_str(), PermissionAction::Create).await?;
+        check_permission(
+            &self.db,
+            user,
+            connection.as_str(),
+            PermissionAction::Create,
+        )
+        .await?;
 
-        let provider = self.registry.get(connection.as_str()).await.ok_or_else(|| {
-            VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-        })?;
+        let provider = self
+            .registry
+            .get(connection.as_str())
+            .await
+            .ok_or_else(|| {
+                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
+            })?;
 
         let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
 
@@ -73,38 +83,62 @@ impl FileApplicationService {
         .await;
 
         if caps.atomic_rename {
-            let tmp_vfs = VfsPath::new(connection.as_str(), format!("{}.aerofs.tmp", vfs_path.path))?;
+            let tmp_vfs =
+                VfsPath::new(connection.as_str(), format!("{}.aerofs.tmp", vfs_path.path))?;
             let cursor = Cursor::new(content.clone());
-            if provider.write_stream(&tmp_vfs, Box::new(cursor)).await.is_ok() {
+            if provider
+                .write_stream(&tmp_vfs, Box::new(cursor))
+                .await
+                .is_ok()
+            {
                 if caps.permissions {
                     if let Some(ref perms) = target_perms {
                         let _ = provider.set_permissions(&tmp_vfs, perms).await;
                     }
                 }
                 if let Err(rename_err) = provider.rename(&tmp_vfs, &vfs_path).await {
-                    tracing::warn!("Atomic rename failed {}→{}: {}. Fallback direct", tmp_vfs.path, vfs_path.path, rename_err);
+                    tracing::warn!(
+                        "Atomic rename failed {}→{}: {}. Fallback direct",
+                        tmp_vfs.path,
+                        vfs_path.path,
+                        rename_err
+                    );
                     let _ = provider.delete(&tmp_vfs).await;
                     let fallback = Cursor::new(content);
                     provider.write_stream(&vfs_path, Box::new(fallback)).await?;
                     if caps.permissions {
-                        if let Some(ref perms) = target_perms { let _ = provider.set_permissions(&vfs_path, perms).await; }
+                        if let Some(ref perms) = target_perms {
+                            let _ = provider.set_permissions(&vfs_path, perms).await;
+                        }
                     }
                 } else if caps.permissions {
-                    if let Some(ref perms) = target_perms { let _ = provider.set_permissions(&vfs_path, perms).await; }
+                    if let Some(ref perms) = target_perms {
+                        let _ = provider.set_permissions(&vfs_path, perms).await;
+                    }
                 }
             } else {
                 let fallback = Cursor::new(content);
                 provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-                if caps.permissions { if let Some(ref perms) = target_perms { let _ = provider.set_permissions(&vfs_path, perms).await; } }
+                if caps.permissions {
+                    if let Some(ref perms) = target_perms {
+                        let _ = provider.set_permissions(&vfs_path, perms).await;
+                    }
+                }
             }
         } else {
             let cursor = Cursor::new(content);
             provider.write_stream(&vfs_path, Box::new(cursor)).await?;
-            if caps.permissions { if let Some(ref perms) = target_perms { let _ = provider.set_permissions(&vfs_path, perms).await; } }
+            if caps.permissions {
+                if let Some(ref perms) = target_perms {
+                    let _ = provider.set_permissions(&vfs_path, perms).await;
+                }
+            }
         }
 
         let meta = provider.stat(&vfs_path).await?;
-        self.metadata_cache.invalidate(connection.as_str(), &raw_path).await;
+        self.metadata_cache
+            .invalidate(connection.as_str(), &raw_path)
+            .await;
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&user.id),
@@ -116,7 +150,17 @@ impl FileApplicationService {
             Some(&format!("Bytes written: {}", meta.size)),
         )
         .await;
-        let _ = self.event_journal.append(crate::events::DomainEvent::file_change(connection.as_str(), &vfs_path.path, "write"), None).await;
+        let _ = self
+            .event_journal
+            .append(
+                crate::events::DomainEvent::file_change(
+                    connection.as_str(),
+                    &vfs_path.path,
+                    "write",
+                ),
+                None,
+            )
+            .await;
         Ok(meta)
     }
 
@@ -127,6 +171,8 @@ impl FileApplicationService {
         path: String,
         content: Vec<u8>,
     ) -> Result<(), AppError> {
-        self.create_or_write_typed(user, connection, path, content, None).await.map(|_| ())
+        self.create_or_write_typed(user, connection, path, content, None)
+            .await
+            .map(|_| ())
     }
 }

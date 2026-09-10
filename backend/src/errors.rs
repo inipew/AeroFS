@@ -27,6 +27,9 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    #[error("Method not allowed: {0}")]
+    MethodNotAllowed(String),
+
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
@@ -53,6 +56,9 @@ pub enum AppError {
 
     #[error("Checksum mismatch: {0}")]
     ChecksumMismatch(String),
+
+    #[error("Concurrent idempotent request: {0}")]
+    ConcurrentIdempotentRequest(String),
 
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -188,6 +194,7 @@ pub enum ErrorCode {
     PermissionDenied,
     AlreadyExists,
     BadRequest,
+    MethodNotAllowed,
     Conflict,
     TransferCancelled,
     PreconditionFailed,
@@ -195,6 +202,7 @@ pub enum ErrorCode {
     PayloadTooLarge,
     InsufficientStorage,
     ChecksumMismatch,
+    ConcurrentIdempotentRequest,
     RateLimited,
     ServiceUnavailable,
     StorageTimeout,
@@ -214,6 +222,7 @@ impl ErrorCode {
             Self::PermissionDenied => "PERMISSION_DENIED",
             Self::AlreadyExists => "ALREADY_EXISTS",
             Self::BadRequest => "BAD_REQUEST",
+            Self::MethodNotAllowed => "METHOD_NOT_ALLOWED",
             Self::Conflict => "CONFLICT",
             Self::TransferCancelled => "TRANSFER_CANCELLED",
             Self::PreconditionFailed => "PRECONDITION_FAILED",
@@ -221,6 +230,7 @@ impl ErrorCode {
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             Self::InsufficientStorage => "INSUFFICIENT_STORAGE",
             Self::ChecksumMismatch => "CHECKSUM_MISMATCH",
+            Self::ConcurrentIdempotentRequest => "CONCURRENT_IDEMPOTENT_REQUEST",
             Self::RateLimited => "RATE_LIMITED",
             Self::ServiceUnavailable => "SERVICE_UNAVAILABLE",
             Self::StorageTimeout => "STORAGE_TIMEOUT",
@@ -327,6 +337,14 @@ impl IntoResponse for AppError {
                 Some("check_request_payload".to_string()),
                 msg.clone(),
             ),
+            AppError::MethodNotAllowed(msg) => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "METHOD_NOT_ALLOWED",
+                ErrorCategory::Validation,
+                false,
+                Some("check_allowed_http_methods".to_string()),
+                msg.clone(),
+            ),
             AppError::Conflict(msg) => (
                 StatusCode::CONFLICT,
                 "CONFLICT",
@@ -408,6 +426,14 @@ impl IntoResponse for AppError {
                 Some("retry_operation".to_string()),
                 msg.clone(),
             ),
+            AppError::ConcurrentIdempotentRequest(msg) => (
+                StatusCode::CONFLICT,
+                "CONCURRENT_IDEMPOTENT_REQUEST",
+                ErrorCategory::Conflict,
+                false,
+                Some("retry_after_in_flight_request_completes".to_string()),
+                msg.clone(),
+            ),
             AppError::Vfs(vfs_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "VFS_ERROR",
@@ -417,15 +443,14 @@ impl IntoResponse for AppError {
                 vfs_err.to_string(),
             ),
             AppError::Internal(err) => {
-                let err_msg = format!("Internal error: {:?}", err);
-                tracing::error!("{}", err_msg);
+                tracing::error!("Internal server error: {:?}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL_ERROR",
                     ErrorCategory::Internal,
                     false,
                     Some("contact_system_administrator".to_string()),
-                    err_msg,
+                    "An internal server error occurred".to_string(),
                 )
             }
         };

@@ -2,11 +2,11 @@ use super::planner::{TransferPlanner, TransferStrategy};
 use crate::db::DbPool;
 use crate::domain::VfsPath;
 pub use crate::events::EventEnvelope;
+use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
 pub use crate::transfer::model::{
     TransferExecutionMode, TransferJob, TransferPhase, TransferStaging, TransferStatus,
     TransferType,
 };
-use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
 use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -22,7 +22,6 @@ use uuid::Uuid;
 
 pub type WsEvent = DomainEvent;
 pub type ReplayResult = ReplayOutcome;
-
 
 #[derive(Clone)]
 pub struct TransferManager {
@@ -362,7 +361,10 @@ impl TransferManager {
     /// Returns Ok(true) if successfully transitioned to Finalizing and executor may rename;
     /// Ok(false) if already cancelled / too late (Finalizing/Verifying/Completed) — executor must not rename.
     /// All checks happen under single `jobs.write()` critical section (token + phase + status).
-    pub(crate) async fn try_enter_finalizing(&self, job_id: &str) -> Result<bool, crate::errors::AppError> {
+    pub(crate) async fn try_enter_finalizing(
+        &self,
+        job_id: &str,
+    ) -> Result<bool, crate::errors::AppError> {
         use crate::transfer::{TransferPhase, TransferStatus};
         // Check token without holding jobs lock to avoid deadlock, but re-check inside lock
         let token_cancelled_early = self
@@ -406,7 +408,10 @@ impl TransferManager {
         let _ = Self::save_job_to_db(&self.db, &job_clone).await;
         let _ = self
             .event_journal
-            .append(crate::events::DomainEvent::transfer_progress(&job_clone), Some(job_id))
+            .append(
+                crate::events::DomainEvent::transfer_progress(&job_clone),
+                Some(job_id),
+            )
             .await;
         Ok(true)
     }
@@ -574,7 +579,10 @@ impl TransferManager {
             let mut map = self.jobs.write().await;
             map.insert(id.clone(), job.clone());
         }
-        let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
+        let _ = self
+            .event_journal
+            .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+            .await;
         let _ = Self::save_job_to_db(&self.db, &job).await;
         job
     }
@@ -601,7 +609,14 @@ impl TransferManager {
         .await
     }
 
-    pub async fn update_inline_progress(&self, job_id: &str, transferred: u64, total: u64, speed: u64, eta: Option<u64>) {
+    pub async fn update_inline_progress(
+        &self,
+        job_id: &str,
+        transferred: u64,
+        total: u64,
+        speed: u64,
+        eta: Option<u64>,
+    ) {
         let mut map = self.jobs.write().await;
         if let Some(j) = map.get_mut(job_id) {
             j.transferred_bytes = transferred;
@@ -611,7 +626,10 @@ impl TransferManager {
             j.updated_at = Utc::now();
             let job = j.clone();
             drop(map);
-            let _ = self.event_journal.append(DomainEvent::transfer_progress(&job), Some(&job.id)).await;
+            let _ = self
+                .event_journal
+                .append(DomainEvent::transfer_progress(&job), Some(&job.id))
+                .await;
             let _ = Self::save_job_to_db(&self.db, &job).await;
         }
     }
@@ -627,12 +645,27 @@ impl TransferManager {
                 j.checksum = checksum.clone();
                 j.updated_at = Utc::now();
                 Some(j.clone())
-            } else { None }
+            } else {
+                None
+            }
         };
         if let Some(job) = job_opt {
             let _ = Self::save_job_conditional_completed(&self.db, &job).await;
-            let _ = self.event_journal.append(DomainEvent::file_change(&job.destination_connection_id, &job.destination_path, "upload"), Some(&job.id)).await;
-            let _ = self.event_journal.append(DomainEvent::transfer_completed(&job), Some(&job.id)).await;
+            let _ = self
+                .event_journal
+                .append(
+                    DomainEvent::file_change(
+                        &job.destination_connection_id,
+                        &job.destination_path,
+                        "upload",
+                    ),
+                    Some(&job.id),
+                )
+                .await;
+            let _ = self
+                .event_journal
+                .append(DomainEvent::transfer_completed(&job), Some(&job.id))
+                .await;
             let _ = self.completion_tx.send((job.id.clone(), true));
         }
         self.cancel_tokens.write().await.remove(job_id);
@@ -648,11 +681,16 @@ impl TransferManager {
                 j.eta_seconds = None;
                 j.updated_at = Utc::now();
                 Some(j.clone())
-            } else { None }
+            } else {
+                None
+            }
         };
         if let Some(job) = job_opt {
             let _ = Self::save_job_to_db(&self.db, &job).await;
-            let _ = self.event_journal.append(DomainEvent::transfer_failed(&job), Some(&job.id)).await;
+            let _ = self
+                .event_journal
+                .append(DomainEvent::transfer_failed(&job), Some(&job.id))
+                .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
         }
         self.cancel_tokens.write().await.remove(job_id);
@@ -665,7 +703,10 @@ impl TransferManager {
         let job_opt = {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(job_id) {
-                if matches!(job.phase, TransferPhase::Finalizing | TransferPhase::Verifying | TransferPhase::Completed) {
+                if matches!(
+                    job.phase,
+                    TransferPhase::Finalizing | TransferPhase::Verifying | TransferPhase::Completed
+                ) {
                     None
                 } else {
                     job.status = TransferStatus::Cancelled;
@@ -680,7 +721,10 @@ impl TransferManager {
         };
         if let Some(job) = job_opt {
             let _ = Self::save_job_to_db(&self.db, &job).await;
-            let _ = self.event_journal.append(DomainEvent::transfer_failed(&job), Some(&job.id)).await;
+            let _ = self
+                .event_journal
+                .append(DomainEvent::transfer_failed(&job), Some(&job.id))
+                .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
         }
         self.cancel_tokens.write().await.remove(job_id);
@@ -2195,7 +2239,9 @@ impl TransferManager {
                 .map(TransferPhase::from_str)
                 .unwrap_or(TransferPhase::Preparing);
 
-            let execution_mode: String = r.try_get("execution_mode").unwrap_or_else(|_| "inline".to_string());
+            let execution_mode: String = r
+                .try_get("execution_mode")
+                .unwrap_or_else(|_| "inline".to_string());
             let staging: String = r.try_get("staging").unwrap_or_else(|_| "none".to_string());
             jobs.push(TransferJob {
                 id,

@@ -82,7 +82,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { listShares, deleteShare, type ShareItem } from '../../api/shares';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useUiStore } from '../../stores/uiStore';
 
 const props = defineProps<{
@@ -96,7 +97,7 @@ const emit = defineEmits<{
 const uiStore = useUiStore();
 
 const isOpen = ref(props.modelValue);
-const shares = ref<any[]>([]);
+const shares = ref<ShareItem[]>([]);
 const loading = ref(false);
 
 watch(
@@ -119,10 +120,9 @@ watch(
 async function fetchShares() {
   loading.value = true;
   try {
-    const resp = await apiClient.get('/shares');
-    shares.value = resp.data;
+    shares.value = await listShares();
   } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to fetch shares', 'error');
+    uiStore.showToast(normalizeApiError(err).message || 'Failed to fetch shares', 'error');
   } finally {
     loading.value = false;
   }
@@ -136,11 +136,11 @@ async function copyShareLink(url: string) {
 
 async function revokeShare(id: string) {
   try {
-    await apiClient.delete(`/shares/${id}`);
+    await deleteShare(id);
     uiStore.showToast('Share link revoked', 'success');
     await fetchShares();
   } catch (err: any) {
-    uiStore.showToast('Failed to revoke share', 'error');
+    uiStore.showToast(normalizeApiError(err).message || 'Failed to revoke share', 'error');
   }
 }
 

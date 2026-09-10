@@ -203,3 +203,57 @@ export async function uploadFileApi(
     },
   });
 }
+
+export interface ChmodPayload {
+  path: string;
+  mode: number;
+  recursive?: boolean;
+}
+
+export async function chmodFileApi(
+  connectionId: string,
+  payload: ChmodPayload
+): Promise<any> {
+  const resp = await apiClient.post(
+    `/connections/${connectionId}/files/chmod`,
+    payload
+  );
+  return resp.data;
+}
+
+export async function getStorageInfoApi(connectionId: string): Promise<any> {
+  const resp = await apiClient.get(
+    `/connections/${connectionId}/storage-info`
+  );
+  return resp.data;
+}
+
+export async function updateFileContentApi(
+  connectionId: string,
+  path: string,
+  content: string,
+  options?: {
+    ifMatch?: string;
+    forceOverwrite?: boolean;
+  }
+): Promise<{ success: boolean; message: string; etag: string }> {
+  const headers: Record<string, string> = {};
+  if (options?.forceOverwrite) {
+    headers['X-Force-Overwrite'] = 'true';
+  } else if (options?.ifMatch) {
+    headers['If-Match'] = options.ifMatch;
+  }
+
+  const resp = await apiClient.put<{ success: boolean; message: string }>(
+    `/connections/${connectionId}/files/content`,
+    { path, content },
+    { headers }
+  );
+
+  return {
+    success: resp.data.success,
+    message: resp.data.message,
+    etag: (resp.headers['etag'] as string) || '',
+  };
+}
+

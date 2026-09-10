@@ -1,8 +1,8 @@
-use crate::errors::AppError;
 use crate::domain::VfsPath;
+use crate::errors::AppError;
 use crate::transfer::TransferPlan;
-use std::collections::HashSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -63,9 +63,10 @@ impl UploadLockManager {
         path: &str,
     ) -> Result<UploadGuard, AppError> {
         let normalized = format!("{}:{}", connection_id, path.trim_start_matches('/'));
-        let mut lock = self.active_paths.lock().map_err(|_| {
-            AppError::Internal(anyhow::anyhow!("upload lock manager poisoned"))
-        })?;
+        let mut lock = self
+            .active_paths
+            .lock()
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("upload lock manager poisoned")))?;
         if lock.contains(&normalized) {
             return Err(AppError::Conflict(format!(
                 "An upload is already in progress for destination path '{}'",
@@ -114,10 +115,14 @@ impl UploadLockManager {
             .get_mut(job_id)
             .ok_or_else(|| AppError::NotFound(format!("Upload session '{}' not found", job_id)))?;
         if reserved.session.user_id != user_id {
-            return Err(AppError::Forbidden("Cannot upload to another user's session".into()));
+            return Err(AppError::Forbidden(
+                "Cannot upload to another user's session".into(),
+            ));
         }
         if reserved.claimed {
-            return Err(AppError::Conflict("Upload session body has already been claimed".into()));
+            return Err(AppError::Conflict(
+                "Upload session body has already been claimed".into(),
+            ));
         }
         reserved.claimed = true;
         Ok(reserved.session.clone())
@@ -158,9 +163,18 @@ mod tests {
         let manager = UploadLockManager::new();
         let session = session("job_session", "alice");
         manager.reserve(session.clone()).await.unwrap();
-        assert!(matches!(manager.claim("job_session", "bob").await, Err(AppError::Forbidden(_))));
-        assert_eq!(manager.claim("job_session", "alice").await.unwrap().job_id, "job_session");
-        assert!(matches!(manager.claim("job_session", "alice").await, Err(AppError::Conflict(_))));
+        assert!(matches!(
+            manager.claim("job_session", "bob").await,
+            Err(AppError::Forbidden(_))
+        ));
+        assert_eq!(
+            manager.claim("job_session", "alice").await.unwrap().job_id,
+            "job_session"
+        );
+        assert!(matches!(
+            manager.claim("job_session", "alice").await,
+            Err(AppError::Conflict(_))
+        ));
         manager.release("job_session").await;
         assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
     }

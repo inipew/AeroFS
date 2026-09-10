@@ -1,15 +1,12 @@
+use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorResponse};
 use crate::services::TransferService;
 use crate::state::AppState;
+use crate::transfer::model::TransferJob;
 use crate::transfer::TransferType;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
-use serde::Deserialize;
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -22,7 +19,43 @@ pub struct CreateTransferRequest {
     pub destination_path: String,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateTransferResponse {
+    pub success: bool,
+    pub job_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TransferActionResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClearFinishedTransfersResponse {
+    pub success: bool,
+    pub cleared: usize,
+    pub message: String,
+}
+
 /// Queue a new transfer job with full source and destination authorization
+#[utoipa::path(
+    post,
+    path = "/api/v1/transfers",
+    request_body = CreateTransferRequest,
+    responses(
+        (status = 202, description = "Transfer job queued", body = CreateTransferResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "transfers"
+)]
 pub async fn create_transfer(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -42,15 +75,29 @@ pub async fn create_transfer(
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({
-            "success": true,
-            "job_id": job_id,
-            "message": "Transfer job queued successfully",
-        })),
+        Json(CreateTransferResponse {
+            success: true,
+            job_id,
+            message: "Transfer job queued successfully".to_string(),
+        }),
     ))
 }
 
 /// List active and undismissed transfer jobs (scoped by user ownership and connection permissions)
+#[utoipa::path(
+    get,
+    path = "/api/v1/transfers",
+    responses(
+        (status = 200, description = "List of transfer jobs", body = Vec<TransferJob>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "transfers"
+)]
 pub async fn list_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -60,6 +107,25 @@ pub async fn list_transfers(
 }
 
 /// Cancel an active transfer job (enforcing user ownership)
+#[utoipa::path(
+    post,
+    path = "/api/v1/transfers/{id}/cancel",
+    params(
+        ("id" = String, Path, description = "Transfer job ID"),
+    ),
+    responses(
+        (status = 200, description = "Transfer cancelled", body = TransferActionResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "transfers"
+)]
 pub async fn cancel_transfer(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -69,47 +135,99 @@ pub async fn cancel_transfer(
     // An admitted upload may not have received its HTTP body yet. Releasing
     // its reservation here prevents a permanently locked destination.
     state.upload_locks.release(&id).await;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": format!("Transfer job '{}' cancelled", id),
-    })))
+    Ok(Json(TransferActionResponse {
+        success: true,
+        message: format!("Transfer job '{}' cancelled", id),
+    }))
 }
 
 /// Retry or resume an interrupted or failed transfer job
+#[utoipa::path(
+    post,
+    path = "/api/v1/transfers/{id}/retry",
+    params(
+        ("id" = String, Path, description = "Transfer job ID"),
+    ),
+    responses(
+        (status = 200, description = "Transfer queued for retry", body = TransferActionResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "transfers"
+)]
 pub async fn retry_transfer(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     TransferService::retry_transfer(&state, &user, &id).await?;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": format!("Transfer job '{}' queued for retry", id),
-    })))
+    Ok(Json(TransferActionResponse {
+        success: true,
+        message: format!("Transfer job '{}' queued for retry", id),
+    }))
 }
 
 /// Dismiss a single transfer job from history (persistent)
+#[utoipa::path(
+    post,
+    path = "/api/v1/transfers/{id}/dismiss",
+    params(
+        ("id" = String, Path, description = "Transfer job ID"),
+    ),
+    responses(
+        (status = 200, description = "Transfer dismissed", body = TransferActionResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "transfers"
+)]
 pub async fn dismiss_transfer(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     TransferService::dismiss_transfer(&state, &user, &id).await?;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": format!("Transfer job '{}' dismissed", id),
-    })))
+    Ok(Json(TransferActionResponse {
+        success: true,
+        message: format!("Transfer job '{}' dismissed", id),
+    }))
 }
 
 /// Dismiss all finished transfer jobs for the authenticated user (persistent Clear)
+#[utoipa::path(
+    post,
+    path = "/api/v1/transfers/clear-finished",
+    responses(
+        (status = 200, description = "Finished transfers cleared", body = ClearFinishedTransfersResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "transfers"
+)]
 pub async fn clear_finished_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
     let cleared = TransferService::clear_finished_transfers(&state, &user).await?;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "cleared": cleared,
-        "message": format!("Cleared {} finished transfer(s)", cleared),
-    })))
+    Ok(Json(ClearFinishedTransfersResponse {
+        success: true,
+        cleared,
+        message: format!("Cleared {} finished transfer(s)", cleared),
+    }))
 }

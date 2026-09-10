@@ -1,5 +1,4 @@
 import type { TransferJob } from '../types/transfer';
-import { publishFileChange } from '../services/fileChangeBus';
 
 export interface FileChangeEvent {
   connection_id: string;
@@ -177,14 +176,6 @@ export class RealtimeClient {
               break;
             case 'file_change':
               this.fileChangeListeners.forEach((l) => l(payload.data));
-              publishFileChange({
-                connectionId: payload.data.connection_id,
-                path: payload.data.path,
-                action: payload.data.action,
-                oldPath: payload.data.old_path,
-                parentPath: payload.data.parent_path,
-                oldParentPath: payload.data.old_parent_path,
-              });
               break;
             case 'permission_changed':
               this.permissionListeners.forEach((l) => l(payload.data));

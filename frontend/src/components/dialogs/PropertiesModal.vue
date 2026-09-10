@@ -254,7 +254,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { getMetadataApi, chmodFileApi } from '../../api/files';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 
@@ -305,10 +306,7 @@ watch(
 async function fetchMetadata() {
   loading.value = true;
   try {
-    const resp = await apiClient.get(
-      `/connections/${props.connectionId}/files/metadata?path=${encodeURIComponent(props.path)}`
-    );
-    meta.value = resp.data;
+    meta.value = await getMetadataApi(props.connectionId, props.path);
 
     // Parse permissions if available
     if (meta.value.permissions) {
@@ -317,8 +315,8 @@ async function fetchMetadata() {
       octalMode.value = meta.value.kind === 'directory' ? '0755' : '0644';
       parseOctal(octalMode.value);
     }
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to fetch file metadata', 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   } finally {
     loading.value = false;
   }
@@ -366,7 +364,7 @@ async function handleSavePermissions() {
   savingPerms.value = true;
   try {
     const modeInt = parseInt(octalMode.value, 8);
-    await apiClient.post(`/connections/${props.connectionId}/files/chmod`, {
+    await chmodFileApi(props.connectionId, {
       path: props.path,
       mode: modeInt,
       recursive: applyRecursive.value,
@@ -375,8 +373,8 @@ async function handleSavePermissions() {
     uiStore.showToast('Permissions updated successfully!', 'success');
     await fetchMetadata();
     await workspaceStore.refreshAll();
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to update permissions', 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   } finally {
     savingPerms.value = false;
   }

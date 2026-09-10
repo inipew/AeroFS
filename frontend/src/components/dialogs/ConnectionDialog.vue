@@ -143,7 +143,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import { apiClient } from '../../api/client';
+import { createConnectionApi, listConnectionsApi } from '../../api/connections';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useUiStore } from '../../stores/uiStore';
 import type { ProviderKind } from '../../types/connection';
@@ -207,16 +208,16 @@ watch(
 async function handleSave() {
   saving.value = true;
   try {
-    const resp = await apiClient.post('/connections', form.value);
-    uiStore.showToast(resp.data.message || 'Connection created!', 'success');
+    const data = await createConnectionApi(form.value);
+    uiStore.showToast(data.message || 'Connection created!', 'success');
     
     // Refresh connections list
-    const connsResp = await apiClient.get('/connections');
-    connStore.connections = connsResp.data;
+    const conns = await listConnectionsApi();
+    connStore.connections = conns;
 
     isOpen.value = false;
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to save connection', 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   } finally {
     saving.value = false;
   }

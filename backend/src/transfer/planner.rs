@@ -54,7 +54,10 @@ impl TransferPlanner {
     }
 
     /// Select execution mode for Upload based on size & config — small inline, large resumable
-    fn upload_execution_mode(total_bytes: Option<u64>, inline_threshold: u64) -> TransferExecutionMode {
+    fn upload_execution_mode(
+        total_bytes: Option<u64>,
+        inline_threshold: u64,
+    ) -> TransferExecutionMode {
         match total_bytes {
             Some(n) if n > inline_threshold => TransferExecutionMode::Resumable,
             _ => TransferExecutionMode::Inline,

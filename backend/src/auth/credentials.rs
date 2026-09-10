@@ -76,8 +76,8 @@ pub fn decrypt_secret(master_key: &[u8; 32], encoded: &str) -> Result<String, Ap
     let (nonce_bytes, ciphertext) = combined.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| anyhow::anyhow!("Cipher init error: {}", e))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| anyhow::anyhow!("Cipher init error: {}", e))?;
 
     let plaintext_bytes = cipher
         .decrypt(nonce, ciphertext)

@@ -771,6 +771,7 @@ import type { FileEntry } from '../../types/vfs';
 import { PreviewResolver } from '../../services/previewResolver';
 import { getNavTransitionName } from '../../motion/tokens';
 import { useDirectoryQuery } from '../../composables/useDirectoryQuery';
+import { ensureDirectoryData } from '../../composables/usePanelDirectory';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 
 const props = defineProps<{
@@ -1653,38 +1654,38 @@ async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {
     const opType: 'copy' | 'move' = isMove ? 'move' : 'copy';
     const opLabel = isMove ? 'Move' : 'Copy';
 
+    const targetEntries = await ensureDirectoryData(panel.value.connectionId, targetDir);
+
     for (const filePath of data.paths) {
       let fileName = filePath.split('/').pop() || 'file';
       let targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
 
-      // Check if current panel directory already has an entry with the same name
-      if (targetDir === panel.value.path) {
-        const alreadyExists = panel.value.entries.some((e: FileEntry) => e.name === fileName);
-        if (alreadyExists) {
-          const resolution = await transferStore.requestConflict(fileName, filePath, targetPath);
-          if (resolution === 'cancel') {
-            break;
-          }
-          if (resolution === 'skip') {
-            continue;
-          }
-          if (resolution === 'keep_both') {
-            const dotIdx = fileName.lastIndexOf('.');
-            let count = 1;
-            let candidateName = dotIdx > 0
+      // Check if target directory already has an entry with the same name
+      const alreadyExists = targetEntries.some((e: FileEntry) => e.name === fileName);
+      if (alreadyExists) {
+        const resolution = await transferStore.requestConflict(fileName, filePath, targetPath);
+        if (resolution === 'cancel') {
+          break;
+        }
+        if (resolution === 'skip') {
+          continue;
+        }
+        if (resolution === 'keep_both') {
+          const dotIdx = fileName.lastIndexOf('.');
+          let count = 1;
+          let candidateName = dotIdx > 0
+            ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
+            : `${fileName} (${count})`;
+
+          while (targetEntries.some((e: FileEntry) => e.name === candidateName)) {
+            count++;
+            candidateName = dotIdx > 0
               ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
               : `${fileName} (${count})`;
-
-            while (panel.value.entries.some((e: FileEntry) => e.name === candidateName)) {
-              count++;
-              candidateName = dotIdx > 0
-                ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
-                : `${fileName} (${count})`;
-            }
-
-            fileName = candidateName;
-            targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
           }
+
+          fileName = candidateName;
+          targetPath = targetDir === '/' ? `/${fileName}` : `${targetDir}/${fileName}`;
         }
       }
 

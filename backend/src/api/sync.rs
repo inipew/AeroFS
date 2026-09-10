@@ -1,14 +1,10 @@
+use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorResponse};
 use crate::state::AppState;
-use crate::sync::models::SyncStrategy;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
-use serde::Deserialize;
+use crate::sync::models::{SyncJob, SyncOperation, SyncStrategy};
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -27,7 +23,35 @@ pub struct ResolveConflictRequest {
     pub resolution: String,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateSyncResponse {
+    pub success: bool,
+    pub job: SyncJob,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ResolveConflictResponse {
+    pub success: bool,
+}
+
 /// Create a new sync job
+#[utoipa::path(
+    post,
+    path = "/api/v1/sync",
+    request_body = CreateSyncRequest,
+    responses(
+        (status = 202, description = "Sync job created", body = CreateSyncResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "sync"
+)]
 pub async fn create_sync_job(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -64,18 +88,32 @@ pub async fn create_sync_job(
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({
-            "success": true,
-            "job": job,
-            "message": "Sync job created successfully and scanning started",
-        })),
+        Json(CreateSyncResponse {
+            success: true,
+            job,
+            message: "Sync job created successfully and scanning started".to_string(),
+        }),
     ))
 }
 
 /// List all sync jobs
+#[utoipa::path(
+    get,
+    path = "/api/v1/sync",
+    responses(
+        (status = 200, description = "List of sync jobs", body = Vec<SyncJob>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "sync"
+)]
 pub async fn list_sync_jobs(
     State(state): State<AppState>,
-    _user: AuthenticatedUser, // we filter on the client or in manager later, simplified for now
+    _user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
     let jobs = state
         .sync_manager
@@ -86,6 +124,25 @@ pub async fn list_sync_jobs(
     Ok(Json(jobs))
 }
 
+/// List operations for a sync job
+#[utoipa::path(
+    get,
+    path = "/api/v1/sync/{id}/operations",
+    params(
+        ("id" = String, Path, description = "Sync job ID"),
+    ),
+    responses(
+        (status = 200, description = "List of sync operations", body = Vec<SyncOperation>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "sync"
+)]
 pub async fn list_operations(
     State(state): State<AppState>,
     _user: AuthenticatedUser,
@@ -100,6 +157,27 @@ pub async fn list_operations(
     Ok(Json(ops))
 }
 
+/// Resolve a conflict in a sync job
+#[utoipa::path(
+    post,
+    path = "/api/v1/sync/{id}/resolve",
+    params(
+        ("id" = String, Path, description = "Sync job ID"),
+    ),
+    request_body = ResolveConflictRequest,
+    responses(
+        (status = 200, description = "Conflict resolved", body = ResolveConflictResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "sync"
+)]
 pub async fn resolve_conflict(
     State(state): State<AppState>,
     _user: AuthenticatedUser,
@@ -112,5 +190,5 @@ pub async fn resolve_conflict(
         .await
         .map_err(AppError::Internal)?;
 
-    Ok(Json(serde_json::json!({"success": true})))
+    Ok(Json(ResolveConflictResponse { success: true }))
 }

@@ -352,7 +352,12 @@ mod tests {
         );
         assert_eq!(plan.staging, TransferStaging::None);
         assert!(!plan.uses_staging());
-        assert!(plan.staging_path(&crate::domain::VfsPath::new("c", "/a/b.txt").unwrap(), "jid").is_none());
+        assert!(plan
+            .staging_path(
+                &crate::domain::VfsPath::new("c", "/a/b.txt").unwrap(),
+                "jid"
+            )
+            .is_none());
         // staging_path Some when uses_staging
         let plan_local = TransferPlanner::plan_upload(
             &caps_local,

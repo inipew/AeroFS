@@ -84,6 +84,8 @@ impl RetryPolicy {
             | AppError::Forbidden(_)
             | AppError::Security(_)
             | AppError::BadRequest(_)
+            | AppError::MethodNotAllowed(_)
+            | AppError::ConcurrentIdempotentRequest(_)
             | AppError::Cancelled(_)
             | AppError::NotFound(_)
             | AppError::PreconditionFailed(_)

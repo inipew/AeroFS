@@ -141,7 +141,13 @@ where
                 0
             };
             manager
-                .update_inline_progress(&context.job_id, uploaded_bytes, total_for_progress, speed, None)
+                .update_inline_progress(
+                    &context.job_id,
+                    uploaded_bytes,
+                    total_for_progress,
+                    speed,
+                    None,
+                )
                 .await;
             last_emit = Instant::now();
         }
@@ -186,9 +192,10 @@ where
 
     // Atomic commit boundary Opsi X: try_enter_finalizing under jobs.write() lock
     // Returns Ok(false) if already cancelled / Finalizing — must not rename
-    let can_commit = manager.try_enter_finalizing(&context.job_id).await.map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("try_enter_finalizing failed: {}", e))
-    })?;
+    let can_commit = manager
+        .try_enter_finalizing(&context.job_id)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("try_enter_finalizing failed: {}", e)))?;
     if !can_commit {
         if use_staging {
             cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
@@ -225,7 +232,13 @@ where
         0
     };
     manager
-        .update_inline_progress(&context.job_id, uploaded_bytes, total_for_progress, speed, Some(0))
+        .update_inline_progress(
+            &context.job_id,
+            uploaded_bytes,
+            total_for_progress,
+            speed,
+            Some(0),
+        )
         .await;
 
     Ok(uploaded_bytes)
@@ -273,8 +286,10 @@ mod tests {
         async fn list_stream(
             &self,
             _path: &VfsPath,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<FileEntry, VfsError>> + Send + 'static>>, VfsError>
-        {
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<FileEntry, VfsError>> + Send + 'static>>,
+            VfsError,
+        > {
             Err(VfsError::IoError("not implemented".into()))
         }
         async fn stat(&self, _path: &VfsPath) -> Result<FileMetadata, VfsError> {
@@ -388,9 +403,15 @@ mod tests {
                 plan.clone(),
             )
             .await;
-        let token = state.transfer_manager.cancel_token(&job.id).expect("token exists");
+        let token = state
+            .transfer_manager
+            .cancel_token(&job.id)
+            .expect("token exists");
         token.cancel();
-        let _ = state.transfer_manager.cancel_job(&job.id, Some("user1"), false).await;
+        let _ = state
+            .transfer_manager
+            .cancel_job(&job.id, Some("user1"), false)
+            .await;
         let byte_stream = futures::stream::empty::<Result<Bytes, crate::errors::AppError>>();
         let res = execute_inline_upload_stream(
             &state.transfer_manager,
@@ -433,12 +454,16 @@ mod tests {
                 plan.clone(),
             )
             .await;
-        let token = state.transfer_manager.cancel_token(&job.id).expect("token exists");
+        let token = state
+            .transfer_manager
+            .cancel_token(&job.id)
+            .expect("token exists");
         let byte_stream = futures::stream::unfold(0, |state| async move {
             if state == 0 {
                 Some((Ok(Bytes::from(vec![1u8; 1024])), 1))
             } else {
-                std::future::pending::<Option<(Result<Bytes, crate::errors::AppError>, i32)>>().await
+                std::future::pending::<Option<(Result<Bytes, crate::errors::AppError>, i32)>>()
+                    .await
             }
         });
         let manager_clone = state.transfer_manager.clone();
@@ -465,10 +490,16 @@ mod tests {
             )
             .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(2), mock.write_started.notified())
-            .await
-            .expect("write_stream should start");
-        let _ = state.transfer_manager.cancel_job(&job.id, Some("user1"), false).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            mock.write_started.notified(),
+        )
+        .await
+        .expect("write_stream should start");
+        let _ = state
+            .transfer_manager
+            .cancel_job(&job.id, Some("user1"), false)
+            .await;
         assert!(token.is_cancelled());
         let res = tokio::time::timeout(std::time::Duration::from_secs(3), handle)
             .await
@@ -501,7 +532,10 @@ mod tests {
                 plan.clone(),
             )
             .await;
-        let token = state.transfer_manager.cancel_token(&job.id).expect("token exists");
+        let token = state
+            .transfer_manager
+            .cancel_token(&job.id)
+            .expect("token exists");
         // Stream that completes immediately (one small chunk)
         let byte_stream = futures::stream::once(async { Ok(Bytes::from(vec![1u8; 10])) });
         let manager_clone = state.transfer_manager.clone();
@@ -530,12 +564,22 @@ mod tests {
             .await
         });
         // Wait for rename to start (deterministic)
-        tokio::time::timeout(std::time::Duration::from_secs(2), mock_clone.rename_started.notified())
-            .await
-            .expect("rename should start");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            mock_clone.rename_started.notified(),
+        )
+        .await
+        .expect("rename should start");
         // Now cancel — should be too late (Finalizing)
-        let cancel_res = state.transfer_manager.cancel_job(&job.id, Some("user1"), false).await.unwrap();
-        assert_eq!(cancel_res, false, "cancel should be too late after Finalizing");
+        let cancel_res = state
+            .transfer_manager
+            .cancel_job(&job.id, Some("user1"), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            cancel_res, false,
+            "cancel should be too late after Finalizing"
+        );
         // Allow rename to complete
         mock_clone.rename_continue.notify_waiters();
         mock_clone.write_continue.notify_waiters();
@@ -543,10 +587,17 @@ mod tests {
             .await
             .expect("executor should complete")
             .unwrap();
-        assert!(res.is_ok(), "executor should succeed despite late cancel, got {:?}", res);
+        assert!(
+            res.is_ok(),
+            "executor should succeed despite late cancel, got {:?}",
+            res
+        );
         assert!(mock_clone.rename_called.load(Ordering::SeqCst));
         // Final job should be Completed, not Cancelled
-        let jobs = state.transfer_manager.list_jobs(Some("user1"), false, false).await;
+        let jobs = state
+            .transfer_manager
+            .list_jobs(Some("user1"), false, false)
+            .await;
         // Find job
         let _final_job = jobs.iter().find(|j| j.id == job.id).or_else(|| {
             // May need to check DB via list with include_dismissed? But job is completed not dismissed

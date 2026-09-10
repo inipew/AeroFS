@@ -621,7 +621,7 @@ function handleDelete() {
 function handleSelectAll() {
   const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
   const p = workspaceStore.getPanel(panelId);
-  p.selection.paths = p.runtime.entries.map((e) => e.path);
+  p.selection.paths = p.entries.map((e) => e.path);
   uiStore.closeContextMenu();
 }
 

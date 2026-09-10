@@ -2,6 +2,7 @@ pub mod archive;
 pub mod audit;
 pub mod auth;
 pub mod connections;
+pub mod extractors;
 pub mod files;
 pub mod health;
 pub mod openapi;

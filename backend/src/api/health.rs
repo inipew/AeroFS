@@ -1,5 +1,6 @@
+use crate::errors::{AppError, ErrorResponse};
 use crate::state::{AppState, RuntimePhase};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use std::time::Instant;
@@ -25,6 +26,14 @@ pub struct ReadinessResponse {
 }
 
 /// Fast liveness probe — always 200 as long as the process is alive
+#[utoipa::path(
+    get,
+    path = "/api/v1/health/live",
+    responses(
+        (status = 200, description = "Process is alive", body = LivenessResponse)
+    ),
+    tag = "health"
+)]
 pub async fn health_live() -> impl IntoResponse {
     Json(LivenessResponse {
         status: "alive".to_string(),
@@ -34,22 +43,24 @@ pub async fn health_live() -> impl IntoResponse {
 }
 
 /// Readiness probe: 503 when starting or shutting down, 200 when fully running
-pub async fn health_ready(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+#[utoipa::path(
+    get,
+    path = "/api/v1/health/ready",
+    responses(
+        (status = 200, description = "Service is ready to handle traffic", body = ReadinessResponse),
+        (status = 503, description = "Service is unavailable", body = ErrorResponse)
+    ),
+    tag = "health"
+)]
+pub async fn health_ready(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let phase = state.runtime.phase();
 
     // Return 503 immediately if not in Running phase
     if phase != RuntimePhase::Running {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "status": "not_ready",
-                "phase": phase.as_str(),
-                "reasons": [format!("Runtime phase is '{}'", phase.as_str())],
-                "version": env!("CARGO_PKG_VERSION")
-            })),
-        ));
+        return Err(AppError::ServiceUnavailable(format!(
+            "Runtime phase is '{}'",
+            phase.as_str()
+        )));
     }
 
     // 1. Check Database connection
@@ -78,19 +89,22 @@ pub async fn health_ready(
         if !storage_ok {
             reasons.push("Storage root inaccessible");
         }
-        Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "status": "not_ready",
-                "phase": phase.as_str(),
-                "reasons": reasons,
-                "version": env!("CARGO_PKG_VERSION")
-            })),
-        ))
+        Err(AppError::ServiceUnavailable(format!(
+            "Readiness checks failed: {}",
+            reasons.join(", ")
+        )))
     }
 }
 
 /// Legacy / backward compatible health endpoint
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Legacy health check", body = LivenessResponse)
+    ),
+    tag = "health"
+)]
 pub async fn health_check() -> impl IntoResponse {
     health_live().await
 }

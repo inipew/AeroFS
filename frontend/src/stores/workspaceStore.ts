@@ -1,15 +1,15 @@
 import { defineStore } from 'pinia';
 import { ref, computed, reactive, watch } from 'vue';
-import { useQueryClient } from '@tanstack/vue-query';
-import { listFilesApi } from '../api/files';
-import { subscribeFileChanges } from '../services/fileChangeBus';
+import { queryClient } from '../queryClient';
+import { directoryQueryOptions } from '../composables/useDirectoryQuery';
+import { ensureDirectoryData, getCachedDirectoryEntries } from '../composables/usePanelDirectory';
 import { realtimeClient } from '../transport/websocket';
+import { realtimeSync } from '../services/realtimeSync';
 import { useTransferStore } from './transferStore';
 import { useUiStore } from './uiStore';
 import { normalizePath, parentPath } from '../utils/path';
 import { isAbortError, normalizeApiError } from '../utils/errorNormalizer';
 import { PanelSession } from '../workspace/panelSession';
-import { invalidationBus } from '../workspace/invalidationBus';
 import { useConnectionStore } from './connectionStore';
 import type { FileEntry } from '../types/vfs';
 import type {
@@ -82,7 +82,11 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     get path() { return location.path; },
     set path(val: string) { location.path = val; },
 
-    get entries(): FileEntry[] { return runtime.entries; },
+    get entries(): FileEntry[] {
+      const cached = getCachedDirectoryEntries(location.connectionId, location.path);
+      if (cached.length > 0) return cached;
+      return runtime.entries ?? [];
+    },
     set entries(val: FileEntry[]) { runtime.entries = val; },
 
     get selectedEntries(): string[] { return selection.paths; },
@@ -112,10 +116,10 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     get loadingMore() { return runtime.status === 'loading_more'; },
     set loadingMore(_val: boolean) {},
 
-    get error() { return runtime.error; },
+    get error(): string | null { return runtime.error ?? null; },
     set error(val: string | null) { runtime.error = val; },
 
-    get stale() { return !!runtime.error && runtime.entries.length > 0; },
+    get stale() { return !!runtime.error && (runtime.entries?.length ?? 0) > 0; },
 
     get history() { return navigation.history; },
     set history(val: string[]) { navigation.history = val; },
@@ -126,7 +130,7 @@ function createPanel(id: PanelId, initialConnection: string = 'local', initialPa
     get initialized() { return runtime.initialized; },
     set initialized(val: boolean) { runtime.initialized = val; },
 
-    get hasMore() { return runtime.hasMore; },
+    get hasMore(): boolean { return runtime.hasMore ?? false; },
     set hasMore(val: boolean) { runtime.hasMore = val; },
 
     get nextCursor() { return runtime.nextCursor; },
@@ -239,9 +243,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const s = sessionFor(panelId);
     s.connectionId = p.location.connectionId;
     s.path = p.location.path;
-    s.entries = p.runtime.entries.slice();
+    s.entries = p.runtime.entries ? p.runtime.entries.slice() : [];
     s.status = p.runtime.status;
-    s.error = p.runtime.error;
+    s.error = p.runtime.error ?? null;
   }
 
   // Offline snapshot cache (66.md §16) — preserve last successful listing per dir
@@ -360,12 +364,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function cancelPendingInvalidations() {
-    invalidationBus.cancel();
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
-    }
-    pendingInvalidations.clear();
+    // legacy no-op: RealtimeSyncCoordinator now handles 150ms debounced invalidations
   }
 
   function closePanel(panelId: PanelId) {
@@ -466,7 +465,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     p.runtime.error = null;
 
     // PanelSession owns generation + abort (66.md §5) — legacy counters synced for compat
-    const { generation: currentGen, signal } = sess.newRequest();
+    const { generation: currentGen } = sess.newRequest();
     if (panelId === 'left') {
       leftRequestGen = currentGen;
     } else {
@@ -475,13 +474,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     syncSessionWithPanel(panelId);
 
     try {
-      const data = await listFilesApi(p.location.connectionId, {
-        path: queryPath,
-        show_hidden: p.view.showHidden,
-        sort: p.view.sortField,
-        order: p.view.sortOrder,
-        signal,
-      });
+      const data = await queryClient.fetchInfiniteQuery(
+        directoryQueryOptions(p.location.connectionId, queryPath, {
+          show_hidden: p.view.showHidden,
+          sort: p.view.sortField,
+          order: p.view.sortOrder,
+        })
+      );
 
       // Discard stale out-of-order response (generation guard + closed panel guard 66.md §5, §21)
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
@@ -491,26 +490,29 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return { ok: false, error: 'Stale response discarded' };
       }
 
+      const allEntries: FileEntry[] = data.pages.flatMap((pg: any) => pg.entries);
+      const lastPage = data.pages[data.pages.length - 1];
+
       // TRANSACTIONAL COMMIT: commit path and entries only upon verified success!
-      p.location.path = data.path;
-      p.runtime.entries = data.entries;
-      p.runtime.hasMore = data.has_more ?? false;
-      p.runtime.nextCursor = data.next_cursor;
-      p.runtime.totalCount = data.total_count;
+      p.location.path = lastPage?.path || queryPath;
+      p.runtime.entries = allEntries;
+      p.runtime.hasMore = lastPage?.has_more ?? false;
+      p.runtime.nextCursor = lastPage?.next_cursor;
+      p.runtime.totalCount = lastPage?.total_count;
 
       // Reconcile selection: preserve items that still exist
       const previousSelection = new Set(p.selection.paths);
-      p.selection.paths = data.entries
-        .map((e) => e.path)
-        .filter((entryPath) => previousSelection.has(entryPath));
+      p.selection.paths = allEntries
+        .map((e: FileEntry) => e.path)
+        .filter((entryPath: string) => previousSelection.has(entryPath));
 
       p.runtime.status = 'idle';
       p.runtime.error = null;
       p.runtime.lastError = undefined;
       p.runtime.lastLoadedAt = Date.now();
       p.runtime.initialized = true;
-      try { saveSnapshot(p.location.connectionId, data.path, data.entries); } catch {}
-      return { ok: true, path: data.path };
+      try { saveSnapshot(p.location.connectionId, p.location.path, allEntries); } catch {}
+      return { ok: true, path: p.location.path };
     } catch (err: unknown) {
       if (isAbortError(err)) {
         return { ok: false, error: 'Aborted', aborted: true } as any;
@@ -523,7 +525,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
       const norm = normalizeApiError(err);
       // Offline cached snapshot fallback (66.md §22) — show last cached if available
-      if (p.runtime.entries.length === 0) {
+      if (!p.runtime.entries || p.runtime.entries.length === 0) {
         const cached = loadSnapshot(p.location.connectionId, queryPath);
         if (cached && cached.length > 0) {
           p.runtime.entries = cached;
@@ -533,7 +535,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           return { ok: false, error: norm.message };
         }
       }
-      p.runtime.status = p.runtime.entries.length > 0 ? 'degraded' : 'error';
+      p.runtime.status = (p.runtime.entries?.length ?? 0) > 0 ? 'degraded' : 'error';
       p.runtime.error = norm.message;
       p.runtime.lastError = norm.message;
       return { ok: false, error: p.runtime.error || undefined };
@@ -559,14 +561,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     p.runtime.status = 'loading_more';
     try {
-      const data = await listFilesApi(p.location.connectionId, {
-        path: p.location.path,
-        show_hidden: p.view.showHidden,
-        sort: p.view.sortField,
-        order: p.view.sortOrder,
-        cursor: p.runtime.nextCursor,
-        limit: 50,
-      });
+      const data = await queryClient.fetchInfiniteQuery(
+        directoryQueryOptions(p.location.connectionId, p.location.path, {
+          show_hidden: p.view.showHidden,
+          sort: p.view.sortField,
+          order: p.view.sortOrder,
+        })
+      );
 
       // Discard stale out-of-order pagination if directory changed mid-flight
       if (
@@ -578,12 +579,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         return { ok: false, error: 'Stale pagination response discarded' };
       }
 
-      p.runtime.entries.push(...data.entries);
-      p.runtime.hasMore = data.has_more ?? false;
-      p.runtime.nextCursor = data.next_cursor;
-      p.runtime.totalCount = data.total_count;
+      const allEntries: FileEntry[] = data.pages.flatMap((pg: any) => pg.entries);
+      const lastPage = data.pages[data.pages.length - 1];
+
+      p.runtime.entries = allEntries;
+      p.runtime.hasMore = lastPage?.has_more ?? false;
+      p.runtime.nextCursor = lastPage?.next_cursor;
+      p.runtime.totalCount = lastPage?.total_count;
       p.runtime.status = 'idle';
-      return { ok: true, count: data.entries.length };
+      return { ok: true, count: allEntries.length };
     } catch (err: unknown) {
       p.runtime.status = 'idle';
       const norm = normalizeApiError(err);
@@ -597,6 +601,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     addToHistory: boolean = true
   ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
+    const previousPath = p.location.path;
     const currentPath = p.location.path;
     let direction: 'forward' | 'back' | 'replace' = 'replace';
     if (targetPath.startsWith(currentPath) && targetPath.length > currentPath.length) {
@@ -610,6 +615,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const res = await fetchPanelEntries(panelId, targetPath);
 
     if (!res.ok) {
+      // Atomic rollback on failure
+      p.location.path = previousPath;
       if (res.error !== 'Aborted' && res.error !== 'Stale response discarded' && !(res as any).aborted) {
         const uiStore = useUiStore();
         uiStore.showToast(res.error || 'Failed to open directory', 'error');
@@ -698,8 +705,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function goBackPanel(panelId: PanelId) { await goBack(panelId); }
   async function goForwardPanel(panelId: PanelId) { await goForward(panelId); }
   async function navigateUpPanel(panelId: PanelId) { await navigateUp(panelId); }
-
-  const queryClient = useQueryClient();
 
   function invalidatePanel(panelId: PanelId) {
     const p = getPanel(panelId);
@@ -790,6 +795,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     transferStore.resetBatchConflict();
 
     try {
+      const targetEntries = await ensureDirectoryData(targetPanel.location.connectionId, targetPanel.location.path);
+
       for (const filePath of paths) {
         let fileName = filePath.split('/').pop() || 'file';
         let destPath = targetPanel.location.path === '/'
@@ -802,7 +809,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
 
         // Check if destination directory already has an entry with the same name
-        const alreadyExists = targetPanel.runtime.entries.some((e) => e.name === fileName);
+        const alreadyExists = targetEntries.some((e) => e.name === fileName);
         if (alreadyExists) {
           const resolution = await transferStore.requestConflict(fileName, filePath, destPath);
           if (resolution === 'cancel') {
@@ -818,7 +825,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
               ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
               : `${fileName} (${count})`;
 
-            while (targetPanel.runtime.entries.some((e) => e.name === candidateName)) {
+            while (targetEntries.some((e) => e.name === candidateName)) {
               count++;
               candidateName = dotIdx > 0
                 ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
@@ -848,7 +855,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         clearClipboard();
       }
     } catch (err: any) {
-      uiStore.showToast(err.response?.data?.error?.message || 'Paste transfer failed', 'error');
+      uiStore.showToast(normalizeApiError(err).message || 'Paste transfer failed', 'error');
     }
   }
 
@@ -863,6 +870,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const transferStore = useTransferStore();
     transferStore.resetBatchConflict();
 
+    const destEntries = await ensureDirectoryData(destPanel.location.connectionId, destPanel.location.path);
+
     for (const filePath of filePaths) {
       let fileName = filePath.split('/').pop() || 'file';
       let destPath = destPanel.location.path === '/'
@@ -870,7 +879,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         : `${destPanel.location.path}/${fileName}`;
 
       // Check if destination directory already has an entry with the same name
-      const alreadyExists = destPanel.runtime.entries.some((e) => e.name === fileName);
+      const alreadyExists = destEntries.some((e) => e.name === fileName);
       if (alreadyExists) {
         const resolution = await transferStore.requestConflict(fileName, filePath, destPath);
         if (resolution === 'cancel') {
@@ -886,7 +895,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
             : `${fileName} (${count})`;
 
-          while (destPanel.runtime.entries.some((e) => e.name === candidateName)) {
+          while (destEntries.some((e) => e.name === candidateName)) {
             count++;
             candidateName = dotIdx > 0
               ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
@@ -950,86 +959,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     saveState();
   }
 
-  // Realtime Smart Debounced Invalidation via InvalidationBus (66.md §18-20 + Plan 58)
-  // Bus coalesces 150ms and ensures targeted panel refresh only
-  const busUnsub = invalidationBus.subscribe((connId, dPath) => {
-    try {
-      queryClient?.invalidateQueries({ queryKey: ['directory', connId, dPath] });
-      queryClient?.invalidateQueries({ queryKey: ['metadata', connId] });
-    } catch {}
-    if (leftPanel.value.location.connectionId === connId && normalizePath(leftPanel.value.location.path) === dPath) {
-      fetchPanelEntries('left');
-    }
-    if (isDualPane.value && rightPanel.value.location.connectionId === connId && normalizePath(rightPanel.value.location.path) === dPath) {
-      fetchPanelEntries('right');
-    }
-  });
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  const pendingInvalidations = new Set<string>(); // "connId::dirPath" — legacy kept for cancelPendingInvalidations
-
   function queueDirectoryInvalidation(connectionId: string, dirPath: string) {
-    // Delegate coalescing to InvalidationBus (targeted, per-panel §20)
-    invalidationBus.queue(connectionId, normalizePath(dirPath));
-    // Keep legacy set for cancelPendingInvalidations compatibility
-    pendingInvalidations.add(`${connectionId}::${normalizePath(dirPath)}`);
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
-      for (const item of pendingInvalidations) {
-        const [connId, dPath] = item.split('::');
-        // 1. Invalidate TanStack Query cache
-        try {
-          queryClient?.invalidateQueries({ queryKey: ['directory', connId, dPath] });
-          queryClient?.invalidateQueries({ queryKey: ['metadata', connId] });
-        } catch {
-          // ignore if outside setup context
-        }
-
-        // 2. Refresh left panel if affected
-        if (leftPanel.value.location.connectionId === connId && normalizePath(leftPanel.value.location.path) === dPath) {
-          fetchPanelEntries('left');
-        }
-        // 3. Refresh right panel if affected
-        if (isDualPane.value && rightPanel.value.location.connectionId === connId && normalizePath(rightPanel.value.location.path) === dPath) {
-          fetchPanelEntries('right');
-        }
-      }
-      pendingInvalidations.clear();
-    }, 150);
-  }
-
-  function handleFileChangeEvent(event: import('../services/fileChangeBus').FileChangeEvent) {
-    const normFile = normalizePath(event.path);
-    const parentDir = event.parentPath ? normalizePath(event.parentPath) : parentPath(normFile);
-    queueDirectoryInvalidation(event.connectionId, parentDir);
-
-    if (event.oldPath || event.oldParentPath) {
-      const oldNorm = event.oldPath ? normalizePath(event.oldPath) : '';
-      const oldParent = event.oldParentPath ? normalizePath(event.oldParentPath) : (oldNorm ? parentPath(oldNorm) : '');
-      if (oldParent) {
-        queueDirectoryInvalidation(event.connectionId, oldParent);
-      }
-    }
+    realtimeSync.queueDirectoryInvalidation(connectionId, dirPath);
   }
 
   function notifyFileChange(connectionId: string, filePath: string) {
-    handleFileChangeEvent({
-      connectionId,
-      path: filePath,
-      action: 'write',
-    });
+    const parentDir = parentPath(normalizePath(filePath));
+    realtimeSync.queueDirectoryInvalidation(connectionId, parentDir);
   }
-
-  // Realtime Filesystem Event Invalidation (Plan 41 + Plan 58 + Plan 59)
-  const unsubscribeFileChanges = subscribeFileChanges((event) => {
-    handleFileChangeEvent(event);
-  });
 
   // Re-synchronize visible panels upon server buffer expiration or visibility resumption
   const unsubscribeResync = realtimeClient.onResyncRequired(async () => {
     try {
-      queryClient?.invalidateQueries({ queryKey: ['directory'] });
-      queryClient?.invalidateQueries({ queryKey: ['metadata'] });
+      queryClient.invalidateQueries({ queryKey: ['directory'] });
+      queryClient.invalidateQueries({ queryKey: ['metadata'] });
     } catch {}
     await Promise.all([
       fetchPanelEntries('left'),
@@ -1094,12 +1037,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   function disposeWorkspace() {
     cancelPendingInvalidations();
-    busUnsub();
     leftSession.dispose();
     rightSession.dispose();
     abortPanel('left');
     abortPanel('right');
-    unsubscribeFileChanges();
     unsubscribeResync();
   }
 
@@ -1144,6 +1085,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     paste,
     isCutItem,
     transferBetweenPanels,
+    queueDirectoryInvalidation,
     notifyFileChange,
     saveState,
     disposeWorkspace,

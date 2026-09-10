@@ -1,13 +1,13 @@
+use crate::api::extractors::Json;
 use crate::auth::session::UserInfo;
 use crate::auth::AuthenticatedUser;
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorResponse};
 use crate::services::AuthService;
 use crate::state::AppState;
 use axum::{
     extract::State,
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -23,16 +23,12 @@ pub struct AuthResponse {
     pub user: UserInfo,
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/auth/login",
-    request_body = LoginRequest,
-    responses(
-        (status = 200, description = "Login successful", body = AuthResponse),
-        (status = 401, description = "Invalid credentials"),
-        (status = 429, description = "Too many failed attempts")
-    )
-)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct LogoutResponse {
+    pub success: bool,
+    pub message: String,
+}
+
 fn extract_client_ip(headers: &HeaderMap, trusted_proxies: &[String]) -> String {
     // §23: Only trust X-Forwarded-For if request comes from trusted proxy.
     // If trusted_proxies is empty, forwarded headers are ignored (secure-by-default).
@@ -48,6 +44,18 @@ fn extract_client_ip(headers: &HeaderMap, trusted_proxies: &[String]) -> String 
     ip_opt.unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login successful", body = AuthResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Invalid credentials", body = ErrorResponse),
+        (status = 429, description = "Too many failed attempts", body = ErrorResponse)
+    ),
+    tag = "auth"
+)]
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -88,7 +96,7 @@ pub async fn login(
     Ok((
         StatusCode::OK,
         resp_headers,
-        Json(AuthResponse { user: user_info }),
+        axum::Json(AuthResponse { user: user_info }),
     ))
 }
 
@@ -96,8 +104,9 @@ pub async fn login(
     post,
     path = "/api/v1/auth/logout",
     responses(
-        (status = 200, description = "Logout successful")
-    )
+        (status = 200, description = "Logout successful", body = LogoutResponse)
+    ),
+    tag = "auth"
 )]
 pub async fn logout(
     State(state): State<AppState>,
@@ -135,7 +144,10 @@ pub async fn logout(
     Ok((
         StatusCode::OK,
         resp_headers,
-        Json(serde_json::json!({ "success": true, "message": "Logged out successfully" })),
+        axum::Json(LogoutResponse {
+            success: true,
+            message: "Logged out successfully".to_string(),
+        }),
     ))
 }
 
@@ -144,9 +156,14 @@ pub async fn logout(
     path = "/api/v1/auth/me",
     responses(
         (status = 200, description = "Current authenticated user profile", body = UserInfo),
-        (status = 401, description = "Not authenticated")
-    )
+        (status = 401, description = "Not authenticated", body = ErrorResponse)
+    ),
+    security(
+        ("CookieAuth" = []),
+        ("BearerAuth" = [])
+    ),
+    tag = "auth"
 )]
 pub async fn me(AuthenticatedUser(user): AuthenticatedUser) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(user))
+    Ok(axum::Json(user))
 }

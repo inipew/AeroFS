@@ -1,24 +1,17 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
-import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query';
+import { VueQueryPlugin } from '@tanstack/vue-query';
+import { queryClient } from './queryClient';
 import './style.css';
 import App from './App.vue';
+
+import { realtimeSync } from './services/realtimeSync';
 
 const app = createApp(App);
 const pinia = createPinia();
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,        // 30 s before background refetch
-      gcTime: 120_000,          // 2 min cache retention after unmount
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
+realtimeSync.start();
 
 app.use(pinia);
 app.use(VueQueryPlugin, { queryClient });
 app.mount('#app');
-
