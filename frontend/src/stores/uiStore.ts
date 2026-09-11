@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { FileEntry } from '../types/vfs';
-import { getContentUrl } from '../api/files';
 import { useEditorStore } from './editorStore';
+import { useMediaViewerStore } from './mediaViewerStore';
 
 export interface ToastMessage {
   id: string;
@@ -52,13 +52,32 @@ export const useUiStore = defineStore('ui', () => {
     set: (val) => { editorStore.connectionId = val; },
   });
 
-  // Media Viewer & Player
-  const isMediaViewerOpen = ref<boolean>(false);
-  const mediaViewerUrl = ref<string>('');
-  const mediaViewerTitle = ref<string>('');
-  const mediaViewerFile = ref<FileEntry | null>(null);
-  const mediaViewerList = ref<FileEntry[]>([]);
-  const mediaViewerConnectionId = ref<string>('local');
+  // Media Viewer & Player (Delegated to mediaViewerStore)
+  const mediaViewerStore = useMediaViewerStore();
+  const isMediaViewerOpen = computed<boolean>({
+    get: () => mediaViewerStore.isOpen,
+    set: (val) => { mediaViewerStore.isOpen = val; },
+  });
+  const mediaViewerUrl = computed<string>({
+    get: () => mediaViewerStore.activeUrl,
+    set: (val) => { mediaViewerStore.activeUrl = val; },
+  });
+  const mediaViewerTitle = computed<string>({
+    get: () => mediaViewerStore.activeTitle,
+    set: (val) => { mediaViewerStore.activeTitle = val; },
+  });
+  const mediaViewerFile = computed<FileEntry | null>({
+    get: () => mediaViewerStore.activeEntry,
+    set: (val) => { mediaViewerStore.activeEntry = val; },
+  });
+  const mediaViewerList = computed<FileEntry[]>({
+    get: () => mediaViewerStore.playlist,
+    set: (val) => { mediaViewerStore.playlist = val; },
+  });
+  const mediaViewerConnectionId = computed<string>({
+    get: () => mediaViewerStore.connectionId,
+    set: (val) => { mediaViewerStore.connectionId = val; },
+  });
 
   const contextMenu = ref<{
     visible: boolean;
@@ -140,15 +159,6 @@ export const useUiStore = defineStore('ui', () => {
     editorStore.openFile(entry, content, etag, connectionId);
   }
 
-  function isMediaEntry(entry: FileEntry): boolean {
-    const ext = entry.name.split('.').pop()?.toLowerCase() || '';
-    return [
-      'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif',
-      'mp4', 'webm', 'mov', 'mkv', 'avi', 'ogg',
-      'mp3', 'wav', 'flac', 'aac', 'm4a', 'opus'
-    ].includes(ext);
-  }
-
   function openMediaViewer(
     title: string,
     url: string,
@@ -156,32 +166,11 @@ export const useUiStore = defineStore('ui', () => {
     list: FileEntry[] = [],
     connectionId: string = 'local'
   ) {
-    mediaViewerTitle.value = title;
-    mediaViewerUrl.value = url;
-    mediaViewerFile.value = currentFile;
-    mediaViewerConnectionId.value = connectionId;
-
-    const mediaFiles = list.filter((item) => item.kind === 'file' && isMediaEntry(item));
-    mediaViewerList.value = mediaFiles.length > 0 ? mediaFiles : (currentFile ? [currentFile] : []);
-    isMediaViewerOpen.value = true;
+    mediaViewerStore.openMedia(title, url, currentFile, list, connectionId);
   }
 
   function navigateMedia(direction: 'next' | 'prev') {
-    if (mediaViewerList.value.length <= 1 || !mediaViewerFile.value) return;
-
-    const currentIndex = mediaViewerList.value.findIndex(
-      (item) => item.path === mediaViewerFile.value?.path
-    );
-    if (currentIndex === -1) return;
-
-    let nextIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
-    if (nextIndex >= mediaViewerList.value.length) nextIndex = 0;
-    if (nextIndex < 0) nextIndex = mediaViewerList.value.length - 1;
-
-    const nextItem = mediaViewerList.value[nextIndex];
-    mediaViewerFile.value = nextItem;
-    mediaViewerTitle.value = nextItem.name;
-    mediaViewerUrl.value = getContentUrl(mediaViewerConnectionId.value, nextItem.path);
+    mediaViewerStore.navigate(direction);
   }
 
   function openContextMenu(
