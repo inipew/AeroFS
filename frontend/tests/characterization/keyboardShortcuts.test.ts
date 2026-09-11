@@ -42,5 +42,15 @@ describe('Characterization: Keyboard Shortcuts & Input Guard', () => {
     expect(isAddressBarShortcut('l', true)).toBe(true);
     expect(isAddressBarShortcut('L', true)).toBe(true);
     expect(isAddressBarShortcut('l', false)).toBe(false);
+
+    // Delete vs Shift+Delete for permanent delete
+    function getDeleteMode(key: string, shiftKey: boolean): 'trash' | 'permanent' | null {
+      if (key !== 'Delete') return null;
+      return shiftKey ? 'permanent' : 'trash';
+    }
+
+    expect(getDeleteMode('Delete', false)).toBe('trash');
+    expect(getDeleteMode('Delete', true)).toBe('permanent');
+    expect(getDeleteMode('Backspace', true)).toBe(null);
   });
 });

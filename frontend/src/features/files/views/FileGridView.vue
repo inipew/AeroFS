@@ -1,5 +1,5 @@
 <template>
-  <div class="w-full">
+  <div class="w-full min-h-full flex flex-col flex-1">
     <!-- Parent Folder Navigation Card (..) -->
     <div
       v-if="currentPath !== '/' && currentPath !== ''"
@@ -58,7 +58,7 @@
               @touchcancel="$emit('entryTouchend')"
               @click="$emit('select', $event, getItemAt(vRow.index, colIdx - 1)!)"
               @dblclick="$emit('activate', getItemAt(vRow.index, colIdx - 1)!)"
-              @contextmenu="$emit('contextmenu', $event, getItemAt(vRow.index, colIdx - 1)!)"
+              @contextmenu.stop.prevent="$emit('contextmenu', $event, getItemAt(vRow.index, colIdx - 1)!)"
               @dragover.stop.prevent="$emit('folderDragover', $event, getItemAt(vRow.index, colIdx - 1)!)"
               @dragleave.stop="$emit('folderDragleave', $event, getItemAt(vRow.index, colIdx - 1)!)"
               @drop.stop.prevent="$emit('drop', $event, getItemAt(vRow.index, colIdx - 1)!)"
@@ -109,7 +109,7 @@
               @touchcancel="$emit('entryTouchend')"
               @click="$emit('select', $event, getItemAt(vRow.index, colIdx - 1)!)"
               @dblclick="$emit('activate', getItemAt(vRow.index, colIdx - 1)!)"
-              @contextmenu="$emit('contextmenu', $event, getItemAt(vRow.index, colIdx - 1)!)"
+              @contextmenu.stop.prevent="$emit('contextmenu', $event, getItemAt(vRow.index, colIdx - 1)!)"
               :class="[
                 'border rounded-2xl overflow-hidden cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-standard ease-spring flex flex-col group select-none shadow-xs active:scale-[0.98] h-full',
                 isHidden(getItemAt(vRow.index, colIdx - 1)!) ? 'opacity-65 hover:opacity-100 border-dashed border-gray-300 dark:border-slate-700 bg-gray-50/30 dark:bg-slate-900/30' : '',
@@ -229,6 +229,9 @@
         <span v-if="totalCount" class="text-gray-400 dark:text-slate-500 text-[10px]">({{ entries.length }} of {{ totalCount }})</span>
       </button>
     </div>
+
+    <!-- Empty canvas spacer to ensure blank area is always clickable -->
+    <div class="flex-1 min-h-[60px]"></div>
   </div>
 </template>
 
@@ -333,4 +336,11 @@ function isVideo(entry: FileEntry): boolean {
   const ext = getFileExt(entry);
   return ['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'm4v', '3gp', 'ogv'].includes(ext);
 }
+
+defineExpose({
+  scrollToIndex: (idx: number) => {
+    const rowIdx = Math.floor(idx / props.columns);
+    gridVirtualizer.value.scrollToIndex(rowIdx, { align: 'auto' });
+  },
+});
 </script>

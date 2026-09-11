@@ -70,9 +70,9 @@
       <!-- Delete Action -->
       <button
         type="button"
-        @click="$emit('delete')"
+        @click="$emit('delete', $event.shiftKey)"
         class="px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/80 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-xs font-semibold text-rose-600 dark:text-rose-400 flex items-center space-x-1.5 transition active:scale-95 cursor-pointer shadow-2xs"
-        title="Delete selected items (Del)"
+        title="Delete selected items (Del / Shift+Del for permanent)"
       >
         <FbIcon name="delete" size="13px" />
         <span>Delete</span>
@@ -116,7 +116,7 @@ defineEmits<{
   (e: 'rename'): void;
   (e: 'copy'): void;
   (e: 'cut'): void;
-  (e: 'delete'): void;
+  (e: 'delete', permanent?: boolean): void;
 }>();
 
 const formattedSize = computed(() => formatBytes(props.selectedTotalSize));

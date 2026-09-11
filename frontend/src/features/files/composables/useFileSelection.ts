@@ -85,6 +85,30 @@ export function useFileSelection(options: UseFileSelectionOptions) {
     }
   }
 
+  function selectIndex(
+    targetIndex: number,
+    modifiers?: { isRange?: boolean; isMulti?: boolean }
+  ) {
+    if (targetIndex < 0 || targetIndex >= options.entries.value.length) return;
+    const targetEntry = options.entries.value[targetIndex];
+    if (!targetEntry) return;
+
+    const isRange = modifiers?.isRange ?? false;
+    const isMulti = modifiers?.isMulti ?? false;
+
+    if (isRange) {
+      selectRange(targetIndex, isMulti);
+    } else if (isMulti) {
+      const current = options.selectedPaths.value;
+      if (!current.includes(targetEntry.path)) {
+        options.onSelect([...current, targetEntry.path]);
+      }
+      lastClickedIndex.value = targetIndex;
+    } else {
+      selectSingle(targetEntry.path);
+    }
+  }
+
   return {
     lastClickedIndex,
     selectedCount,
@@ -95,6 +119,7 @@ export function useFileSelection(options: UseFileSelectionOptions) {
     selectSingle,
     toggleItem,
     selectRange,
+    selectIndex,
     handleEntrySelect,
   };
 }

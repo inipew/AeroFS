@@ -1,9 +1,9 @@
 <template>
   <Transition name="ios-modal">
     <div
-      v-if="uiStore.isDeleteOpen"
+      v-if="isOpen"
       class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs"
-      @click="uiStore.isDeleteOpen = false"
+      @click="closeDialog"
     >
       <div
         class="modal-card bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4"
@@ -24,7 +24,7 @@
         <div>
           <h3 class="text-sm font-bold text-gray-900 dark:text-white">Delete Confirmation</h3>
           <p class="text-gray-500 dark:text-slate-400 text-xs">
-            Choose whether to move to trash or delete permanently.
+            {{ deleteMode === 'permanent' ? 'Permanently purge selected files from disk.' : 'Choose whether to move to trash or delete permanently.' }}
           </p>
         </div>
       </div>
@@ -32,10 +32,10 @@
       <!-- Delete Targets List -->
       <div class="space-y-1.5">
         <p class="text-gray-700 dark:text-slate-300 font-semibold text-xs">
-          Target Items ({{ uiStore.deleteTargets.length }}):
+          Target Items ({{ targetPaths.length }}):
         </p>
         <div class="max-h-28 overflow-y-auto bg-gray-50 dark:bg-slate-950 p-3 rounded-2xl border border-gray-200 dark:border-slate-800 font-mono text-[11px] text-gray-600 dark:text-slate-400 space-y-1 shadow-inner">
-          <div v-for="p in uiStore.deleteTargets" :key="p" class="truncate flex items-center space-x-1.5">
+          <div v-for="p in targetPaths" :key="p" class="truncate flex items-center space-x-1.5">
             <span class="text-gray-400">•</span>
             <span class="truncate">{{ p }}</span>
           </div>
@@ -101,7 +101,7 @@
       <div class="flex justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-slate-800">
         <button
           type="button"
-          @click="uiStore.isDeleteOpen = false"
+          @click="closeDialog"
           class="px-4 py-2.5 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer"
         >
           Cancel
@@ -128,7 +128,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { deleteFilesApi } from '../../api/files';
 import { moveToTrash } from '../../api/trash';
@@ -136,36 +136,67 @@ import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useOverlayStore } from '../../overlays/overlayStore';
 import { useHistoryStore } from '../../stores/historyStore';
 
 const workspaceStore = useWorkspaceStore();
 const fileStore = useFileStore();
 const uiStore = useUiStore();
+const overlayStore = useOverlayStore();
 const historyStore = useHistoryStore();
 
 const deleteMode = ref<'trash' | 'permanent'>('trash');
 const loading = ref(false);
 
-watch(
-  () => uiStore.isDeleteOpen,
-  (open) => {
-    if (open) {
-      deleteMode.value = 'trash'; // Default to safe recycle bin deletion
-    }
+const isOpen = computed(() => uiStore.isDeleteOpen || overlayStore.current?.type === 'delete');
+
+const targetPaths = computed<string[]>(() => {
+  if (overlayStore.current?.type === 'delete') {
+    return overlayStore.current.paths;
   }
+  return uiStore.deleteTargets;
+});
+
+const targetConnectionId = computed<string>(() => {
+  if (overlayStore.current?.type === 'delete') {
+    const p = workspaceStore.getPanel(overlayStore.current.panelId);
+    if (p?.connectionId) return p.connectionId;
+  }
+  const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
+  return activeP?.connectionId || fileStore.currentConnectionId || 'local';
+});
+
+function closeDialog() {
+  uiStore.isDeleteOpen = false;
+  uiStore.deletePermanent = false;
+  if (overlayStore.current?.type === 'delete') {
+    overlayStore.close();
+  }
+}
+
+watch(
+  () => [uiStore.isDeleteOpen, overlayStore.current] as const,
+  ([open, currentOverlay]) => {
+    if (open || currentOverlay?.type === 'delete') {
+      const isPermanent =
+        (currentOverlay?.type === 'delete' && currentOverlay.permanent) ||
+        uiStore.deletePermanent;
+      deleteMode.value = isPermanent ? 'permanent' : 'trash';
+    }
+  },
+  { immediate: true }
 );
 
 async function handleConfirmDelete() {
-  if (uiStore.deleteTargets.length === 0) return;
+  if (targetPaths.value.length === 0) return;
   loading.value = true;
 
   try {
-    const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
-    const connId = activeP.connectionId || fileStore.currentConnectionId;
+    const connId = targetConnectionId.value;
 
     if (deleteMode.value === 'trash') {
       // Soft delete: move to .trash
-      const data = await moveToTrash(connId, uiStore.deleteTargets);
+      const data = await moveToTrash(connId, targetPaths.value);
 
       if (data.moved_items) {
         for (const item of data.moved_items) {
@@ -182,11 +213,11 @@ async function handleConfirmDelete() {
       uiStore.showToast(data.message || 'Moved item(s) to Recycle Bin', 'success');
     } else {
       // Permanent delete
-      await deleteFilesApi(connId, uiStore.deleteTargets);
-      uiStore.showToast(`Permanently deleted ${uiStore.deleteTargets.length} item(s)`, 'success');
+      await deleteFilesApi(connId, targetPaths.value);
+      uiStore.showToast(`Permanently deleted ${targetPaths.value.length} item(s)`, 'success');
     }
 
-    uiStore.isDeleteOpen = false;
+    closeDialog();
 
     // Immediately refresh workspace
     await workspaceStore.refreshAll();

@@ -8,7 +8,7 @@ import type { Connection } from '../types/connection';
 export type Overlay =
   | { type: 'create'; initialType?: 'file' | 'directory'; panelId: PanelId }
   | { type: 'rename'; panelId: PanelId; path: string }
-  | { type: 'delete'; panelId: PanelId; paths: string[] }
+  | { type: 'delete'; panelId: PanelId; paths: string[]; permanent?: boolean }
   | { type: 'upload'; panelId: PanelId }
   | { type: 'connection'; connectionToEdit?: Connection | null }
   | { type: 'delete-connection'; connection: Connection }

@@ -18,6 +18,7 @@ export const useUiStore = defineStore('ui', () => {
 
   const isDeleteOpen = ref<boolean>(false);
   const deleteTargets = ref<string[]>([]);
+  const deletePermanent = ref<boolean>(false);
 
   const isUploadOpen = ref<boolean>(false);
   const isSearchOpen = ref<boolean>(false);
@@ -90,8 +91,9 @@ export const useUiStore = defineStore('ui', () => {
     isRenameOpen.value = true;
   }
 
-  function openDelete(paths: string[]) {
+  function openDelete(paths: string[], permanent: boolean = false) {
     deleteTargets.value = paths;
+    deletePermanent.value = permanent;
     isDeleteOpen.value = true;
   }
 
@@ -260,6 +262,7 @@ export const useUiStore = defineStore('ui', () => {
     renameTarget,
     isDeleteOpen,
     deleteTargets,
+    deletePermanent,
     isUploadOpen,
     isSearchOpen,
     isSyncOpen,

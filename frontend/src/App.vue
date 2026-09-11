@@ -241,9 +241,19 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+function handleGlobalDragOver(e: DragEvent) {
+  e.preventDefault();
+}
+
+function handleGlobalDrop(e: DragEvent) {
+  e.preventDefault();
+}
+
 onMounted(async () => {
   initializeCommandRegistry();
   window.addEventListener('keydown', handleGlobalKeydown);
+  window.addEventListener('dragover', handleGlobalDragOver);
+  window.addEventListener('drop', handleGlobalDrop);
   await authStore.checkAuth();
   if (authStore.isAuthenticated) {
     await preferencesStore.fetchPreferences();
@@ -259,5 +269,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeydown);
+  window.removeEventListener('dragover', handleGlobalDragOver);
+  window.removeEventListener('drop', handleGlobalDrop);
 });
 </script>

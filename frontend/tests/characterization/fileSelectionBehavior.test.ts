@@ -73,4 +73,58 @@ describe('Characterization: File Selection Behavior', () => {
     handleSelect(state, 4, { shiftKey: true, ctrlOrMetaKey: true });
     expect(state.selectedEntries).toEqual(['/a.txt', '/c.txt', '/d.txt', '/e.txt']);
   });
+
+  it('navigates with arrow keys single selection without modifier', () => {
+    const state: SelectionState = { selectedEntries: ['/a.txt'], lastClickedIndex: 0 };
+    // Move to next item (ArrowDown / ArrowRight)
+    handleSelect(state, 1, {});
+    expect(state.selectedEntries).toEqual(['/b.txt']);
+    expect(state.lastClickedIndex).toBe(1);
+
+    // Move to another item
+    handleSelect(state, 2, {});
+    expect(state.selectedEntries).toEqual(['/c.txt']);
+    expect(state.lastClickedIndex).toBe(2);
+  });
+
+  it('multi-selects additional files when Ctrl is held during keyboard navigation', () => {
+    const state: SelectionState = { selectedEntries: ['/a.txt'], lastClickedIndex: 0 };
+    // Navigate with Ctrl + Arrow
+    handleSelect(state, 1, { ctrlOrMetaKey: true });
+    expect(state.selectedEntries).toEqual(['/a.txt', '/b.txt']);
+    expect(state.lastClickedIndex).toBe(1);
+
+    handleSelect(state, 3, { ctrlOrMetaKey: true });
+    expect(state.selectedEntries).toEqual(['/a.txt', '/b.txt', '/d.txt']);
+    expect(state.lastClickedIndex).toBe(3);
+  });
+
+  it('calculates 2D grid index for Up, Down, Left, and Right arrow keys', () => {
+    const total = 10;
+    const cols = 4;
+
+    function getNextGridIndex(current: number, key: string): number {
+      switch (key) {
+        case 'ArrowDown':
+          return Math.min(total - 1, current + cols);
+        case 'ArrowUp':
+          return Math.max(0, current - cols);
+        case 'ArrowRight':
+          return Math.min(total - 1, current + 1);
+        case 'ArrowLeft':
+          return Math.max(0, current - 1);
+        default:
+          return current;
+      }
+    }
+
+    expect(getNextGridIndex(0, 'ArrowDown')).toBe(4);
+    expect(getNextGridIndex(4, 'ArrowDown')).toBe(8);
+    expect(getNextGridIndex(8, 'ArrowDown')).toBe(9); // clamped to total - 1
+    expect(getNextGridIndex(8, 'ArrowUp')).toBe(4);
+    expect(getNextGridIndex(4, 'ArrowUp')).toBe(0);
+    expect(getNextGridIndex(0, 'ArrowUp')).toBe(0); // clamped to 0
+    expect(getNextGridIndex(0, 'ArrowRight')).toBe(1);
+    expect(getNextGridIndex(1, 'ArrowLeft')).toBe(0);
+  });
 });

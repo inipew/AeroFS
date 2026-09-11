@@ -1,5 +1,5 @@
 <template>
-  <div class="w-full">
+  <div class="w-full min-h-full flex flex-col flex-1">
     <table class="w-full text-left border-collapse text-xs select-none">
       <thead class="sticky top-0 z-10 bg-white/95 dark:bg-[#0b0f19]/95 backdrop-blur-xs border-b border-gray-200 dark:border-slate-800 text-[11px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider">
         <tr>
@@ -74,10 +74,10 @@
           @touchcancel="$emit('entryTouchend')"
           @click="$emit('select', $event, entries[vRow.index])"
           @dblclick="$emit('activate', entries[vRow.index])"
-          @contextmenu="$emit('contextmenu', $event, entries[vRow.index])"
-          @dragover.stop.prevent="entries[vRow.index]?.kind === 'directory' ? $emit('folderDragover', $event, entries[vRow.index]) : null"
-          @dragleave.stop="entries[vRow.index]?.kind === 'directory' ? $emit('folderDragleave', $event, entries[vRow.index]) : null"
-          @drop.stop.prevent="entries[vRow.index]?.kind === 'directory' ? $emit('drop', $event, entries[vRow.index]) : null"
+          @contextmenu.stop.prevent="$emit('contextmenu', $event, entries[vRow.index])"
+          @dragover="handleRowDragOver($event, entries[vRow.index])"
+          @dragleave="handleRowDragLeave($event, entries[vRow.index])"
+          @drop="handleRowDrop($event, entries[vRow.index])"
           :class="[
             'cursor-pointer transition group',
             entries[vRow.index] && isHidden(entries[vRow.index]) ? 'opacity-65 hover:opacity-100 italic' : '',
@@ -188,6 +188,9 @@
         <span v-if="totalCount" class="text-gray-400 dark:text-slate-500 text-[10px]">({{ entries.length }} of {{ totalCount }})</span>
       </button>
     </div>
+
+    <!-- Empty canvas spacer to ensure blank area is always clickable -->
+    <div class="flex-1 min-h-[60px]"></div>
   </div>
 </template>
 
@@ -231,7 +234,7 @@ const props = withDefaults(
   }
 );
 
-defineEmits<{
+const emit = defineEmits<{
   (e: 'select', event: MouseEvent, entry: FileEntry): void;
   (e: 'activate', entry: FileEntry): void;
   (e: 'toggleSelect', path: string): void;
@@ -248,6 +251,29 @@ defineEmits<{
   (e: 'entryTouchend'): void;
   (e: 'loadMore'): void;
 }>();
+
+function handleRowDragOver(event: DragEvent, entry?: FileEntry) {
+  if (entry?.kind === 'directory') {
+    event.preventDefault();
+    event.stopPropagation();
+    emit('folderDragover', event, entry);
+  }
+}
+
+function handleRowDragLeave(event: DragEvent, entry?: FileEntry) {
+  if (entry?.kind === 'directory') {
+    event.stopPropagation();
+    emit('folderDragleave', event, entry);
+  }
+}
+
+function handleRowDrop(event: DragEvent, entry?: FileEntry) {
+  if (entry?.kind === 'directory') {
+    event.preventDefault();
+    event.stopPropagation();
+    emit('drop', event, entry);
+  }
+}
 
 const virtualizer = useVirtualizer({
   get count() {
@@ -313,4 +339,10 @@ function getCategoryIconColor(entry: FileEntry): string {
   }
   return 'text-gray-400 dark:text-slate-500';
 }
+
+defineExpose({
+  scrollToIndex: (idx: number) => {
+    virtualizer.value.scrollToIndex(idx, { align: 'auto' });
+  },
+});
 </script>

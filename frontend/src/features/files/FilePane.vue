@@ -4,6 +4,7 @@
     tabindex="0"
     @pointerdown="pane.setActive"
     @focusin="pane.setActive"
+    @contextmenu="handleBlankContextMenu"
     class="flex-1 flex flex-col h-full bg-white dark:bg-[#0b0f19] overflow-hidden relative select-none outline-none focus:ring-1 focus:ring-blue-500/20"
     :class="[
       workspaceStore.isDualPane
@@ -15,7 +16,7 @@
   >
     <!-- Subheader: Navigation and Contextual Action Toolbar -->
     <div
-      class="h-11 sm:h-12 border-b px-3 sm:px-4 flex items-center justify-between transition-colors text-xs shrink-0 backdrop-blur-md"
+      class="h-11 sm:h-12 border-b px-3 sm:px-4 flex items-center justify-between transition-colors text-xs shrink-0 backdrop-blur-md relative z-20"
       :class="[
         pane.isActive.value
           ? 'bg-blue-50/40 dark:bg-[#0d1424]/90 border-gray-200 dark:border-slate-800 text-gray-900 dark:text-white font-medium'
@@ -119,10 +120,11 @@
       @dragenter="dragDrop.handleDragEnter"
       @dragover="dragDrop.handleDragOver"
       @dragleave="dragDrop.handleDragLeave"
-      @drop.stop.prevent="dragDrop.handleDrop($event)"
-      @touchstart.passive="pullToRefresh.onTouchStart"
-      @touchmove.passive="pullToRefresh.onTouchMove"
-      @touchend="pullToRefresh.onTouchEnd"
+      @drop.prevent="dragDrop.handleDrop"
+      @touchstart="handleTouchStart"
+      @touchmove="handleTouchMove"
+      @touchend="handleTouchEnd"
+      @touchcancel="handleTouchEnd"
     >
       <!-- Glassmorphic Dropzone Overlay -->
       <Transition name="drag-overlay">
@@ -184,6 +186,7 @@
             class="p-3 sm:p-4 flex-1 min-h-0"
           >
             <FileGridView
+              ref="gridViewRef"
               :entries="displayedEntries"
               :current-path="panel.location.path"
               :connection-id="panel.location.connectionId"
@@ -214,6 +217,7 @@
             class="flex-1 min-h-0"
           >
             <FileListView
+              ref="listViewRef"
               :entries="displayedEntries"
               :current-path="panel.location.path"
               :selected-paths="panel.selection.paths"
@@ -262,7 +266,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { PanelId } from '../../types/workspace';
 import type { FileEntry } from '../../types/vfs';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -304,6 +308,8 @@ const panel = pane.panel;
 
 const panelContentRef = ref<HTMLElement | null>(null);
 const paneNavRef = ref<InstanceType<typeof PaneNavigation> | null>(null);
+const listViewRef = ref<InstanceType<typeof FileListView> | null>(null);
+const gridViewRef = ref<InstanceType<typeof FileGridView> | null>(null);
 const containerWidth = ref(0);
 
 // Directory Query from TanStack Query
@@ -471,14 +477,30 @@ useFileKeyboardNavigation({
   viewMode: computed(() => panel.value.view.viewMode),
   displayedEntries,
   selectedPaths: selectedPathsRef,
+  activeCursorIndex: selection.lastClickedIndex,
   gridCols,
-  onSelectIndex: (idx, isRange) => {
-    selection.selectRange(idx, isRange);
+  onSelectIndex: (idx, modifiers) => {
+    selection.selectIndex(idx, modifiers);
+    const target = displayedEntries.value[idx];
+    if (target) {
+      if (panel.value.view.viewMode === 'grid') {
+        gridViewRef.value?.scrollToIndex(idx);
+      } else {
+        listViewRef.value?.scrollToIndex(idx);
+      }
+      nextTick(() => {
+        const safePath = window.CSS?.escape ? window.CSS.escape(target.path) : target.path.replace(/"/g, '\\"');
+        const el = panelContentRef.value?.querySelector(`[data-entry-path="${safePath}"]`);
+        if (el) {
+          (el as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      });
+    }
   },
   onActivate: activation.activateEntry,
   onNavigateUp: pane.navigateUp,
   onRename: (entry) => overlayStore.open({ type: 'rename', panelId: props.panelId, path: entry.path }),
-  onDelete: (paths) => overlayStore.open({ type: 'delete', panelId: props.panelId, paths }),
+  onDelete: (paths, permanent) => overlayStore.open({ type: 'delete', panelId: props.panelId, paths, permanent }),
   onSelectAll: selection.selectAll,
   onClearSelection: selection.clearSelection,
 });
@@ -513,16 +535,147 @@ function handleContainerClick(e: MouseEvent) {
   selection.clearSelection();
 }
 
+// Touch Gestures: Tap 2 Jari and Long-Press for Context Menu
+let touchStartTime = 0;
+let touchStartPos = { x: 0, y: 0 };
+let isTwoFingerTap = false;
+let longPressTimeout: ReturnType<typeof setTimeout> | null = null;
+let touchTargetEntry: FileEntry | null = null;
+
+function handleTouchStart(e: TouchEvent) {
+  // 1. Two-finger tap detection (Tap 2 Jari)
+  if (e.touches.length === 2) {
+    isTwoFingerTap = true;
+    touchStartTime = Date.now();
+    touchStartPos = {
+      x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+      y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+    };
+    const targetEl = (e.target as HTMLElement | null)?.closest('[data-entry-path]') as HTMLElement | null;
+    const path = targetEl?.getAttribute('data-entry-path');
+    touchTargetEntry = path ? displayedEntries.value.find((x) => x.path === path) || null : null;
+    if (longPressTimeout) {
+      clearTimeout(longPressTimeout);
+      longPressTimeout = null;
+    }
+    return;
+  }
+
+  // 2. Single-finger pull-to-refresh & long-press
+  if (e.touches.length === 1) {
+    pullToRefresh.onTouchStart(e);
+    isTwoFingerTap = false;
+    touchStartTime = Date.now();
+    touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    const targetEl = (e.target as HTMLElement | null)?.closest('[data-entry-path]') as HTMLElement | null;
+    const path = targetEl?.getAttribute('data-entry-path');
+    touchTargetEntry = path ? displayedEntries.value.find((x) => x.path === path) || null : null;
+
+    if (touchTargetEntry) {
+      if (longPressTimeout) clearTimeout(longPressTimeout);
+      longPressTimeout = setTimeout(() => {
+        try {
+          navigator.vibrate?.(35);
+        } catch {}
+
+        pane.setActive();
+        if (touchTargetEntry && !panel.value.selectedEntries.includes(touchTargetEntry.path)) {
+          panel.value.selectedEntries = [touchTargetEntry.path];
+          selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === touchTargetEntry!.path);
+        }
+        uiStore.openContextMenu(
+          { clientX: touchStartPos.x, clientY: touchStartPos.y, preventDefault: () => {} } as MouseEvent,
+          touchTargetEntry as any,
+          panel.value.location.connectionId,
+          props.panelId
+        );
+        longPressTimeout = null;
+      }, 500);
+    }
+  }
+}
+
+function handleTouchMove(e: TouchEvent) {
+  if (e.touches.length === 1) {
+    pullToRefresh.onTouchMove(e);
+    if (longPressTimeout) {
+      const dx = Math.abs(e.touches[0].clientX - touchStartPos.x);
+      const dy = Math.abs(e.touches[0].clientY - touchStartPos.y);
+      if (dx > 10 || dy > 10) {
+        clearTimeout(longPressTimeout);
+        longPressTimeout = null;
+      }
+    }
+  }
+}
+
+function handleTouchEnd(e: TouchEvent) {
+  pullToRefresh.onTouchEnd();
+  if (longPressTimeout) {
+    clearTimeout(longPressTimeout);
+    longPressTimeout = null;
+  }
+
+  if (isTwoFingerTap) {
+    const elapsed = Date.now() - touchStartTime;
+    // Quick two-finger tap (< 400ms)
+    if (elapsed < 400) {
+      e.preventDefault();
+      try {
+        navigator.vibrate?.(30);
+      } catch {}
+
+      pane.setActive();
+      if (touchTargetEntry) {
+        if (!panel.value.selectedEntries.includes(touchTargetEntry.path)) {
+          panel.value.selectedEntries = [touchTargetEntry.path];
+          selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === touchTargetEntry!.path);
+        }
+      } else {
+        selection.clearSelection();
+      }
+
+      uiStore.openContextMenu(
+        { clientX: touchStartPos.x, clientY: touchStartPos.y, preventDefault: () => {} } as MouseEvent,
+        touchTargetEntry as any,
+        panel.value.location.connectionId,
+        props.panelId
+      );
+    }
+    isTwoFingerTap = false;
+    touchTargetEntry = null;
+  }
+}
+
 function handleEntryContextMenu(e: MouseEvent, entry: FileEntry) {
+  e.preventDefault();
+  e.stopPropagation();
   pane.setActive();
+  if (!entry) {
+    handleBlankContextMenu(e);
+    return;
+  }
   if (!panel.value.selectedEntries.includes(entry.path)) {
     panel.value.selectedEntries = [entry.path];
+    selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === entry.path);
   }
   uiStore.openContextMenu(e, entry as any, panel.value.location.connectionId, props.panelId);
 }
 
 function handleBlankContextMenu(e: MouseEvent) {
+  const target = e.target as HTMLElement;
+  // If right-clicked on an input or textarea field, preserve native browser context menu
+  if (target?.closest('input, textarea, [contenteditable="true"]')) {
+    return;
+  }
+  // If right-clicked on an item card/row, let entry context menu take over
+  if (target?.closest('[data-entry-item]')) {
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
   pane.setActive();
+  selection.clearSelection();
   uiStore.openContextMenu(e, null, panel.value.location.connectionId, props.panelId);
 }
 
@@ -545,11 +698,12 @@ function handleRename() {
   }
 }
 
-function handleDelete() {
+function handleDelete(permanent: boolean = false) {
   overlayStore.open({
     type: 'delete',
     panelId: props.panelId,
     paths: panel.value.selectedEntries,
+    permanent,
   });
 }
 
@@ -561,4 +715,19 @@ async function copyCurrentPath() {
     uiStore.showToast('Failed to copy path', 'error');
   }
 }
+
+function onSelectAllEvent(e: Event) {
+  const custom = e as CustomEvent<{ panelId: string }>;
+  if (custom.detail?.panelId === props.panelId) {
+    selection.selectAll();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('pane-select-all', onSelectAllEvent);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('pane-select-all', onSelectAllEvent);
+});
 </script>
