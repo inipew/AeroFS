@@ -98,7 +98,8 @@ watch(
     if (val) {
       archiveName.value = `archive_${Date.now().toString().slice(-4)}.zip`;
     }
-  }
+  },
+  { immediate: true }
 );
 
 watch(

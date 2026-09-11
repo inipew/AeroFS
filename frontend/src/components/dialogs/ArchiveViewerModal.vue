@@ -2,336 +2,284 @@
   <Transition name="ios-modal">
     <div
       v-if="isOpen"
-      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 select-none font-sans text-xs"
+      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 md:p-6 select-none font-sans text-xs"
       @click="close"
     >
       <div
-        class="modal-card bg-white dark:bg-[#0c101c] border border-gray-200 dark:border-slate-800/90 rounded-2xl sm:rounded-3xl max-w-4xl w-full flex flex-col shadow-2xl overflow-hidden min-h-[380px] max-h-[85vh]"
+        class="modal-card bg-white dark:bg-[#111317] border border-gray-200/90 dark:border-white/[0.08] rounded-2xl sm:rounded-3xl w-[96vw] max-w-7xl h-[92vh] sm:h-[88vh] flex flex-col shadow-2xl overflow-hidden relative"
         @click.stop
       >
-      <!-- Header with Gradient Accent -->
-      <div class="bg-gray-50/90 dark:bg-[#090d18]/90 border-b border-gray-200 dark:border-slate-800/80 px-4 sm:px-5 py-3 flex items-center justify-between gap-3 text-xs shrink-0">
-        <!-- Archive Identity -->
-        <div class="flex items-center space-x-3 truncate">
-          <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500/20 to-orange-500/10 border border-amber-500/20 text-amber-500 dark:text-amber-400 flex items-center justify-center shrink-0 shadow-inner">
-            <FbIcon name="archive" size="20px" />
-          </div>
+        <!-- Top Toolbar Header -->
+        <header class="h-13 sm:h-14 bg-gray-50/90 dark:bg-[#0c0e12]/90 border-b border-gray-200/80 dark:border-white/[0.08] px-3.5 sm:px-5 flex items-center justify-between gap-3 text-xs shrink-0 backdrop-blur-md">
+          <!-- Archive Title & Identifiers -->
+          <div class="flex items-center space-x-3 truncate">
+            <button
+              v-if="currentSubpath !== ''"
+              type="button"
+              @click="navigateUp"
+              class="p-1.5 rounded-xl border border-gray-200 dark:border-white/[0.08] hover:bg-gray-100 dark:hover:bg-white/[0.06] text-gray-600 dark:text-slate-300 transition cursor-pointer shrink-0"
+              title="Go to parent directory"
+            >
+              <FbIcon name="arrow-up" size="14px" />
+            </button>
 
-          <div class="truncate">
-            <div class="flex items-center space-x-2 truncate">
-              <h3 class="text-xs sm:text-sm font-bold text-gray-900 dark:text-slate-100 truncate tracking-tight">
-                {{ archiveName }}
-              </h3>
-              <span class="px-2 py-0.5 rounded-md bg-blue-500/10 dark:bg-blue-900/30 border border-blue-500/20 text-blue-600 dark:text-blue-400 font-mono text-[10px] uppercase font-bold tracking-wide">
-                {{ archiveExt }}
-              </span>
-              <span v-if="totalSize > 0" class="hidden sm:inline-block px-2 py-0.5 rounded-md bg-gray-100 dark:bg-slate-800/80 text-gray-500 dark:text-slate-400 font-mono text-[10px]">
-                {{ formatBytes(totalSize) }}
-              </span>
+            <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-br from-amber-500/20 to-orange-500/10 border border-amber-500/25 text-amber-500 dark:text-amber-400 flex items-center justify-center shrink-0 shadow-xs">
+              <FbIcon name="archive" size="19px" />
             </div>
 
-            <p class="text-[11px] text-gray-400 dark:text-slate-500 font-mono truncate mt-0.5">
-              <span class="text-gray-500 dark:text-slate-400 font-semibold">{{ connectionId }}</span>:{{ archivePath }}
-            </p>
+            <div class="truncate">
+              <div class="flex items-center space-x-2 truncate">
+                <h3 class="text-xs sm:text-sm font-bold text-gray-900 dark:text-slate-100 truncate tracking-tight" :title="archiveName">
+                  {{ archiveName }}
+                </h3>
+                <span class="px-2 py-0.5 rounded-md bg-amber-500/10 dark:bg-amber-900/30 border border-amber-500/20 text-amber-600 dark:text-amber-400 font-mono text-[10px] uppercase font-bold tracking-wide shrink-0">
+                  {{ archiveExt }}
+                </span>
+                <span v-if="totalUnpackedSize > 0" class="hidden md:inline-block px-2 py-0.5 rounded-md bg-gray-200/60 dark:bg-white/[0.06] text-gray-500 dark:text-slate-400 font-mono text-[10px]">
+                  {{ formatBytes(totalUnpackedSize) }}
+                </span>
+              </div>
+              <p class="text-[11px] text-gray-400 dark:text-slate-500 font-mono truncate mt-0.5">
+                <span class="text-gray-500 dark:text-slate-400 font-semibold">{{ connectionId }}</span>:{{ archivePath }}
+              </p>
+            </div>
           </div>
-        </div>
 
-        <!-- Header Actions -->
-        <div class="flex items-center space-x-2 shrink-0">
-          <button
-            @click="extractAll"
-            :disabled="extracting || entries.length === 0"
-            class="px-3 sm:px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold flex items-center space-x-1.5 shadow-sm transition cursor-pointer disabled:opacity-50 text-xs active:scale-95"
-            title="Extract all files to the current directory"
-          >
-            <span v-if="extracting && selectedPaths.length === 0" class="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
-            <FbIcon v-else name="download" size="13px" />
-            <span class="hidden sm:inline">Extract All</span>
-            <span class="sm:hidden">Extract</span>
-          </button>
-
-          <button
-            @click="fetchEntries"
-            :disabled="loading"
-            class="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
-            title="Refresh Archive"
-          >
-            <FbIcon name="refresh" size="14px" :class="{ 'animate-spin': loading }" />
-          </button>
-
-          <button
-            @click="close"
-            class="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
-            title="Close"
-          >
-            <FbIcon name="x" size="15px" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Navigation & Breadcrumbs Bar -->
-      <div class="h-11 bg-white dark:bg-[#0c101c] border-b border-gray-200 dark:border-slate-800/80 px-4 sm:px-5 flex items-center justify-between gap-3 text-xs shrink-0">
-        <!-- Breadcrumb Path Segment -->
-        <div class="flex items-center space-x-1 overflow-x-auto truncate flex-1 py-1 scrollbar-none text-[11px]">
-          <button
-            @click="navigateTo('')"
-            :class="[
-              'px-2.5 py-1 rounded-lg transition font-medium flex items-center space-x-1.5 cursor-pointer shrink-0',
-              currentSubpath === ''
-                ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold'
-                : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800/80 hover:text-gray-900 dark:hover:text-slate-200'
-            ]"
-          >
-            <FbIcon name="home" size="13px" />
-            <span>Root</span>
-          </button>
-
-          <template v-for="(seg, idx) in breadcrumbSegments" :key="idx">
-            <span class="text-gray-300 dark:text-slate-700 select-none">
-              <FbIcon name="chevron-right" size="11px" />
-            </span>
+          <!-- Quick Search Filter in Header -->
+          <div class="w-36 sm:w-56 md:w-72 shrink-0 relative flex items-center">
+            <FbIcon name="search" size="13px" class="absolute left-3 text-gray-400 dark:text-slate-500 pointer-events-none" />
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="Search inside archive..."
+              class="w-full bg-white dark:bg-[#161a22] border border-gray-200 dark:border-white/[0.08] rounded-xl pl-8.5 pr-7 py-1.5 text-[11px] text-gray-900 dark:text-slate-200 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition placeholder-gray-400 dark:placeholder-slate-500 font-medium shadow-2xs"
+            />
             <button
-              @click="navigateTo(seg.subpath)"
+              v-if="searchQuery"
+              type="button"
+              @click="searchQuery = ''"
+              class="absolute right-2.5 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer text-[11px]"
+            >
+              ✕
+            </button>
+          </div>
+
+          <!-- Header Action Buttons -->
+          <div class="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
+            <!-- Extract Button -->
+            <button
+              type="button"
+              @click="handleExtractClick"
+              :disabled="loading || entries.length === 0"
+              class="px-3.5 sm:px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold flex items-center space-x-1.5 shadow-sm transition cursor-pointer disabled:opacity-50 text-xs active:scale-95 duration-150"
+              :title="selectedPaths.length > 0 ? `Extract ${selectedPaths.length} selected items` : 'Extract all files to storage'"
+            >
+              <FbIcon name="download" size="13px" />
+              <span>{{ selectedPaths.length > 0 ? `Extract (${selectedPaths.length})` : 'Extract All' }}</span>
+            </button>
+
+            <!-- Toggle Left Tree -->
+            <button
+              type="button"
+              @click="showTreePane = !showTreePane"
               :class="[
-                'px-2.5 py-1 rounded-lg transition font-medium cursor-pointer shrink-0 truncate max-w-[140px]',
-                idx === breadcrumbSegments.length - 1
+                'p-2 rounded-xl border transition cursor-pointer hidden sm:flex items-center justify-center',
+                showTreePane
+                  ? 'border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                  : 'border-gray-200 dark:border-white/[0.08] text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-white/[0.04]'
+              ]"
+              title="Toggle Folder Tree"
+            >
+              <FbIcon name="panel-left" size="14px" />
+            </button>
+
+            <!-- Toggle Right Inspector -->
+            <button
+              type="button"
+              @click="showInspectorPane = !showInspectorPane"
+              :class="[
+                'p-2 rounded-xl border transition cursor-pointer hidden sm:flex items-center justify-center',
+                showInspectorPane
+                  ? 'border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                  : 'border-gray-200 dark:border-white/[0.08] text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-white/[0.04]'
+              ]"
+              title="Toggle File Inspector"
+            >
+              <FbIcon name="panel-right" size="14px" />
+            </button>
+
+            <!-- Refresh Archive -->
+            <button
+              type="button"
+              @click="refreshArchive"
+              :disabled="loading"
+              class="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition cursor-pointer disabled:opacity-50"
+              title="Refresh archive contents"
+            >
+              <FbIcon name="refresh" size="14px" :class="{ 'animate-spin': loading }" />
+            </button>
+
+            <!-- Close Modal -->
+            <button
+              type="button"
+              @click="close"
+              class="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition cursor-pointer ml-1"
+              title="Close (Esc)"
+            >
+              <FbIcon name="x" size="15px" />
+            </button>
+          </div>
+        </header>
+
+        <!-- Breadcrumb Navigation Bar -->
+        <nav class="h-10 bg-white dark:bg-[#0e1117] border-b border-gray-200/80 dark:border-white/[0.08] px-4 sm:px-5 flex items-center justify-between text-xs shrink-0">
+          <div class="flex items-center space-x-1 overflow-x-auto truncate flex-1 py-1 scrollbar-none text-[11px]">
+            <!-- Root Button -->
+            <button
+              type="button"
+              @click="navigateTo('')"
+              :class="[
+                'px-2.5 py-1 rounded-lg transition font-medium flex items-center space-x-1.5 cursor-pointer shrink-0',
+                currentSubpath === ''
                   ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold'
-                  : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800/80 hover:text-gray-900 dark:hover:text-slate-200'
+                  : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-900 dark:hover:text-slate-200'
               ]"
             >
-              {{ seg.name }}
+              <FbIcon name="home" size="13px" />
+              <span>Root</span>
             </button>
-          </template>
-        </div>
 
-        <!-- Inline Quick Search -->
-        <div class="w-40 sm:w-56 shrink-0 relative flex items-center">
-          <FbIcon name="search" size="13px" class="absolute left-2.5 text-gray-400 dark:text-slate-500 pointer-events-none" />
-          <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Search entries..."
-            class="w-full bg-gray-50 dark:bg-slate-900/80 border border-gray-200 dark:border-slate-800 rounded-xl pl-7.5 pr-6 py-1.5 text-[11px] text-gray-900 dark:text-slate-200 outline-none focus:border-amber-500/80 focus:ring-1 focus:ring-amber-500/30 transition font-medium placeholder-gray-400 dark:placeholder-slate-500"
-          />
-          <button
-            v-if="searchQuery"
-            @click="searchQuery = ''"
-            class="absolute right-2.5 text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 cursor-pointer text-[10px]"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-
-      <!-- Main Content Area -->
-      <div class="flex-1 overflow-y-auto relative p-2 sm:p-3">
-        <!-- Loading State -->
-        <div v-if="loading" class="py-20 flex flex-col items-center justify-center text-gray-400 dark:text-slate-500 space-y-2">
-          <div class="animate-spin rounded-full h-6 w-6 border-2 border-amber-500 border-t-transparent"></div>
-          <span class="text-xs font-medium">Scanning virtual archive headers...</span>
-        </div>
-
-        <!-- Error State -->
-        <div v-else-if="error" class="py-16 flex flex-col items-center justify-center p-6 text-center space-y-3">
-          <div class="w-11 h-11 rounded-2xl bg-red-500/10 text-red-500 flex items-center justify-center border border-red-500/20">
-            <FbIcon name="info" size="22px" />
-          </div>
-          <div>
-            <p class="font-bold text-sm text-gray-900 dark:text-white">Unable to read archive</p>
-            <p class="text-[11px] text-gray-500 dark:text-slate-400 max-w-sm mt-1 font-mono">{{ error }}</p>
-          </div>
-          <button
-            @click="fetchEntries"
-            class="px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-semibold cursor-pointer transition text-xs shadow-xs"
-          >
-            Retry
-          </button>
-        </div>
-
-        <!-- Empty State -->
-        <div v-else-if="filteredEntries.length === 0" class="py-16 flex flex-col items-center justify-center text-gray-400 dark:text-slate-500 space-y-2">
-          <div class="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-slate-900 flex items-center justify-center text-gray-400 dark:text-slate-600">
-            <FbIcon name="empty-folder" size="24px" />
-          </div>
-          <span class="text-xs font-medium">No items found in this directory</span>
-        </div>
-
-        <!-- Virtual Entries List -->
-        <div v-else class="space-y-1">
-          <!-- Table Header -->
-          <div class="px-3 py-2 flex items-center justify-between text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wider font-mono border-b border-gray-100 dark:border-slate-800/60 select-none">
-            <div class="flex items-center space-x-3 flex-1 truncate">
-              <input
-                type="checkbox"
-                :checked="isAllSelected"
-                @change="toggleSelectAll"
-                class="rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer w-3.5 h-3.5"
-              />
-              <span>NAME</span>
-            </div>
-            <div class="flex items-center space-x-6 shrink-0 pr-2">
-              <span class="w-20 text-right">SIZE</span>
-              <span class="w-24 text-right">ACTIONS</span>
-            </div>
-          </div>
-
-          <!-- Parent navigation (..) if inside subpath -->
-          <div
-            v-if="currentSubpath !== ''"
-            @click="navigateUp"
-            class="p-2.5 rounded-xl hover:bg-gray-50 dark:hover:bg-slate-800/50 cursor-pointer flex items-center justify-between transition group text-xs border border-transparent hover:border-gray-200 dark:hover:border-slate-700/60"
-          >
-            <div class="flex items-center space-x-3 truncate">
-              <div class="w-3.5"></div>
-              <div class="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-500 flex items-center justify-center shrink-0">
-                <FbIcon name="folder" size="14px" />
-              </div>
-              <span class="font-bold text-amber-600 dark:text-amber-400">.. (Parent Directory)</span>
-            </div>
-            <span class="text-gray-400 dark:text-slate-600 font-mono text-[10px]">—</span>
-          </div>
-
-          <!-- Entry Row Cards -->
-          <div
-            v-for="entry in filteredEntries"
-            :key="entry.path"
-            @click="handleRowClick($event, entry)"
-            @dblclick="handleRowDoubleClick(entry)"
-            :class="[
-              'p-2 sm:p-2.5 rounded-xl cursor-pointer flex items-center justify-between transition group text-xs border select-none',
-              selectedPaths.includes(entry.path)
-                ? 'bg-blue-50/80 dark:bg-blue-950/40 border-blue-500/50 shadow-xs'
-                : 'bg-transparent hover:bg-gray-50 dark:hover:bg-slate-900/60 border-transparent hover:border-gray-200 dark:hover:border-slate-800/80'
-            ]"
-          >
-            <!-- Left: Checkbox + Icon Badge + Name + Format -->
-            <div class="flex items-center space-x-3 truncate flex-1 min-w-0 pr-2">
-              <div @click.stop class="shrink-0 flex items-center">
-                <input
-                  type="checkbox"
-                  :checked="selectedPaths.includes(entry.path)"
-                  @change="toggleSelect(entry.path)"
-                  class="rounded bg-white dark:bg-slate-900 border-gray-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer w-3.5 h-3.5"
-                />
-              </div>
-
-              <div
+            <!-- Breadcrumb Path Segments -->
+            <template v-for="(seg, idx) in breadcrumbSegments" :key="idx">
+              <span class="text-gray-300 dark:text-slate-700 select-none">
+                <FbIcon name="chevron-right" size="11px" />
+              </span>
+              <button
+                type="button"
+                @click="navigateTo(seg.subpath)"
                 :class="[
-                  'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition shadow-inner',
-                  getBadgeStyle(entry)
+                  'px-2.5 py-1 rounded-lg transition font-medium cursor-pointer shrink-0 truncate max-w-[150px]',
+                  idx === breadcrumbSegments.length - 1
+                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold'
+                    : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] hover:text-gray-900 dark:hover:text-slate-200'
                 ]"
               >
-                <FbIcon :name="getEntryIcon(entry)" size="14px" />
-              </div>
+                {{ seg.name }}
+              </button>
+            </template>
+          </div>
 
-              <div class="truncate flex items-center space-x-2">
-                <span :class="['truncate text-xs', entry.kind === 'directory' ? 'font-bold text-gray-900 dark:text-white' : 'font-medium text-gray-800 dark:text-slate-200']">
-                  {{ entry.name }}
-                </span>
+          <!-- Total subitems indicator -->
+          <div class="text-[11px] text-gray-400 dark:text-slate-500 font-mono hidden sm:block">
+            {{ entries.length }} {{ entries.length === 1 ? 'item' : 'items' }} in this directory
+          </div>
+        </nav>
 
-                <span v-if="entry.kind === 'file'" class="hidden md:inline-block text-[9px] px-1.5 py-0.2 rounded bg-gray-100 dark:bg-slate-800/80 text-gray-400 dark:text-slate-500 font-mono uppercase">
-                  {{ getFileExt(entry.name) }}
-                </span>
-              </div>
-            </div>
+        <!-- 3-Pane Explorer Main Viewport -->
+        <main class="flex-1 flex min-h-0 overflow-hidden relative">
+          <!-- Left Pane: Interactive Folder Tree -->
+          <ArchiveTreePane
+            v-if="showTreePane"
+            :connection-id="connectionId"
+            :archive-path="archivePath"
+            :current-subpath="currentSubpath"
+            :root-folders="rootFolders"
+            @navigate="navigateTo"
+            @collapse="showTreePane = false"
+            class="w-56 sm:w-64 shrink-0 hidden sm:flex"
+          />
 
-            <!-- Right: Size + Action Buttons -->
-            <div class="flex items-center space-x-6 shrink-0">
-              <!-- Size -->
-              <span class="w-20 text-right font-mono text-[11px] text-gray-500 dark:text-slate-400">
-                {{ entry.kind === 'directory' ? '—' : formatBytes(entry.size) }}
-              </span>
+          <!-- Center Pane: Dense File Table -->
+          <ArchiveFileTable
+            :entries="entries"
+            :selected-paths="selectedPaths"
+            :active-entry="activeEntry"
+            :search-query="searchQuery"
+            :is-loading="loading"
+            @select="handleRowSelect"
+            @toggle-select="handleToggleSelect"
+            @toggle-select-all="handleToggleSelectAll"
+            @navigate="navigateTo"
+            @open-preview="handleOpenPreview"
+            class="flex-1 min-w-0"
+          />
 
-              <!-- Action Icons -->
-              <div class="w-24 flex items-center justify-end space-x-1 shrink-0">
-                <template v-if="entry.kind === 'file'">
-                  <!-- Text / Code Preview Button -->
-                  <button
-                    v-if="isTextFile(entry.name)"
-                    @click.stop="previewFile(entry)"
-                    class="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/50 transition cursor-pointer inline-flex items-center justify-center"
-                    title="Preview File in Code Editor"
-                  >
-                    <FbIcon name="open" size="13px" />
-                  </button>
+          <!-- Right Pane: Live Inspector & Preview -->
+          <ArchiveInspectorPane
+            v-if="showInspectorPane"
+            :connection-id="connectionId"
+            :archive-path="archivePath"
+            :entry="activeEntry"
+            @collapse="showInspectorPane = false"
+            @extract="handleExtractSelected"
+            class="w-72 sm:w-80 shrink-0 hidden md:flex"
+          />
 
-                  <!-- Direct Download Button -->
-                  <a
-                    :href="getDownloadUrl(entry)"
-                    download
-                    @click.stop
-                    class="p-1.5 rounded-lg text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 transition inline-flex items-center justify-center cursor-pointer"
-                    title="Direct Download"
-                  >
-                    <FbIcon name="download" size="13px" />
-                  </a>
-                </template>
+          <!-- Inline Extraction Confirmation Sheet -->
+          <ArchiveExtractSheet
+            :is-open="isExtractSheetOpen"
+            :archive-name="archiveName"
+            :default-destination="defaultDestination"
+            :selected-paths="extractTargetPaths"
+            :is-extracting="extracting"
+            @close="isExtractSheetOpen = false"
+            @extract="executeExtraction"
+          />
+        </main>
 
-                <!-- Single Item Extract Button -->
-                <button
-                  @click.stop="extractSingle(entry)"
-                  class="p-1.5 rounded-lg text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/50 transition inline-flex items-center justify-center cursor-pointer"
-                  title="Extract this item"
-                >
-                  <FbIcon name="archive" size="13px" />
-                </button>
-              </div>
+        <!-- Bottom Status Bar -->
+        <footer class="h-8 bg-gray-50 dark:bg-[#0a0c10] border-t border-gray-200/80 dark:border-white/[0.08] px-4 sm:px-5 flex items-center justify-between text-[11px] text-gray-500 dark:text-slate-400 shrink-0 select-none font-mono">
+          <!-- Total Archive Metrics -->
+          <div class="flex items-center space-x-2 truncate">
+            <span>{{ totalItemsCount }} {{ totalItemsCount === 1 ? 'item' : 'items' }}</span>
+            <span class="text-gray-300 dark:text-slate-700">•</span>
+            <span>{{ formatBytes(totalUnpackedSize) }} unpacked</span>
+            <template v-if="totalCompressedSize > 0">
+              <span class="text-gray-300 dark:text-slate-700">•</span>
+              <span>{{ formatBytes(totalCompressedSize) }} compressed</span>
+            </template>
+            <template v-if="overallCompressionRatio > 0">
+              <span class="text-gray-300 dark:text-slate-700">•</span>
+              <span class="text-emerald-600 dark:text-emerald-400 font-bold">{{ overallCompressionRatio }}% saved</span>
+            </template>
+          </div>
+
+          <!-- Selection & Connection Summary -->
+          <div class="flex items-center space-x-2 shrink-0">
+            <span v-if="selectedPaths.length > 0" class="text-blue-600 dark:text-blue-400 font-semibold">
+              {{ selectedPaths.length }} selected
+            </span>
+            <span v-if="selectedPaths.length > 0" class="text-gray-300 dark:text-slate-700">•</span>
+            <div class="flex items-center space-x-1 px-2 py-0.5 rounded-full bg-gray-200/60 dark:bg-white/[0.06] text-gray-600 dark:text-slate-300">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span class="text-[10px]">{{ connectionId }}</span>
             </div>
           </div>
-        </div>
-      </div>
-
-      <!-- Footer Bar with Metrics & Action Buttons -->
-      <div class="bg-gray-50/90 dark:bg-[#090d18]/90 border-t border-gray-200 dark:border-slate-800/80 px-4 sm:px-5 py-2.5 flex items-center justify-between text-xs shrink-0 select-none">
-        <!-- Status summary -->
-        <div class="flex items-center space-x-2 text-[11px] text-gray-500 dark:text-slate-400">
-          <span class="font-medium text-gray-700 dark:text-slate-300">{{ entries.length }} item{{ entries.length === 1 ? '' : 's' }}</span>
-          <span v-if="totalSize > 0" class="font-mono">({{ formatBytes(totalSize) }})</span>
-          <span v-if="selectedPaths.length > 0" class="text-blue-600 dark:text-blue-400 font-bold bg-blue-50 dark:bg-blue-950/50 px-2 py-0.5 rounded-md border border-blue-500/20">
-            {{ selectedPaths.length }} selected
-          </span>
-        </div>
-
-        <!-- Action Buttons -->
-        <div class="flex items-center space-x-2">
-          <button
-            v-if="selectedPaths.length > 0"
-            @click="extractSelected"
-            :disabled="extracting"
-            class="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-semibold flex items-center space-x-1.5 shadow-sm transition cursor-pointer disabled:opacity-50 text-xs active:scale-95"
-          >
-            <span v-if="extracting" class="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
-            <FbIcon v-else name="archive" size="13px" />
-            <span>Extract Selected ({{ selectedPaths.length }})</span>
-          </button>
-
-          <button
-            @click="close"
-            class="px-4 py-1.5 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-200/60 dark:hover:bg-slate-800 transition text-xs font-medium cursor-pointer"
-          >
-            Close
-          </button>
-        </div>
+        </footer>
       </div>
     </div>
-  </div>
   </Transition>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
-import type { IconName } from '../../utils/icons';
 import {
   listArchiveEntriesApi,
-  getArchiveEntryReadUrl,
-  readArchiveEntryTextApi,
   extractSelectedArchiveApi,
   extractArchiveApi,
   type VirtualArchiveEntry,
+  type ArchiveOverwriteMode,
 } from '../../api/archive';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useOverlayStore } from '../../overlays/overlayStore';
+import { normalizeApiError } from '../../utils/errorNormalizer';
+
+import ArchiveTreePane from './archive/ArchiveTreePane.vue';
+import ArchiveFileTable from './archive/ArchiveFileTable.vue';
+import ArchiveInspectorPane from './archive/ArchiveInspectorPane.vue';
+import ArchiveExtractSheet from './archive/ArchiveExtractSheet.vue';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -345,6 +293,7 @@ const emit = defineEmits<{
 
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
+const overlayStore = useOverlayStore();
 
 const isOpen = ref(props.modelValue);
 const loading = ref(false);
@@ -354,7 +303,17 @@ const error = ref<string | null>(null);
 const currentSubpath = ref('');
 const searchQuery = ref('');
 const entries = ref<VirtualArchiveEntry[]>([]);
+const rootFolders = ref<VirtualArchiveEntry[]>([]);
 const selectedPaths = ref<string[]>([]);
+const activeEntry = ref<VirtualArchiveEntry | null>(null);
+
+// Responsive pane toggles (both open by default on desktop)
+const showTreePane = ref(true);
+const showInspectorPane = ref(true);
+
+// Extraction sheet state
+const isExtractSheetOpen = ref(false);
+const extractTargetPaths = ref<string[]>([]);
 
 const archiveName = computed(() => {
   return props.archivePath.split('/').pop() || 'archive';
@@ -369,8 +328,23 @@ const archiveExt = computed(() => {
   return name.split('.').pop() || 'zip';
 });
 
-const totalSize = computed(() => {
+const totalUnpackedSize = computed(() => {
   return entries.value.reduce((acc, e) => acc + (e.size || 0), 0);
+});
+
+const totalCompressedSize = computed(() => {
+  return entries.value.reduce((acc, e) => acc + (e.compressed_size || e.size || 0), 0);
+});
+
+const overallCompressionRatio = computed(() => {
+  if (totalUnpackedSize.value <= 0 || totalCompressedSize.value >= totalUnpackedSize.value) return 0;
+  return Math.round(((totalUnpackedSize.value - totalCompressedSize.value) / totalUnpackedSize.value) * 100);
+});
+
+const totalItemsCount = computed(() => entries.value.length);
+
+const defaultDestination = computed(() => {
+  return props.archivePath.substring(0, props.archivePath.lastIndexOf('/')) || '/';
 });
 
 const breadcrumbSegments = computed(() => {
@@ -386,30 +360,20 @@ const breadcrumbSegments = computed(() => {
   });
 });
 
-const filteredEntries = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase();
-  if (!q) return entries.value;
-  return entries.value.filter((e) => e.name.toLowerCase().includes(q));
-});
-
-const isAllSelected = computed(() => {
-  return (
-    filteredEntries.value.length > 0 &&
-    filteredEntries.value.every((e) => selectedPaths.value.includes(e.path))
-  );
-});
-
 watch(
-  () => props.modelValue,
-  (val) => {
+  () => [props.modelValue, props.archivePath, props.connectionId] as const,
+  ([val, path]) => {
     isOpen.value = val;
-    if (val) {
+    if (val && path) {
       currentSubpath.value = '';
       searchQuery.value = '';
       selectedPaths.value = [];
-      fetchEntries();
+      activeEntry.value = null;
+      void fetchEntries();
+      void fetchRootFolders();
     }
-  }
+  },
+  { immediate: true }
 );
 
 async function fetchEntries() {
@@ -418,21 +382,43 @@ async function fetchEntries() {
   error.value = null;
   selectedPaths.value = [];
   try {
-    entries.value = await listArchiveEntriesApi(
+    const list = await listArchiveEntriesApi(
       props.connectionId,
       props.archivePath,
       currentSubpath.value
     );
+    entries.value = list;
+
+    // Auto-select first entry for instant inspector preview if available
+    if (list.length > 0 && (!activeEntry.value || !list.some((e) => e.path === activeEntry.value?.path))) {
+      activeEntry.value = list.find((e) => e.kind !== 'directory') || list[0];
+    }
   } catch (err: any) {
-    error.value = err.response?.data?.error?.message || err.message || 'Failed to read archive';
+    error.value = normalizeApiError(err).message;
+    uiStore.showToast(error.value, 'error');
   } finally {
     loading.value = false;
   }
 }
 
+async function fetchRootFolders() {
+  if (!props.archivePath) return;
+  try {
+    const list = await listArchiveEntriesApi(props.connectionId, props.archivePath, '');
+    rootFolders.value = list.filter((i) => i.kind === 'directory');
+  } catch {
+    rootFolders.value = [];
+  }
+}
+
+function refreshArchive() {
+  void fetchEntries();
+  void fetchRootFolders();
+}
+
 function navigateTo(subpath: string) {
   currentSubpath.value = subpath;
-  fetchEntries();
+  void fetchEntries();
 }
 
 function navigateUp() {
@@ -440,163 +426,102 @@ function navigateUp() {
   const parts = currentSubpath.value.split('/').filter(Boolean);
   parts.pop();
   currentSubpath.value = parts.join('/');
-  fetchEntries();
+  void fetchEntries();
 }
 
-function handleRowClick(_e: MouseEvent, entry: VirtualArchiveEntry) {
-  if (selectedPaths.value.includes(entry.path)) {
-    selectedPaths.value = selectedPaths.value.filter((p) => p !== entry.path);
+function handleRowSelect(entry: VirtualArchiveEntry, event: MouseEvent) {
+  activeEntry.value = entry;
+
+  if (event.ctrlKey || event.metaKey) {
+    handleToggleSelect(entry.path);
+  } else if (event.shiftKey && selectedPaths.value.length > 0) {
+    const lastSelected = selectedPaths.value[selectedPaths.value.length - 1];
+    const fromIdx = entries.value.findIndex((e) => e.path === lastSelected);
+    const toIdx = entries.value.findIndex((e) => e.path === entry.path);
+    if (fromIdx !== -1 && toIdx !== -1) {
+      const min = Math.min(fromIdx, toIdx);
+      const max = Math.max(fromIdx, toIdx);
+      const range = entries.value.slice(min, max + 1).map((e) => e.path);
+      selectedPaths.value = Array.from(new Set([...selectedPaths.value, ...range]));
+    }
   } else {
     selectedPaths.value = [entry.path];
   }
 }
 
-function handleRowDoubleClick(entry: VirtualArchiveEntry) {
-  if (entry.kind === 'directory') {
-    navigateTo(entry.path);
-  } else if (isTextFile(entry.name)) {
-    previewFile(entry);
-  } else {
-    const url = getDownloadUrl(entry);
-    window.open(url, '_blank');
-  }
-}
-
-function toggleSelect(path: string) {
+function handleToggleSelect(path: string) {
   if (selectedPaths.value.includes(path)) {
     selectedPaths.value = selectedPaths.value.filter((p) => p !== path);
   } else {
-    selectedPaths.value.push(path);
+    selectedPaths.value = [...selectedPaths.value, path];
   }
 }
 
-function toggleSelectAll() {
-  if (isAllSelected.value) {
+function handleToggleSelectAll() {
+  if (selectedPaths.value.length === entries.value.length) {
     selectedPaths.value = [];
   } else {
-    selectedPaths.value = filteredEntries.value.map((e) => e.path);
+    selectedPaths.value = entries.value.map((e) => e.path);
   }
 }
 
-function getDownloadUrl(entry: VirtualArchiveEntry): string {
-  return getArchiveEntryReadUrl(props.connectionId, props.archivePath, entry.path);
+function handleOpenPreview(entry: VirtualArchiveEntry) {
+  activeEntry.value = entry;
+  showInspectorPane.value = true;
 }
 
-function getFileExt(name: string): string {
-  return name.split('.').pop() || 'file';
+function handleExtractClick() {
+  if (selectedPaths.value.length > 0) {
+    extractTargetPaths.value = [...selectedPaths.value];
+  } else {
+    extractTargetPaths.value = [];
+  }
+  isExtractSheetOpen.value = true;
 }
 
-function isTextFile(name: string): boolean {
-  if (name.startsWith('.')) return true;
-  const ext = name.split('.').pop()?.toLowerCase() || '';
-  const textExts = [
-    'txt', 'md', 'log', 'env', 'json', 'yaml', 'yml', 'toml', 'xml', 'csv', 'tsv',
-    'rs', 'ts', 'js', 'jsx', 'tsx', 'vue', 'html', 'css', 'scss', 'sass', 'less',
-    'py', 'sh', 'bash', 'zsh', 'fish', 'c', 'cpp', 'h', 'hpp', 'go', 'java', 'kt',
-    'php', 'rb', 'pl', 'lua', 'sql', 'conf', 'cfg', 'ini', 'properties', 'dockerfile',
-    'lock', 'mod', 'sum', 'gradle', 'service', 'gitignore', 'gitattributes'
-  ];
-  return textExts.includes(ext);
+function handleExtractSelected(paths: string[]) {
+  extractTargetPaths.value = paths;
+  isExtractSheetOpen.value = true;
 }
 
-function getEntryIcon(entry: VirtualArchiveEntry): IconName {
-  if (entry.kind === 'directory') return 'folder';
-  const ext = entry.name.split('.').pop()?.toLowerCase() || '';
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image';
-  if (['mp4', 'webm', 'mov', 'mkv'].includes(ext)) return 'video';
-  if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) return 'audio';
-  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(ext)) return 'archive';
-  if (['pdf'].includes(ext)) return 'pdf';
-  if (isTextFile(entry.name)) return 'code';
-  return 'file';
-}
-
-function getBadgeStyle(entry: VirtualArchiveEntry): string {
-  if (entry.kind === 'directory') {
-    return 'bg-amber-500/10 text-amber-500 dark:text-amber-400 border border-amber-500/20';
-  }
-  const ext = entry.name.split('.').pop()?.toLowerCase() || '';
-  if (isTextFile(entry.name)) {
-    return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20';
-  }
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
-    return 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20';
-  }
-  if (['mp4', 'webm', 'mov', 'mkv'].includes(ext)) {
-    return 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20';
-  }
-  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar'].includes(ext)) {
-    return 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-500/20';
-  }
-  return 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20';
-}
-
-async function previewFile(entry: VirtualArchiveEntry) {
-  try {
-    const text = await readArchiveEntryTextApi(props.connectionId, props.archivePath, entry.path);
-    // Open in Code Editor modal for previewing!
-    uiStore.openEditor({
-      name: entry.name,
-      path: `${props.archivePath}/${entry.path}`,
-      kind: 'file',
-      size: entry.size,
-    } as any, text, '', props.connectionId);
-  } catch (err: any) {
-    uiStore.showToast('Unable to preview file as text', 'info');
-  }
-}
-
-async function extractSingle(entry: VirtualArchiveEntry) {
+async function executeExtraction(options: {
+  destinationDir: string;
+  createSubfolder: boolean;
+  overwriteMode: ArchiveOverwriteMode;
+}) {
   extracting.value = true;
   try {
-    const targetDir = props.archivePath.substring(0, props.archivePath.lastIndexOf('/')) || '/';
-    await extractSelectedArchiveApi(
-      props.connectionId,
-      props.archivePath,
-      targetDir,
-      [entry.path]
-    );
-    uiStore.showToast(`Extracted ${entry.name}`, 'success');
+    let target = options.destinationDir;
+    if (options.createSubfolder) {
+      const subName = archiveName.value.replace(/\.(zip|tar\.gz|tgz|tar\.bz2|tar\.xz|tar|7z|rar)$/i, '');
+      target = target === '/' ? `/${subName}` : `${target}/${subName}`;
+    }
+
+    if (extractTargetPaths.value.length > 0) {
+      await extractSelectedArchiveApi(
+        props.connectionId,
+        props.archivePath,
+        target,
+        extractTargetPaths.value,
+        options.overwriteMode
+      );
+      uiStore.showToast(`Extracted ${extractTargetPaths.value.length} item(s) to ${target}`, 'success');
+    } else {
+      await extractArchiveApi(
+        props.connectionId,
+        props.archivePath,
+        target,
+        undefined,
+        options.overwriteMode
+      );
+      uiStore.showToast(`Archive extracted successfully to ${target}`, 'success');
+    }
+
+    isExtractSheetOpen.value = false;
     await workspaceStore.refreshPanel(workspaceStore.activePanelId);
     close();
   } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
-  } finally {
-    extracting.value = false;
-  }
-}
-
-async function extractSelected() {
-  if (selectedPaths.value.length === 0) return;
-  extracting.value = true;
-  try {
-    const targetDir = props.archivePath.substring(0, props.archivePath.lastIndexOf('/')) || '/';
-    await extractSelectedArchiveApi(
-      props.connectionId,
-      props.archivePath,
-      targetDir,
-      selectedPaths.value
-    );
-    uiStore.showToast(`Extracted ${selectedPaths.value.length} item(s)`, 'success');
-    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
-    close();
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
-  } finally {
-    extracting.value = false;
-  }
-}
-
-async function extractAll() {
-  extracting.value = true;
-  try {
-    const targetDir = props.archivePath.substring(0, props.archivePath.lastIndexOf('/')) || '/';
-    await extractArchiveApi(props.connectionId, props.archivePath, targetDir);
-    uiStore.showToast('Archive extracted successfully', 'success');
-    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
-    close();
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Extraction failed', 'error');
+    uiStore.showToast(normalizeApiError(err).message, 'error');
   } finally {
     extracting.value = false;
   }
@@ -605,13 +530,36 @@ async function extractAll() {
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KiB', 'MiB', 'GiB'];
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
 function close() {
+  if (isExtractSheetOpen.value) {
+    isExtractSheetOpen.value = false;
+    return;
+  }
   isOpen.value = false;
   emit('update:modelValue', false);
+  if (overlayStore.current?.type === 'archive-viewer') {
+    overlayStore.close();
+  }
 }
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && isOpen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown);
+});
 </script>

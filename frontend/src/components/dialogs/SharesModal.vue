@@ -107,7 +107,8 @@ watch(
     if (val) {
       fetchShares();
     }
-  }
+  },
+  { immediate: true }
 );
 
 watch(

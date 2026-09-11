@@ -209,7 +209,8 @@ watch(
     if (val) {
       nextTick(() => inputRef.value?.focus());
     }
-  }
+  },
+  { immediate: true }
 );
 
 watch(

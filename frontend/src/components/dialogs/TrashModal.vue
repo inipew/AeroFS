@@ -124,7 +124,8 @@ watch(
     if (val) {
       fetchTrash();
     }
-  }
+  },
+  { immediate: true }
 );
 
 watch(

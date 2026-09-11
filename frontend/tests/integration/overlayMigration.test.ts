@@ -78,4 +78,21 @@ describe('Integration: Overlay Store & Migration Compatibility', () => {
     expect(getSelectionRange('Makefile')).toEqual([0, 8]);
     expect(getSelectionRange('.env')).toEqual([0, 4]);
   });
+
+  it('supports archive-viewer overlay intent with connectionId and archivePath', () => {
+    const overlayStore = useOverlayStore();
+    overlayStore.open({
+      type: 'archive-viewer',
+      connectionId: 'local',
+      archivePath: '/backup/data.zip',
+    });
+    expect(overlayStore.isOpen('archive-viewer')).toBe(true);
+    expect(overlayStore.current).toEqual({
+      type: 'archive-viewer',
+      connectionId: 'local',
+      archivePath: '/backup/data.zip',
+    });
+    overlayStore.close();
+    expect(overlayStore.isOpen('archive-viewer')).toBe(false);
+  });
 });

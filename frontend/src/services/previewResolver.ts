@@ -1,6 +1,7 @@
 import type { FileEntry } from '../types/vfs';
 import { useUiStore } from '../stores/uiStore';
 import { useRecentStore } from '../stores/recentStore';
+import { useOverlayStore } from '../overlays/overlayStore';
 import { readFileApi, getDownloadUrl, getContentUrl } from '../api/files';
 import { isArchiveFile } from '../utils/archive';
 
@@ -76,12 +77,11 @@ export class PreviewResolver {
           if (onOpenArchive) {
             onOpenArchive({ connectionId, path: entry.path });
           } else {
-            // Trigger archive modal through event
-            window.dispatchEvent(
-              new CustomEvent('open-archive-viewer', {
-                detail: { connectionId, path: entry.path },
-              })
-            );
+            useOverlayStore().open({
+              type: 'archive-viewer',
+              connectionId,
+              archivePath: entry.path,
+            });
           }
         },
       };
