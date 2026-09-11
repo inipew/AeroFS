@@ -93,4 +93,22 @@ describe('fetchStream error normalization', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('resolveApiUrl correctly handles relative and absolute paths without duplicating /api/v1', async () => {
+    const { resolveApiUrl } = await import('../src/api/files');
+
+    // Absolute URL is returned as-is
+    expect(resolveApiUrl('https://example.com/api/upload')).toBe('https://example.com/api/upload');
+    expect(resolveApiUrl('http://127.0.0.1:8080/file')).toBe('http://127.0.0.1:8080/file');
+
+    // Path that already includes /api/v1 must NOT be duplicated
+    const resolvedSessionUrl = resolveApiUrl('/api/v1/connections/local/uploads/job-123/content');
+    expect(resolvedSessionUrl).not.toContain('/api/v1/api/v1');
+    expect(resolvedSessionUrl).toContain('/api/v1/connections/local/uploads/job-123/content');
+
+    // Path that does NOT include /api/v1 gets prefixed with /api/v1
+    const resolvedContentUrl = resolveApiUrl('/connections/local/files/content');
+    expect(resolvedContentUrl).toContain('/api/v1/connections/local/files/content');
+  });
 });
+

@@ -8,15 +8,12 @@ import {
   deleteFilesApi,
   renameEntryApi,
   copyEntryApi,
-  uploadFileApi,
-  getPresignedUploadUrlApi,
-  completePresignedUploadApi,
 } from '../api/files';
 import type { DirectoryListing } from '../api/files';
-import { streamUpload } from '../services/transfer/fetchStream';
 import { joinPath, parentPath, normalizePath } from '../utils/path';
 import { queryKeys } from '../api/queryKeys';
 import type { FileEntry } from '../types/vfs';
+import { useTransferStore } from './transferStore';
 
 /**
  * FileStore acts as an ergonomic mutation facade directly bound to the canonical
@@ -370,11 +367,8 @@ export const useFileStore = defineStore('file', () => {
   /**
    * Bounded Concurrent Upload Queue (concurrency: 3) with byte-weighted progress.
    *
-   * Strategy:
-   *   - File > 5 MB AND provider supports presign_write  →  Presigned PUT via native fetch stream
-   *   - Otherwise                                         →  Multipart Axios upload
-   *
-   * Both paths honour AbortSignal cancellation.
+   * Every file uses a job-bound upload session so progress, cancellation, and
+   * terminal reconciliation share one TransferJob lifecycle.
    */
   async function uploadFiles(
     files: FileList | File[],
@@ -395,7 +389,7 @@ export const useFileStore = defineStore('file', () => {
     };
 
     const CONCURRENCY = 3;
-    const LARGE_FILE_THRESHOLD = 5 * 1024 * 1024; // 5 MB
+    const transferStore = useTransferStore();
     let nextIndex = 0;
 
     async function worker() {
@@ -403,44 +397,16 @@ export const useFileStore = defineStore('file', () => {
         if (signal?.aborted) throw new Error('Upload aborted');
         const idx = nextIndex++;
         const file = fileArray[idx];
-        const destPath = `${currentPath.value}/${file.name}`.replace(/\/\//g, '/');
-
-        if (file.size > LARGE_FILE_THRESHOLD) {
-          // ── Presigned upload path (Fetch Streams, zero-copy) ──
-          try {
-            const presignResp = await getPresignedUploadUrlApi(
-              currentConnectionId.value,
-              destPath,
-              3600
-            );
-
-            await streamUpload(presignResp.url, file, signal ?? new AbortController().signal, (loaded) => {
-              loadedBytesMap[idx] = loaded;
-              reportProgress();
-            });
-
-            // Notify backend to finalize the presigned upload
-            await completePresignedUploadApi(currentConnectionId.value, destPath);
-          } catch {
-            // Fallback to Axios multipart if presign fails
-            await uploadFileApi(
-              currentConnectionId.value,
-              currentPath.value,
-              file,
-              (pct) => { loadedBytesMap[idx] = Math.round((pct / 100) * file.size); reportProgress(); },
-              signal
-            );
+        await transferStore.uploadTrackedFile(
+          currentConnectionId.value,
+          currentPath.value,
+          file,
+          signal ?? new AbortController().signal,
+          (_percent, loaded) => {
+            loadedBytesMap[idx] = loaded;
+            reportProgress();
           }
-        } else {
-          // ── Standard Axios multipart upload ──
-          await uploadFileApi(
-            currentConnectionId.value,
-            currentPath.value,
-            file,
-            (pct) => { loadedBytesMap[idx] = Math.round((pct / 100) * file.size); reportProgress(); },
-            signal
-          );
-        }
+        );
 
         loadedBytesMap[idx] = file.size;
         reportProgress();

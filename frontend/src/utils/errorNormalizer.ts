@@ -35,7 +35,15 @@ export function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (typeof error === 'object' && error !== null) {
     const e = error as Record<string, unknown>;
-    if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED' || e.message === 'canceled') {
+    if (
+      e.name === 'CanceledError' ||
+      e.name === 'CancelledError' ||
+      e.name === 'AbortError' ||
+      e.code === 'ERR_CANCELED' ||
+      e.message === 'canceled' ||
+      e.message === 'CancelledError' ||
+      (typeof e.message === 'string' && e.message.toLowerCase().includes('cancel'))
+    ) {
       return true;
     }
   }

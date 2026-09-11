@@ -22,9 +22,10 @@ export function useTransfersQuery() {
     staleTime: 5_000,
     refetchInterval: (q) => {
       const data = q.state.data as TransferJob[] | undefined;
-      const hasActive = data?.some(
+      const hasActiveInRest = data?.some(
         (j) => j.status === 'queued' || j.status === 'running'
       );
+      const hasActive = hasActiveInRest || transferStore.activeJobs.length > 0;
       if (!hasActive) return false;
       // When the socket is unavailable REST is the fallback transport. Keep
       // the last visible value, but reconcile it more aggressively.

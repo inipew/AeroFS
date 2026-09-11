@@ -533,6 +533,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return { ok: true, path: p.location.path };
     } catch (err: unknown) {
       if (isAbortError(err)) {
+        p.runtime.status = p.runtime.initialized ? 'idle' : 'error';
         return { ok: false, error: 'Aborted', aborted: true } as any;
       }
       if (panelId === 'left' ? currentGen !== leftRequestGen : currentGen !== rightRequestGen) {
@@ -704,9 +705,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function refresh(panelId: PanelId): Promise<{ ok: boolean; path?: string; error?: string }> {
-    invalidatePanel(panelId);
     const p = getPanel(panelId);
-    return await navigateTo(panelId, p.location.path, false);
+    const res = await navigateTo(panelId, p.location.path, false);
+    invalidatePanel(panelId);
+    return res;
   }
 
   async function refreshPanel(panelId: PanelId): Promise<{ ok: boolean; path?: string; error?: string }> {

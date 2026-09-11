@@ -89,23 +89,44 @@ export async function completePresignedUploadApi(
   return resp.data;
 }
 
+export function resolveApiUrl(pathOrUrl: string): string {
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+    return pathOrUrl;
+  }
+  const configured = apiClient.defaults.baseURL || '/api/v1';
+  let baseOrigin = '';
+  let basePath = '';
+  if (configured.startsWith('http')) {
+    try {
+      const u = new URL(configured);
+      baseOrigin = u.origin;
+      basePath = u.pathname.replace(/\/$/, '');
+    } catch {
+      baseOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+      basePath = '';
+    }
+  } else {
+    baseOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    basePath = configured.replace(/\/$/, '');
+  }
+
+  const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+  if (basePath && (cleanPath === basePath || cleanPath.startsWith(`${basePath}/`))) {
+    return `${baseOrigin}${cleanPath}`;
+  }
+  return `${baseOrigin}${basePath}${cleanPath}`;
+}
+
 export function getContentUrl(connectionId: string, path: string): string {
-  const base = getApiBaseUrl();
-  return `${base}/connections/${connectionId}/files/content?path=${encodeURIComponent(
-    path
-  )}`;
+  return resolveApiUrl(`/connections/${connectionId}/files/content?path=${encodeURIComponent(path)}`);
 }
 
 export function getDownloadUrl(connectionId: string, path: string): string {
-  const base = getApiBaseUrl();
-  return `${base}/connections/${connectionId}/files/content?path=${encodeURIComponent(
-    path
-  )}&download=true`;
+  return resolveApiUrl(`/connections/${connectionId}/files/content?path=${encodeURIComponent(path)}&download=true`);
 }
 
 export function getApiBaseUrl(): string {
-  const configured = apiClient.defaults.baseURL || '/api/v1';
-  return configured.startsWith('http') ? configured.replace(/\/$/, '') : `${window.location.origin}${configured}`;
+  return resolveApiUrl('');
 }
 
 /** Upload through a job-bound session so the transfer drawer and cancellation
@@ -115,7 +136,7 @@ export async function uploadFileAsTransferApi(
   targetDir: string,
   file: File,
   signal: AbortSignal,
-  onProgress?: (percent: number) => void,
+  onProgress?: (percent: number, loaded: number, total: number) => void,
   onSession?: (session: UploadSessionResponse) => void
 ): Promise<UploadSessionResponse> {
   const path = targetDir === '/' ? `/${file.name}` : `${targetDir.replace(/\/$/, '')}/${file.name}`;
@@ -126,9 +147,10 @@ export async function uploadFileAsTransferApi(
   );
   const response = session.data;
   onSession?.(response);
-  const url = response.upload_url.startsWith('http') ? response.upload_url : `${getApiBaseUrl()}${response.upload_url}`;
+  const url = resolveApiUrl(response.upload_url);
   await streamUpload(url, file, signal, (loaded, total) => {
-    if (total > 0) onProgress?.(Math.round((loaded * 100) / total));
+    const percent = total > 0 ? Math.round((loaded * 100) / total) : 0;
+    onProgress?.(percent, loaded, total);
   });
   return response;
 }

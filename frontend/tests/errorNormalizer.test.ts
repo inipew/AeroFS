@@ -213,4 +213,17 @@ describe('errorNormalizer', () => {
     expect(norm500.statusCode).toBe(500);
     expect(norm500.message).toContain('HTTP 500: Internal Error');
   });
+
+  it('identifies TanStack Query CancelledError as an abort error', () => {
+    const { isAbortError } = require('../src/utils/errorNormalizer');
+    const tanstackErr = new Error('CancelledError');
+    tanstackErr.name = 'CancelledError';
+
+    expect(isAbortError(tanstackErr)).toBe(true);
+
+    const norm = normalizeApiError(tanstackErr);
+    expect(norm.kind).toBe('canceled');
+    expect(norm.message).toBe('Request was canceled');
+  });
 });
+

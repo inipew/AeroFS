@@ -36,39 +36,98 @@ export async function streamUpload(
   onProgress?: ProgressCallback
 ): Promise<void> {
   const total = file.size;
-  let loaded = 0;
 
-  let body: BodyInit;
+  if (typeof XMLHttpRequest !== 'undefined') {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        return reject(new DOMException('The operation was aborted', 'AbortError'));
+      }
 
-  if (onProgress && typeof TransformStream !== 'undefined') {
-    // Wrap in a TransformStream to intercept bytes as they pass through
-    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        loaded += chunk.byteLength;
-        onProgress(loaded, total);
-        controller.enqueue(chunk);
-      },
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url, true);
+      xhr.withCredentials = true;
+
+      const contentType = file.type || 'application/octet-stream';
+      xhr.setRequestHeader('Content-Type', contentType);
+
+      if (onProgress) {
+        xhr.upload.onprogress = (event) => {
+          const loaded = event.lengthComputable ? event.loaded : event.loaded;
+          const tot = event.lengthComputable ? event.total : total;
+          onProgress(loaded, tot);
+        };
+      }
+
+      const abortHandler = () => {
+        xhr.abort();
+        reject(new DOMException('The operation was aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', abortHandler, { once: true });
+
+      xhr.onload = async () => {
+        signal.removeEventListener('abort', abortHandler);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (onProgress) onProgress(total, total);
+          resolve();
+        } else {
+          const headers = new Headers();
+          const rawHeaders = xhr.getAllResponseHeaders();
+          if (rawHeaders) {
+            rawHeaders.split('\r\n').forEach((line) => {
+              const parts = line.split(': ');
+              const key = parts.shift();
+              const val = parts.join(': ');
+              if (key) headers.append(key, val);
+            });
+          }
+          const resp = new Response(xhr.responseText, {
+            status: xhr.status,
+            statusText: xhr.statusText,
+            headers,
+          });
+          try {
+            const norm = await normalizeFetchError(resp);
+            const err = new Error(norm.message);
+            (err as any).normalizedError = norm;
+            (err as any).status = norm.statusCode;
+            (err as any).code = norm.code;
+            (err as any).category = norm.category;
+            (err as any).response = {
+              status: norm.statusCode,
+              statusText: xhr.statusText,
+              data: norm.details,
+            };
+            reject(err);
+          } catch (e) {
+            reject(e);
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        signal.removeEventListener('abort', abortHandler);
+        const err = new Error('Network error during upload');
+        (err as any).status = 0;
+        reject(err);
+      };
+
+      xhr.ontimeout = () => {
+        signal.removeEventListener('abort', abortHandler);
+        const err = new Error('Upload request timed out');
+        (err as any).status = 0;
+        reject(err);
+      };
+
+      xhr.send(file);
     });
-
-    // Pipe file stream into the transform
-    file.stream().pipeTo(writable, { signal }).catch(() => {
-      // AbortError is expected on cancellation — ignore
-    });
-
-    body = readable;
-  } else {
-    // Fallback: stream without progress tracking
-    body = file.stream();
   }
 
+  // Fallback for non-browser environments (e.g. Bun/Node test runners)
   const response = await fetch(url, {
     method: 'PUT',
-    body,
+    body: file,
     signal,
     credentials: 'include',
-    // Required for streaming request body in Chromium-based browsers
-    // @ts-expect-error — duplex is not yet in TypeScript's RequestInit types
-    duplex: 'half',
     headers: {
       'Content-Type': file.type || 'application/octet-stream',
     },
@@ -88,6 +147,8 @@ export async function streamUpload(
     };
     throw err;
   }
+
+  if (onProgress) onProgress(total, total);
 }
 
 // ── Download ─────────────────────────────────────────────────────────────────

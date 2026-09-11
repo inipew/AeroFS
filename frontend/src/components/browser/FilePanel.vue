@@ -256,7 +256,7 @@
 
     <!-- Graceful Warning / Stale Cache Banner (Human-Friendly Diagnostic) -->
     <div
-      v-else-if="panel.error && panel.entries.length > 0"
+      v-else-if="panel.error && panel.error !== 'CancelledError' && panel.error !== 'Aborted' && panel.error !== 'Request was canceled' && panel.entries.length > 0"
       class="mx-4 mt-2 px-3.5 py-2 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 flex items-center justify-between text-xs shrink-0 animate-in fade-in"
     >
       <div class="flex items-center space-x-2.5 truncate mr-2">
@@ -766,7 +766,7 @@ import { useConnectionStore } from '../../stores/connectionStore';
 import { useFileStore } from '../../stores/fileStore';
 import { useTransferStore } from '../../stores/transferStore';
 import { useUiStore } from '../../stores/uiStore';
-import { getDownloadUrl, uploadFileApi } from '../../api/files';
+import { getDownloadUrl } from '../../api/files';
 import type { FileEntry } from '../../types/vfs';
 import { PreviewResolver } from '../../services/previewResolver';
 import { getNavTransitionName } from '../../motion/tokens';
@@ -1560,7 +1560,12 @@ async function handleExternalFilesDrop(e: DragEvent, targetDir: string) {
         ? (targetDir === '/' ? `/${subDir}` : `${targetDir}/${subDir}`)
         : targetDir;
       try {
-        await uploadFileApi(connId, destDir, item.file);
+        await transferStore.uploadTrackedFile(
+          connId,
+          destDir,
+          item.file,
+          new AbortController().signal
+        );
         successCount++;
       } catch (err) {
         console.error('Failed uploading item', cleanRel, err);

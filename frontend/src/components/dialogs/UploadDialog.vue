@@ -169,7 +169,6 @@ import { ref, computed } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { uploadFileAsTransferApi } from '../../api/files';
 import { cancelTransferApi } from '../../api/transfers';
 import { useTransferStore } from '../../stores/transferStore';
 
@@ -239,16 +238,22 @@ async function startUpload() {
       try {
         const controller = new AbortController();
         activeUploads.set(i, { controller });
-        await uploadFileAsTransferApi(connId, targetFolder, file, controller.signal, (percent) => {
-          transferredBytesMap[i] = (percent / 100) * (file.size || 0);
-          const currentTotalTransferred = Object.values(transferredBytesMap).reduce((a, b) => a + b, 0);
-          if (totalBytesAll > 0) {
-            progress.value = Math.min(100, Math.round((currentTotalTransferred * 100) / totalBytesAll));
+        await transferStore.uploadTrackedFile(
+          connId,
+          targetFolder,
+          file,
+          controller.signal,
+          (percent) => {
+            transferredBytesMap[i] = (percent / 100) * (file.size || 0);
+            const currentTotalTransferred = Object.values(transferredBytesMap).reduce((a, b) => a + b, 0);
+            if (totalBytesAll > 0) {
+              progress.value = Math.min(100, Math.round((currentTotalTransferred * 100) / totalBytesAll));
+            }
+          },
+          (session) => {
+            activeUploads.set(i, { controller, jobId: session.job_id });
           }
-        }, (session) => {
-          activeUploads.set(i, { controller, jobId: session.job_id });
-          transferStore.isDrawerOpen = true;
-        });
+        );
         transferredBytesMap[i] = file.size || 0;
         successfulCount++;
       } catch (e: any) {

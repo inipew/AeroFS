@@ -42,6 +42,7 @@ pub async fn ws_handler(
 
 fn is_event_authorized(
     event: &crate::events::DomainEvent,
+    user_id: &str,
     is_admin: bool,
     authorized_conns: &HashSet<String>,
 ) -> bool {
@@ -54,20 +55,30 @@ fn is_event_authorized(
         | crate::events::DomainEvent::TransferCompleted(val)
         | crate::events::DomainEvent::TransferFailed(val)
         | crate::events::DomainEvent::TransferCancelled(val) => {
+            // 1. Align with TransferService::authorize_transfer_visibility:
+            // Job owner always has visibility to their own transfer events
+            if let Some(owner) = val.get("user_id").and_then(|v| v.as_str()) {
+                if owner == user_id {
+                    return true;
+                }
+            }
+
             let src = val.get("source_connection_id").and_then(|v| v.as_str());
             let dst = val
                 .get("destination_connection_id")
                 .and_then(|v| v.as_str());
-            // Browser uploads have a synthetic `upload` source, not a storage
-            // connection. Their visibility is determined solely by the target
-            // connection; requiring access to `upload` silently dropped every
-            // live progress event and made the UI jump straight to completed.
+
+            // 2. Browser uploads have a synthetic `upload` source; visibility determined by target
             if val.get("transfer_type").and_then(|v| v.as_str()) == Some("upload") {
                 return dst.is_some_and(|connection_id| authorized_conns.contains(connection_id));
             }
 
-            // Copy/move/sync must remain visible only when both real endpoints
-            // are authorized, matching TransferService visibility checks.
+            // 3. Downloads have a synthetic `download` destination; visibility determined by source
+            if val.get("transfer_type").and_then(|v| v.as_str()) == Some("download") {
+                return src.is_some_and(|connection_id| authorized_conns.contains(connection_id));
+            }
+
+            // 4. Copy/move/sync must remain visible only when both real endpoints are authorized
             match (src, dst) {
                 (Some(s), Some(d)) => authorized_conns.contains(s) && authorized_conns.contains(d),
                 (Some(s), None) => authorized_conns.contains(s),
@@ -98,7 +109,20 @@ mod tests {
             "source_connection_id": "upload",
             "destination_connection_id": "destination"
         }));
-        assert!(is_event_authorized(&upload, false, &allowed));
+        assert!(is_event_authorized(&upload, "user1", false, &allowed));
+    }
+
+    #[test]
+    fn transfer_owner_is_always_authorized() {
+        let allowed = HashSet::new();
+        let owned = DomainEvent::TransferProgress(serde_json::json!({
+            "user_id": "user1",
+            "transfer_type": "copy",
+            "source_connection_id": "source",
+            "destination_connection_id": "destination"
+        }));
+        assert!(is_event_authorized(&owned, "user1", false, &allowed));
+        assert!(!is_event_authorized(&owned, "user2", false, &allowed));
     }
 
     #[test]
@@ -109,7 +133,7 @@ mod tests {
             "source_connection_id": "source",
             "destination_connection_id": "destination"
         }));
-        assert!(!is_event_authorized(&copy, false, &allowed));
+        assert!(!is_event_authorized(&copy, "other_user", false, &allowed));
     }
 }
 
@@ -184,7 +208,7 @@ async fn handle_socket(
                 ReplayOutcome::Events(missed) => {
                     let conns_snapshot = authorized_conns.read().await.clone();
                     for envelope in missed {
-                        if is_event_authorized(&envelope.event, is_admin, &conns_snapshot) {
+                        if is_event_authorized(&envelope.event, &user_id, is_admin, &conns_snapshot) {
                             if let Ok(json_str) = serde_json::to_string(&envelope) {
                                 if sender.send(Message::Text(json_str.into())).await.is_err() {
                                     return;
@@ -258,7 +282,7 @@ async fn handle_socket(
                             }
 
                             let conns = auth_conns_send.read().await;
-                            if is_event_authorized(&envelope.event, is_admin, &conns) {
+                            if is_event_authorized(&envelope.event, &user_id_send, is_admin, &conns) {
                                 if let Ok(json_str) = serde_json::to_string(&envelope) {
                                     if sender.send(Message::Text(json_str.into())).await.is_err() {
                                         break;
