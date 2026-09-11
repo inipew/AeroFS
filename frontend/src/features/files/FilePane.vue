@@ -1,10 +1,15 @@
 <template>
   <section
+    ref="paneRootRef"
     :data-pane-id="panelId"
     tabindex="0"
     @pointerdown="pane.setActive"
     @focusin="pane.setActive"
     @contextmenu="handleBlankContextMenu"
+    @dragenter="dragDrop.handleDragEnter"
+    @dragover="dragDrop.handleDragOver"
+    @dragleave="dragDrop.handleDragLeave"
+    @drop.prevent="dragDrop.handleDrop"
     class="flex-1 flex flex-col h-full bg-white dark:bg-[#0b0f19] overflow-hidden relative select-none outline-none focus:ring-1 focus:ring-blue-500/20"
     :class="[
       workspaceStore.isDualPane
@@ -14,6 +19,28 @@
         : ''
     ]"
   >
+    <!-- Glassmorphic Dropzone Overlay (Full Panel) -->
+    <Transition name="drag-overlay">
+      <div
+        v-if="dragDrop.isDragOver.value && !dragDrop.hoveredFolderDrop.value"
+        class="absolute inset-2 sm:inset-3 z-30 pointer-events-none rounded-3xl border-2 border-dashed border-blue-500/80 dark:border-blue-400/80 bg-blue-500/10 dark:bg-blue-600/15 backdrop-blur-xs flex flex-col items-center justify-center dropzone-active-glow"
+      >
+        <div class="bg-white/95 dark:bg-[#0f1422]/95 backdrop-blur-md text-gray-800 dark:text-slate-100 border border-blue-500/30 px-5 py-3 rounded-2xl shadow-2xl flex items-center space-x-3.5 transform transition-transform duration-standard ease-spring scale-100 animate-float-gentle">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex items-center justify-center shadow-lg shadow-blue-500/30 shrink-0">
+            <FbIcon :name="dragDrop.isShiftPressed.value ? 'move' : 'upload'" size="20px" />
+          </div>
+          <div class="flex flex-col text-left">
+            <span class="font-bold text-xs text-gray-900 dark:text-white">
+              {{ dragDrop.isShiftPressed.value ? 'Drop to move items' : 'Drop files to copy into this folder' }}
+            </span>
+            <span class="text-[11px] font-mono text-gray-400 dark:text-slate-400 truncate max-w-[200px] sm:max-w-[280px]">
+              {{ panel.location.path }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- Subheader: Navigation and Contextual Action Toolbar -->
     <div
       class="h-11 sm:h-12 border-b px-3 sm:px-4 flex items-center justify-between transition-colors text-xs shrink-0 backdrop-blur-md relative z-20"
@@ -111,42 +138,17 @@
       </div>
     </div>
 
-    <!-- Main Content Container with Dropzone & Pull to Refresh -->
+    <!-- Main Content Container with Virtual Scroll & Pull to Refresh -->
     <div
       ref="panelContentRef"
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative flex flex-col focus:outline-none"
       @click="handleContainerClick"
       @contextmenu.prevent="handleBlankContextMenu"
-      @dragenter="dragDrop.handleDragEnter"
-      @dragover="dragDrop.handleDragOver"
-      @dragleave="dragDrop.handleDragLeave"
-      @drop.prevent="dragDrop.handleDrop"
       @touchstart="handleTouchStart"
       @touchmove="handleTouchMove"
       @touchend="handleTouchEnd"
       @touchcancel="handleTouchEnd"
     >
-      <!-- Glassmorphic Dropzone Overlay -->
-      <Transition name="drag-overlay">
-        <div
-          v-if="dragDrop.isDragOver.value && !dragDrop.hoveredFolderDrop.value"
-          class="absolute inset-2 sm:inset-3 z-30 pointer-events-none rounded-3xl border-2 border-dashed border-blue-500/80 dark:border-blue-400/80 bg-blue-500/10 dark:bg-blue-600/15 backdrop-blur-xs flex flex-col items-center justify-center dropzone-active-glow"
-        >
-          <div class="bg-white/95 dark:bg-[#0f1422]/95 backdrop-blur-md text-gray-800 dark:text-slate-100 border border-blue-500/30 px-5 py-3 rounded-2xl shadow-2xl flex items-center space-x-3.5 transform transition-transform duration-standard ease-spring scale-100 animate-float-gentle">
-            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex items-center justify-center shadow-lg shadow-blue-500/30 shrink-0">
-              <FbIcon :name="dragDrop.isShiftPressed.value ? 'move' : 'upload'" size="20px" />
-            </div>
-            <div class="flex flex-col text-left">
-              <span class="font-bold text-xs text-gray-900 dark:text-white">
-                {{ dragDrop.isShiftPressed.value ? 'Drop to move items' : 'Drop files to copy into this folder' }}
-              </span>
-              <span class="text-[11px] font-mono text-gray-400 dark:text-slate-400 truncate max-w-[200px] sm:max-w-[280px]">
-                {{ panel.location.path }}
-              </span>
-            </div>
-          </div>
-        </div>
-      </Transition>
 
       <!-- Mobile Pull to Refresh Indicator -->
       <div
@@ -306,6 +308,7 @@ const overlayStore = useOverlayStore();
 const pane = usePane(props.panelId);
 const panel = pane.panel;
 
+const paneRootRef = ref<HTMLElement | null>(null);
 const panelContentRef = ref<HTMLElement | null>(null);
 const paneNavRef = ref<InstanceType<typeof PaneNavigation> | null>(null);
 const listViewRef = ref<InstanceType<typeof FileListView> | null>(null);
@@ -428,7 +431,7 @@ const dragDrop = useFileDragDrop({
   currentPath: computed(() => panel.value.location.path),
   entries: displayedEntries,
   selectedPaths: selectedPathsRef,
-  containerRef: panelContentRef,
+  containerRef: paneRootRef,
   onSelect: (paths) => {
     panel.value.selectedEntries = paths;
   },

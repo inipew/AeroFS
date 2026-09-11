@@ -190,4 +190,75 @@ describe('Drag and Drop Behavior & Lifecycle', () => {
 
     expect(transferSubmitted).toBe(false);
   });
+
+  it('handleDragEnter activates isDragOver for external or cross-panel drags', () => {
+    const currentPath = ref('/documents');
+    const connectionId = ref('local');
+    const entries = ref<FileEntry[]>([]);
+    const selectedPaths = ref<string[]>([]);
+    const containerRef = ref<HTMLElement | null>(null);
+
+    const dnd = useFileDragDrop({
+      panelId: 'left',
+      connectionId,
+      currentPath,
+      entries,
+      selectedPaths,
+      containerRef,
+      onSelect: () => {},
+    });
+
+    const mockEvent = {
+      preventDefault: () => {},
+      shiftKey: false,
+    } as unknown as DragEvent;
+
+    expect(dnd.isDragOver.value).toBe(false);
+    dnd.handleDragEnter(mockEvent);
+    expect(dnd.isDragOver.value).toBe(true);
+  });
+
+  it('handleDragEnter suppresses generic dropzone overlay when drag originated from self panel', () => {
+    const currentPath = ref('/documents');
+    const connectionId = ref('local');
+    const entry: FileEntry = {
+      name: 'file.txt',
+      path: '/documents/file.txt',
+      kind: 'file',
+      size: 100,
+      modified: 0,
+      is_hidden: false,
+    };
+    const entries = ref<FileEntry[]>([entry]);
+    const selectedPaths = ref<string[]>(['/documents/file.txt']);
+    const containerRef = ref<HTMLElement | null>(null);
+
+    const dnd = useFileDragDrop({
+      panelId: 'left',
+      connectionId,
+      currentPath,
+      entries,
+      selectedPaths,
+      containerRef,
+      onSelect: () => {},
+    });
+
+    // Start drag from this panel
+    dnd.handleDragStart({
+      dataTransfer: {
+        setData: () => {},
+      },
+    } as unknown as DragEvent, entry);
+
+    expect(dnd.draggedPaths.value).toContain('/documents/file.txt');
+
+    // Drag enter should now be suppressed for self panel
+    const mockEnterEvent = {
+      preventDefault: () => {},
+      shiftKey: false,
+    } as unknown as DragEvent;
+
+    dnd.handleDragEnter(mockEnterEvent);
+    expect(dnd.isDragOver.value).toBe(false);
+  });
 });

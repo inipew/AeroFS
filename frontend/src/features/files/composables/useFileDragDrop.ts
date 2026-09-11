@@ -33,6 +33,9 @@ export function useFileDragDrop(options: UseFileDragDropOptions) {
 
   function handleDragEnter(e: DragEvent) {
     e.preventDefault();
+    if (draggedPaths.value.length > 0) {
+      return;
+    }
     dragEnterCounter++;
     isDragOver.value = true;
     isShiftPressed.value = e.shiftKey;
