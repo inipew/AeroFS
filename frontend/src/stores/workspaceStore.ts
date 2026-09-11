@@ -801,26 +801,34 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           ? `/${fileName}`
           : `${targetPanel.location.path}/${fileName}`;
 
-        // Skip pasting into exact same path on same connection
-        if (sourceConnectionId === targetPanel.location.connectionId && filePath === destPath) {
+        // Skip moving into exact same path on same connection
+        if (isCut && sourceConnectionId === targetPanel.location.connectionId && filePath === destPath) {
           continue;
         }
 
-        // Check if destination directory already has an entry with the same name
-        const alreadyExists = targetEntries.some((e) => e.name === fileName);
-        if (alreadyExists) {
-          const resolution = await transferStore.requestConflict(fileName, filePath, destPath);
-          if (resolution === 'cancel') {
-            break;
-          }
-          if (resolution === 'skip') {
-            continue;
-          }
-          if (resolution === 'keep_both') {
-            fileName = generateConflictResolvedName(fileName, targetEntries.map((e) => e.name));
-            destPath = targetPanel.location.path === '/'
-              ? `/${fileName}`
-              : `${targetPanel.location.path}/${fileName}`;
+        // If copying into exact same path on same connection, automatically create duplicate name
+        if (!isCut && sourceConnectionId === targetPanel.location.connectionId && filePath === destPath) {
+          fileName = generateConflictResolvedName(fileName, targetEntries.map((e) => e.name));
+          destPath = targetPanel.location.path === '/'
+            ? `/${fileName}`
+            : `${targetPanel.location.path}/${fileName}`;
+        } else {
+          // Check if destination directory already has an entry with the same name
+          const alreadyExists = targetEntries.some((e) => e.name === fileName);
+          if (alreadyExists) {
+            const resolution = await transferStore.requestConflict(fileName, filePath, destPath);
+            if (resolution === 'cancel') {
+              break;
+            }
+            if (resolution === 'skip') {
+              continue;
+            }
+            if (resolution === 'keep_both') {
+              fileName = generateConflictResolvedName(fileName, targetEntries.map((e) => e.name));
+              destPath = targetPanel.location.path === '/'
+                ? `/${fileName}`
+                : `${targetPanel.location.path}/${fileName}`;
+            }
           }
         }
 
@@ -874,20 +882,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           continue;
         }
         if (resolution === 'keep_both') {
-          const dotIdx = fileName.lastIndexOf('.');
-          let count = 1;
-          let candidateName = dotIdx > 0
-            ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
-            : `${fileName} (${count})`;
-
-          while (destEntries.some((e) => e.name === candidateName)) {
-            count++;
-            candidateName = dotIdx > 0
-              ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
-              : `${fileName} (${count})`;
-          }
-
-          fileName = candidateName;
+          fileName = generateConflictResolvedName(fileName, destEntries.map((e) => e.name));
           destPath = destPanel.location.path === '/'
             ? `/${fileName}`
             : `${destPanel.location.path}/${fileName}`;

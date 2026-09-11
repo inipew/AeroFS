@@ -50,7 +50,7 @@
         <div
           v-if="isTruncatedOpen"
           @click="isTruncatedOpen = false"
-          class="absolute left-0 top-full mt-1.5 w-52 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1 z-50 text-xs space-y-0.5"
+          class="absolute left-0 top-full mt-1.5 w-52 bg-white/95 dark:bg-[#0f172a]/95 backdrop-blur-2xl border border-gray-200/90 dark:border-slate-700/80 rounded-2xl shadow-2xl ring-1 ring-black/5 dark:ring-white/10 p-1.5 z-50 text-xs space-y-0.5"
         >
           <button
             v-for="seg in truncatedSegments"
@@ -89,7 +89,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../../../components/common/FbIcon.vue';
 import { getPathSegments } from '../../../utils/path';
 
@@ -115,6 +115,29 @@ defineEmits<{
 }>();
 
 const isTruncatedOpen = ref(false);
+const truncatedMenuRef = ref<HTMLElement | null>(null);
+
+function handlePointerDown(e: PointerEvent) {
+  if (isTruncatedOpen.value && truncatedMenuRef.value && !truncatedMenuRef.value.contains(e.target as Node)) {
+    isTruncatedOpen.value = false;
+  }
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && isTruncatedOpen.value) {
+    isTruncatedOpen.value = false;
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', handlePointerDown);
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('pointerdown', handlePointerDown);
+  window.removeEventListener('keydown', handleKeyDown);
+});
 
 interface CrumbSegment {
   name: string;

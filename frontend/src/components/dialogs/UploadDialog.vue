@@ -1,7 +1,7 @@
 <template>
   <Transition name="ios-modal">
     <div
-      v-if="uiStore.isUploadOpen"
+      v-if="isOpen"
       :class="[
         'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs',
         uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-4'
@@ -150,15 +150,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useTransferStore } from '../../stores/transferStore';
+import { useOverlayStore } from '../../overlays/overlayStore';
+import type { PanelId } from '../../types/workspace';
 
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
 const transferStore = useTransferStore();
+const overlayStore = useOverlayStore();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const cameraInputRef = ref<HTMLInputElement | null>(null);
@@ -167,15 +170,43 @@ const mediaInputRef = ref<HTMLInputElement | null>(null);
 const isDragging = ref(false);
 const selectedFiles = ref<File[]>([]);
 
+const isOpen = computed(() => uiStore.isUploadOpen || overlayStore.current?.type === 'upload');
+
+const currentPanelId = computed<PanelId>(() => {
+  if (overlayStore.current?.type === 'upload') {
+    return overlayStore.current.panelId;
+  }
+  return workspaceStore.activePanelId;
+});
+
+const currentPanel = computed(() => workspaceStore.getPanel(currentPanelId.value));
+
 const currentTargetDirectory = computed(() => {
-  const p = workspaceStore.getPanel(workspaceStore.activePanelId);
-  return p.path === '/' ? '/' : p.path;
+  const p = currentPanel.value;
+  return p?.location?.path || '/';
 });
 
 function handleClose() {
   uiStore.isUploadOpen = false;
+  if (overlayStore.current?.type === 'upload') {
+    overlayStore.close();
+  }
   selectedFiles.value = [];
 }
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && isOpen.value) {
+    handleClose();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown);
+});
 
 function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement;

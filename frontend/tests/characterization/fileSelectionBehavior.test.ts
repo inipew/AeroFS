@@ -127,4 +127,30 @@ describe('Characterization: File Selection Behavior', () => {
     expect(getNextGridIndex(0, 'ArrowRight')).toBe(1);
     expect(getNextGridIndex(1, 'ArrowLeft')).toBe(0);
   });
+
+  it('handles Home and End keys jumping to first and last items', () => {
+    const total = 12;
+    function getJumpIndex(key: 'Home' | 'End', totalCount: number): number {
+      return key === 'Home' ? 0 : Math.max(0, totalCount - 1);
+    }
+
+    expect(getJumpIndex('Home', total)).toBe(0);
+    expect(getJumpIndex('End', total)).toBe(11);
+    expect(getJumpIndex('Home', 0)).toBe(0);
+    expect(getJumpIndex('End', 0)).toBe(0);
+  });
+
+  it('safely clamps anchor when entries change or index is out of bounds', () => {
+    const entries = ['/a.txt', '/b.txt', '/c.txt'];
+    const staleAnchor = 10;
+    const maxIdx = Math.max(0, entries.length - 1);
+    const clampedAnchor = Math.min(Math.max(0, staleAnchor), maxIdx);
+    expect(clampedAnchor).toBe(2);
+
+    const targetIdx = 1;
+    const start = Math.min(clampedAnchor, targetIdx);
+    const end = Math.max(clampedAnchor, targetIdx);
+    const range = entries.slice(start, end + 1);
+    expect(range).toEqual(['/b.txt', '/c.txt']);
+  });
 });

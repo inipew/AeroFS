@@ -56,7 +56,8 @@ export function useFileSelection(options: UseFileSelectionOptions) {
 
   function selectRange(targetIndex: number, additive: boolean = false) {
     if (targetIndex < 0 || targetIndex >= options.entries.value.length) return;
-    const anchor = lastClickedIndex.value !== -1 ? lastClickedIndex.value : 0;
+    const maxIdx = Math.max(0, options.entries.value.length - 1);
+    const anchor = lastClickedIndex.value !== -1 ? Math.min(Math.max(0, lastClickedIndex.value), maxIdx) : 0;
     const start = Math.min(anchor, targetIndex);
     const end = Math.max(anchor, targetIndex);
     const rangePaths = options.entries.value.slice(start, end + 1).map((e) => e.path);

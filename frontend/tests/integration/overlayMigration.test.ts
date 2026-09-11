@@ -50,4 +50,32 @@ describe('Integration: Overlay Store & Migration Compatibility', () => {
     expect(overlayStore.isOpen('rename')).toBe(true);
     expect(overlayStore.current).toEqual({ type: 'rename', panelId: 'left', path: '/foo.txt' });
   });
+
+  it('supports properties overlay intent with connectionId and path', () => {
+    const overlayStore = useOverlayStore();
+    overlayStore.open({ type: 'properties', connectionId: 'local', path: '/var/log/app.log' });
+    expect(overlayStore.isOpen('properties')).toBe(true);
+    expect(overlayStore.current).toEqual({
+      type: 'properties',
+      connectionId: 'local',
+      path: '/var/log/app.log',
+    });
+    overlayStore.close();
+    expect(overlayStore.isOpen('properties')).toBe(false);
+  });
+
+  it('calculates smart filename selection range excluding extension', () => {
+    function getSelectionRange(filename: string): [number, number] {
+      const dotIdx = filename.lastIndexOf('.');
+      if (dotIdx > 0) {
+        return [0, dotIdx];
+      }
+      return [0, filename.length];
+    }
+
+    expect(getSelectionRange('report.final.pdf')).toEqual([0, 12]);
+    expect(getSelectionRange('archive.tar.gz')).toEqual([0, 11]);
+    expect(getSelectionRange('Makefile')).toEqual([0, 8]);
+    expect(getSelectionRange('.env')).toEqual([0, 4]);
+  });
 });

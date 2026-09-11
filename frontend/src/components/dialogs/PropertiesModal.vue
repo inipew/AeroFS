@@ -6,7 +6,7 @@
         'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs',
         uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-3 sm:p-6'
       ]"
-      @click="isOpen = false"
+      @click="closeModal"
     >
       <div
         :class="[
@@ -35,7 +35,7 @@
           </div>
           <div class="truncate">
             <h3 class="text-sm font-bold text-gray-900 dark:text-white truncate">
-              {{ meta?.name || 'File Properties' }}
+              {{ meta?.name || (path ? path.split('/').pop() : 'File Properties') }}
             </h3>
             <p class="text-[11px] text-gray-400 dark:text-slate-500 font-mono truncate">
               {{ meta?.path || path }}
@@ -44,7 +44,8 @@
         </div>
 
         <button
-          @click="isOpen = false"
+          type="button"
+          @click="closeModal"
           class="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
         >
           ✕
@@ -88,6 +89,19 @@
           <span>Loading properties...</span>
         </div>
 
+        <!-- Error State -->
+        <div v-else-if="errorMsg" class="py-12 flex flex-col items-center justify-center space-y-3 text-rose-500">
+          <FbIcon name="x" size="24px" />
+          <p class="text-xs font-medium">{{ errorMsg }}</p>
+          <button
+            type="button"
+            @click="fetchMetadata"
+            class="px-3 py-1.5 bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-200 rounded-xl text-xs hover:bg-gray-200 dark:hover:bg-slate-700 transition cursor-pointer font-medium"
+          >
+            Retry
+          </button>
+        </div>
+
         <template v-else-if="meta">
           <!-- TAB 1: General Info -->
           <div v-if="activeTab === 'general'" class="space-y-3 font-sans text-xs">
@@ -112,7 +126,7 @@
               <div class="flex justify-between py-1 border-b border-gray-100 dark:border-slate-800">
                 <span class="text-gray-500 dark:text-slate-400">File Size:</span>
                 <span class="font-mono text-gray-800 dark:text-slate-200">
-                  {{ formatSize(meta.size) }} ({{ meta.size.toLocaleString() }} bytes)
+                  {{ formatSize(meta.size) }} ({{ (meta.size ?? 0).toLocaleString() }} bytes)
                 </span>
               </div>
 
@@ -227,7 +241,7 @@
       <div class="h-16 bg-gray-50 dark:bg-[#090d16] border-t border-gray-200 dark:border-slate-800 px-6 flex items-center justify-between text-xs shrink-0">
         <button
           type="button"
-          @click="isOpen = false"
+          @click="closeModal"
           class="px-4 py-2 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium cursor-pointer"
         >
           Close
@@ -252,12 +266,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { getMetadataApi, chmodFileApi } from '../../api/files';
 import { normalizeApiError } from '../../utils/errorNormalizer';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { useOverlayStore } from '../../overlays/overlayStore';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -271,11 +286,13 @@ const emit = defineEmits<{
 
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
+const overlayStore = useOverlayStore();
 
 const isOpen = ref(props.modelValue);
 const activeTab = ref<'general' | 'permissions'>('general');
 const meta = ref<any | null>(null);
 const loading = ref(false);
+const errorMsg = ref<string | null>(null);
 const savingPerms = ref(false);
 const applyRecursive = ref(false);
 
@@ -286,14 +303,37 @@ const permState = ref({
   other: { r: true, w: false, x: true },
 });
 
-watch(
-  () => props.modelValue,
-  (val) => {
-    isOpen.value = val;
-    if (val && props.path) {
-      fetchMetadata();
-    }
+function closeModal() {
+  isOpen.value = false;
+  emit('update:modelValue', false);
+  if (overlayStore.current?.type === 'properties') {
+    overlayStore.close();
   }
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && isOpen.value) {
+    closeModal();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown);
+});
+
+watch(
+  () => [props.modelValue, props.path, props.connectionId] as const,
+  ([val, path, conn]) => {
+    isOpen.value = !!val;
+    if (val && path && conn) {
+      void fetchMetadata();
+    }
+  },
+  { immediate: true }
 );
 
 watch(
@@ -304,7 +344,9 @@ watch(
 );
 
 async function fetchMetadata() {
+  if (!props.path || !props.connectionId) return;
   loading.value = true;
+  errorMsg.value = null;
   try {
     meta.value = await getMetadataApi(props.connectionId, props.path);
 
@@ -316,7 +358,9 @@ async function fetchMetadata() {
       parseOctal(octalMode.value);
     }
   } catch (err: unknown) {
-    uiStore.showToast(normalizeApiError(err).message, 'error');
+    const norm = normalizeApiError(err);
+    errorMsg.value = norm.message || 'Failed to load properties';
+    uiStore.showToast(errorMsg.value, 'error');
   } finally {
     loading.value = false;
   }

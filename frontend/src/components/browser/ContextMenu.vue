@@ -1069,10 +1069,14 @@ async function handleShare() {
 }
 
 function handleProperties() {
-  if (uiStore.contextMenu.item) {
-    emit('openPropertiesDialog', {
+  const item = uiStore.contextMenu.item;
+  const p = workspaceStore.getPanel(activePanelId.value);
+  const targetPath = item?.path || (p.selectedEntries.length === 1 ? p.selectedEntries[0] : null);
+  if (targetPath) {
+    overlayStore.open({
+      type: 'properties',
       connectionId: activeConnectionId.value,
-      path: uiStore.contextMenu.item.path,
+      path: targetPath,
     });
   }
   uiStore.closeContextMenu();

@@ -1,9 +1,9 @@
 <template>
   <Transition name="ios-modal">
     <div
-      v-if="uiStore.isSyncOpen"
+      v-if="isOpen"
       class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none font-sans text-xs"
-      @click="uiStore.isSyncOpen = false"
+      @click="closeDialog"
     >
       <div
         class="modal-card bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4"
@@ -57,7 +57,7 @@
 
           <!-- Destination Section -->
           <div class="p-3 bg-gray-50/80 dark:bg-slate-950/60 rounded-2xl border border-gray-100 dark:border-slate-800/80 space-y-2">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Destination</span>
+            <span class="text-[10px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">Destination</span>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div>
                 <label class="block text-gray-700 dark:text-slate-300 text-[11px] font-medium mb-1">Connection</label>
@@ -106,7 +106,7 @@
           <div class="flex justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-slate-800">
             <button
               type="button"
-              @click="uiStore.isSyncOpen = false"
+              @click="closeDialog"
               class="px-4 py-2 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer"
             >
               Cancel
@@ -127,16 +127,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../../stores/uiStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useTransferStore } from '../../stores/transferStore';
+import { useOverlayStore } from '../../overlays/overlayStore';
 import { createSyncJobApi } from '../../api/sync';
+import { normalizeApiError } from '../../utils/errorNormalizer';
 import type { SyncStrategy } from '../../types/sync';
 
 const uiStore = useUiStore();
 const connectionStore = useConnectionStore();
 const transferStore = useTransferStore();
+const overlayStore = useOverlayStore();
 
 const sourceConn = ref<string>('local');
 const sourcePath = ref<string>('/');
@@ -145,17 +148,48 @@ const destPath = ref<string>('/');
 const strategy = ref<SyncStrategy>('keep_both');
 const loading = ref<boolean>(false);
 
+const isOpen = computed(() => uiStore.isSyncOpen || overlayStore.current?.type === 'sync');
+
+function closeDialog() {
+  uiStore.isSyncOpen = false;
+  if (overlayStore.current?.type === 'sync') {
+    overlayStore.close();
+  }
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && isOpen.value) {
+    closeDialog();
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown);
+});
+
 watch(
-  () => uiStore.isSyncOpen,
+  isOpen,
   (open) => {
     if (open) {
-      sourceConn.value = uiStore.syncSourceConnection || 'local';
-      sourcePath.value = uiStore.syncSourcePath || '/';
-      destConn.value = uiStore.syncDestConnection || 'local';
-      destPath.value = uiStore.syncDestPath || '/';
+      if (overlayStore.current?.type === 'sync') {
+        sourceConn.value = overlayStore.current.sourceConnection || 'local';
+        sourcePath.value = overlayStore.current.sourcePath || '/';
+        destConn.value = overlayStore.current.destConnection || 'local';
+        destPath.value = overlayStore.current.destPath || '/';
+      } else {
+        sourceConn.value = uiStore.syncSourceConnection || 'local';
+        sourcePath.value = uiStore.syncSourcePath || '/';
+        destConn.value = uiStore.syncDestConnection || 'local';
+        destPath.value = uiStore.syncDestPath || '/';
+      }
       strategy.value = 'keep_both';
     }
-  }
+  },
+  { immediate: true }
 );
 
 async function handleStartSync() {
@@ -170,11 +204,10 @@ async function handleStartSync() {
     });
 
     uiStore.showToast(res.message || 'Sync job initiated successfully', 'success');
-    uiStore.isSyncOpen = false;
+    closeDialog();
     transferStore.isDrawerOpen = true;
-  } catch (err: any) {
-    const msg = err.response?.data?.error?.message || err.message || 'Failed to start sync';
-    uiStore.showToast(msg, 'error');
+  } catch (err: unknown) {
+    uiStore.showToast(normalizeApiError(err).message || 'Failed to start sync', 'error');
   } finally {
     loading.value = false;
   }

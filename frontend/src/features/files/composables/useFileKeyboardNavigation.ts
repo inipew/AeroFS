@@ -59,6 +59,22 @@ export function useFileKeyboardNavigation(options: UseFileKeyboardNavigationOpti
       return;
     }
 
+    // Home -> Jump to first item
+    if (e.key === 'Home') {
+      if (entries.length === 0) return;
+      e.preventDefault();
+      options.onSelectIndex(0, { isRange: e.shiftKey, isMulti: e.ctrlKey || e.metaKey });
+      return;
+    }
+
+    // End -> Jump to last item
+    if (e.key === 'End') {
+      if (entries.length === 0) return;
+      e.preventDefault();
+      options.onSelectIndex(entries.length - 1, { isRange: e.shiftKey, isMulti: e.ctrlKey || e.metaKey });
+      return;
+    }
+
     // Delete -> Delete selection (Shift+Del for permanent delete)
     if (e.key === 'Delete') {
       e.preventDefault();

@@ -97,7 +97,7 @@
       </button>
 
       <!-- User Menu / Logout -->
-      <div v-if="authStore.user" class="relative">
+      <div v-if="authStore.user" ref="userMenuRef" class="relative">
         <button
           @click="isUserMenuOpen = !isUserMenuOpen"
           class="flex items-center space-x-1.5 p-1 sm:px-2 sm:py-1 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
@@ -115,7 +115,7 @@
           <div
             v-if="isUserMenuOpen"
             @click="isUserMenuOpen = false"
-            class="absolute right-0 mt-2 w-44 bg-white dark:bg-[#0f1422] border border-gray-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-1"
+            class="absolute right-0 mt-2 w-44 bg-white/95 dark:bg-[#0f172a]/95 backdrop-blur-2xl border border-gray-200/90 dark:border-slate-700/80 rounded-2xl shadow-2xl ring-1 ring-black/5 dark:ring-white/10 p-1.5 z-50 text-xs text-gray-700 dark:text-slate-200 space-y-1"
           >
             <div class="px-2.5 py-1 border-b border-gray-100 dark:border-slate-800/80">
               <p class="font-semibold truncate">{{ authStore.user.username }}</p>
@@ -136,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import FbIcon from '../components/common/FbIcon.vue';
 import { useUiStore } from '../stores/uiStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
@@ -151,4 +151,27 @@ const overlayStore = useOverlayStore();
 const authStore = useAuthStore();
 
 const isUserMenuOpen = ref(false);
+const userMenuRef = ref<HTMLElement | null>(null);
+
+function handlePointerDown(e: PointerEvent) {
+  if (isUserMenuOpen.value && userMenuRef.value && !userMenuRef.value.contains(e.target as Node)) {
+    isUserMenuOpen.value = false;
+  }
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && isUserMenuOpen.value) {
+    isUserMenuOpen.value = false;
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', handlePointerDown);
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('pointerdown', handlePointerDown);
+  window.removeEventListener('keydown', handleKeyDown);
+});
 </script>
