@@ -6,7 +6,7 @@
         'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm select-none font-sans text-xs',
         uiStore.isMobile ? 'flex flex-col justify-end p-0' : 'flex items-center justify-center p-4'
       ]"
-      @click="uiStore.isUploadOpen = false"
+      @click="handleClose"
     >
       <div
         :class="[
@@ -30,7 +30,7 @@
         </div>
         <button
           v-if="uiStore.isMobile"
-          @click="uiStore.isUploadOpen = false"
+          @click="handleClose"
           class="p-1 text-gray-400 hover:text-gray-700 dark:hover:text-white text-base"
         >
           ✕
@@ -127,36 +127,21 @@
         </div>
       </div>
 
-      <!-- Progress Bar -->
-      <div v-if="uploading" class="mb-4 space-y-1.5">
-        <div class="flex justify-between text-[11px] text-gray-600 dark:text-slate-400 font-mono">
-          <span>Uploading...</span>
-          <span>{{ progress }}%</span>
-        </div>
-        <div class="w-full bg-gray-200 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-          <div
-            class="bg-blue-600 h-1.5 transition-[width] duration-standard ease-spring"
-            :style="{ width: `${progress}%` }"
-          ></div>
-        </div>
-      </div>
-
       <div class="flex justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-slate-800">
         <button
           type="button"
-          @click="uploading ? cancelUploads() : (uiStore.isUploadOpen = false)"
-          class="px-4 py-2.5 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer disabled:opacity-50"
+          @click="handleClose"
+          class="px-4 py-2.5 rounded-xl text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 transition font-medium text-xs cursor-pointer"
         >
-          {{ uploading ? 'Cancel Upload' : 'Cancel' }}
+          Cancel
         </button>
         <button
           type="button"
-          :disabled="uploading || selectedFiles.length === 0"
+          :disabled="selectedFiles.length === 0"
           @click="startUpload"
           class="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs transition disabled:opacity-50 text-xs cursor-pointer flex items-center space-x-1.5"
         >
-          <span v-if="uploading" class="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></span>
-          <span>{{ uploading ? 'Uploading...' : 'Start Upload' }}</span>
+          <span>Start Upload</span>
         </button>
       </div>
     </div>
@@ -169,7 +154,6 @@ import { ref, computed } from 'vue';
 import FbIcon from '../common/FbIcon.vue';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { cancelTransferApi } from '../../api/transfers';
 import { useTransferStore } from '../../stores/transferStore';
 
 const uiStore = useUiStore();
@@ -182,15 +166,16 @@ const mediaInputRef = ref<HTMLInputElement | null>(null);
 
 const isDragging = ref(false);
 const selectedFiles = ref<File[]>([]);
-const uploading = ref(false);
-const progress = ref(0);
-const isCancelling = ref(false);
-const activeUploads = new Map<number, { controller: AbortController; jobId?: string }>();
 
 const currentTargetDirectory = computed(() => {
   const p = workspaceStore.getPanel(workspaceStore.activePanelId);
   return p.path === '/' ? '/' : p.path;
 });
+
+function handleClose() {
+  uiStore.isUploadOpen = false;
+  selectedFiles.value = [];
+}
 
 function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement;
@@ -214,104 +199,24 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-async function startUpload() {
+function startUpload() {
   if (selectedFiles.value.length === 0) return;
 
-  uploading.value = true;
-  progress.value = 0;
-
+  const filesToUpload = [...selectedFiles.value];
   const activeP = workspaceStore.getPanel(workspaceStore.activePanelId);
   const connId = activeP.connectionId || 'local';
   const targetFolder = activeP.path;
+  const existingFileNames = activeP.entries.map((e) => e.name);
 
-  const totalBytesAll = selectedFiles.value.reduce((acc, f) => acc + (f.size || 0), 0);
-  const transferredBytesMap: Record<number, number> = {};
-  const concurrency = 2;
-  let nextIdx = 0;
-  const errors: string[] = [];
-  let successfulCount = 0;
+  // Close dialog and reset selection immediately
+  handleClose();
 
-  async function uploadWorker() {
-    while (nextIdx < selectedFiles.value.length) {
-      const i = nextIdx++;
-      const file = selectedFiles.value[i];
-      try {
-        const controller = new AbortController();
-        activeUploads.set(i, { controller });
-        await transferStore.uploadTrackedFile(
-          connId,
-          targetFolder,
-          file,
-          controller.signal,
-          (percent) => {
-            transferredBytesMap[i] = (percent / 100) * (file.size || 0);
-            const currentTotalTransferred = Object.values(transferredBytesMap).reduce((a, b) => a + b, 0);
-            if (totalBytesAll > 0) {
-              progress.value = Math.min(100, Math.round((currentTotalTransferred * 100) / totalBytesAll));
-            }
-          },
-          (session) => {
-            activeUploads.set(i, { controller, jobId: session.job_id });
-          }
-        );
-        transferredBytesMap[i] = file.size || 0;
-        successfulCount++;
-      } catch (e: any) {
-        if (!isCancelling.value) errors.push(`${file.name}: ${e.response?.data?.error?.message || e.message}`);
-      } finally {
-        activeUploads.delete(i);
-      }
-    }
-  }
-
-  try {
-    const workers = [];
-    const count = Math.min(concurrency, selectedFiles.value.length);
-    for (let w = 0; w < count; w++) {
-      workers.push(uploadWorker());
-    }
-    await Promise.all(workers);
-
-    if (isCancelling.value) {
-      uiStore.showToast('Upload cancelled', 'warning');
-      return;
-    }
-
-    if (errors.length === 0) {
-      uiStore.showToast(`Successfully uploaded ${successfulCount} file(s)`, 'success');
-      uiStore.isUploadOpen = false;
-      selectedFiles.value = [];
-    } else if (successfulCount > 0) {
-      uiStore.showToast(`Uploaded ${successfulCount} file(s), ${errors.length} failed`, 'warning');
-      uiStore.isUploadOpen = false;
-      selectedFiles.value = [];
-    } else {
-      uiStore.showToast(errors[0] || 'Failed to upload files', 'error');
-    }
-
-    await workspaceStore.refreshPanel(workspaceStore.activePanelId);
-  } catch (err: any) {
-    uiStore.showToast(err.response?.data?.error?.message || 'Failed to upload files', 'error');
-  } finally {
-    uploading.value = false;
-    isCancelling.value = false;
-    activeUploads.clear();
-    progress.value = 0;
-  }
-}
-
-async function cancelUploads() {
-  if (!uploading.value || isCancelling.value) return;
-  isCancelling.value = true;
-  await Promise.allSettled(Array.from(activeUploads.values()).map(async ({ controller, jobId }) => {
-    try {
-      if (jobId) await cancelTransferApi(jobId);
-    } finally {
-      controller.abort();
-    }
-  }));
-  // WebSocket reconciliation is authoritative; fetching now handles a session
-  // that emitted its job before the UI recorded its id.
-  await transferStore.fetchJobs();
+  // Hand off to transfer store
+  void transferStore.submitUploadBatch({
+    connectionId: connId,
+    targetDir: targetFolder,
+    files: filesToUpload,
+    existingNames: existingFileNames,
+  });
 }
 </script>

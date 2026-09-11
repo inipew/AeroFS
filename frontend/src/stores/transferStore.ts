@@ -13,6 +13,7 @@ import { queryClient } from '../queryClient';
 import { queryKeys } from '../api/queryKeys';
 import { uploadFileAsTransferApi, type UploadSessionResponse } from '../api/files';
 import type { TransferJob, TransferType } from '../types/transfer';
+import { useUiStore } from './uiStore';
 
 export type ConflictResolution = 'replace' | 'skip' | 'keep_both' | 'cancel';
 
@@ -22,6 +23,41 @@ export interface ConflictState {
   sourcePath: string;
   destPath: string;
   resolve?: (resolution: ConflictResolution, applyToAll: boolean) => void;
+}
+
+export interface UploadBatchItem {
+  file: File;
+  targetDir?: string;
+}
+
+export interface UploadBatchOptions {
+  connectionId: string;
+  targetDir: string;
+  files: (File | UploadBatchItem)[];
+  existingNames?: string[];
+  concurrency?: number;
+  uploader?: (
+    connectionId: string,
+    targetDir: string,
+    file: File,
+    signal: AbortSignal,
+    onProgress?: (percent: number, loaded: number, total: number) => void,
+    onSession?: (session: UploadSessionResponse) => void
+  ) => Promise<UploadSessionResponse>;
+}
+
+export function generateUniqueName(name: string, existingNames: Set<string>): string {
+  const dotIdx = name.lastIndexOf('.');
+  const base = dotIdx > 0 ? name.substring(0, dotIdx) : name;
+  const ext = dotIdx > 0 ? name.substring(dotIdx) : '';
+  let counter = 1;
+  while (true) {
+    const candidate = `${base} (${counter})${ext}`;
+    if (!existingNames.has(candidate)) {
+      return candidate;
+    }
+    counter++;
+  }
 }
 
 export interface LiveSpeedMetrics {
@@ -78,6 +114,11 @@ export const useTransferStore = defineStore('transfer', () => {
   // Live speed tracking (jobId -> { speed, eta })
   const speedMetrics = ref<Record<string, LiveSpeedMetrics>>({});
   const liveProgress = ref<Record<string, LiveTransferProgress>>({});
+
+  // Active in-flight upload abort controllers (jobId -> AbortController)
+  const activeUploadControllers = new Map<string, AbortController>();
+  // Queued upload cancellation tokens (tempId -> cancel callback)
+  const queuedUploadTokens = new Map<string, { cancel: () => void }>();
 
   // Conflict Resolution State
   const conflictState = ref<ConflictState | null>(null);
@@ -426,6 +467,28 @@ export const useTransferStore = defineStore('transfer', () => {
   }
 
   async function cancelTransfer(jobId: string) {
+    const uploadController = activeUploadControllers.get(jobId);
+    if (uploadController) {
+      uploadController.abort();
+      activeUploadControllers.delete(jobId);
+    }
+
+    const queued = queuedUploadTokens.get(jobId);
+    if (queued) {
+      queued.cancel();
+      queuedUploadTokens.delete(jobId);
+    }
+
+    if (liveProgress.value[jobId]) {
+      liveProgress.value[jobId] = {
+        ...liveProgress.value[jobId],
+        status: 'cancelled',
+        speedBytesPerSec: 0,
+        etaSeconds: null,
+        terminalObserved: true,
+      };
+    }
+
     queryClient.setQueryData<TransferJob[]>(queryKeys.transfers(), (old) => {
       return (old ?? []).map((j) =>
         j.id === jobId
@@ -433,13 +496,16 @@ export const useTransferStore = defineStore('transfer', () => {
           : j
       );
     });
-    try {
-      await cancelTransferApi(jobId);
-    } catch (err) {
-      console.error('Failed to cancel transfer', err);
-    } finally {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
+
+    if (!jobId.startsWith('queued-upload-')) {
+      try {
+        await cancelTransferApi(jobId);
+      } catch (err) {
+        console.error('Failed to cancel transfer', err);
+      }
     }
+
+    await queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
   }
 
   const totalSpeedBytesPerSec = computed(() => {
@@ -550,6 +616,181 @@ export const useTransferStore = defineStore('transfer', () => {
     conflictState.value = null;
   }
 
+  async function submitUploadBatch(options: UploadBatchOptions): Promise<{
+    successfulCount: number;
+    failedCount: number;
+    cancelled: boolean;
+  }> {
+    const { connectionId, targetDir: defaultTargetDir, files, existingNames, concurrency = 2 } = options;
+    if (!files || files.length === 0) {
+      return { successfulCount: 0, failedCount: 0, cancelled: false };
+    }
+
+    isDrawerOpen.value = true;
+    resetBatchConflict();
+
+    const uploader = options.uploader || uploadTrackedFile;
+    const existingFiles = new Set<string>(existingNames ?? []);
+    const uiStore = useUiStore();
+
+    const items = files.map((item, idx) => {
+      const isBatchItem = typeof item === 'object' && 'file' in item && item.file instanceof File;
+      const file = isBatchItem ? (item as UploadBatchItem).file : (item as File);
+      const targetDir = (isBatchItem ? (item as UploadBatchItem).targetDir : undefined) || defaultTargetDir;
+      return {
+        tempId: `queued-upload-${crypto.randomUUID()}`,
+        index: idx,
+        file,
+        targetDir,
+        isCancelled: false,
+      };
+    });
+
+    for (const item of items) {
+      const destPath = item.targetDir === '/'
+        ? `/${item.file.name}`
+        : `${item.targetDir.replace(/\/$/, '')}/${item.file.name}`;
+
+      liveProgress.value[item.tempId] = {
+        name: item.file.name,
+        transferType: 'upload',
+        sourceConnectionId: 'upload',
+        sourcePath: `upload://${item.tempId}`,
+        destinationConnectionId: connectionId,
+        destinationPath: destPath,
+        transferredBytes: 0,
+        totalBytes: item.file.size,
+        speedBytesPerSec: 0,
+        etaSeconds: null,
+        phase: 'preparing',
+        status: 'queued',
+        receivedAt: Date.now(),
+        stale: false,
+      };
+
+      queuedUploadTokens.set(item.tempId, {
+        cancel: () => {
+          item.isCancelled = true;
+          delete liveProgress.value[item.tempId];
+        },
+      });
+    }
+
+    let nextIdx = 0;
+    let isBatchCancelled = false;
+    let successfulCount = 0;
+    const errors: string[] = [];
+    const affectedDirs = new Set<string>([defaultTargetDir]);
+
+    async function uploadWorker() {
+      while (nextIdx < items.length) {
+        if (isBatchCancelled) return;
+        const item = items[nextIdx++];
+        if (item.isCancelled) {
+          delete liveProgress.value[item.tempId];
+          queuedUploadTokens.delete(item.tempId);
+          continue;
+        }
+
+        affectedDirs.add(item.targetDir);
+        let uploadFile = item.file;
+        const destPath = item.targetDir === '/'
+          ? `/${item.file.name}`
+          : `${item.targetDir.replace(/\/$/, '')}/${item.file.name}`;
+
+        if (existingFiles.has(uploadFile.name)) {
+          const resolution = await requestConflict(uploadFile.name, uploadFile.name, destPath);
+          if (resolution === 'cancel') {
+            isBatchCancelled = true;
+            for (const [id, ctrl] of activeUploadControllers.entries()) {
+              ctrl.abort();
+              activeUploadControllers.delete(id);
+            }
+            for (const rem of items) {
+              delete liveProgress.value[rem.tempId];
+              queuedUploadTokens.delete(rem.tempId);
+            }
+            return;
+          }
+          if (resolution === 'skip') {
+            delete liveProgress.value[item.tempId];
+            queuedUploadTokens.delete(item.tempId);
+            continue;
+          }
+          if (resolution === 'keep_both') {
+            const uniqueName = generateUniqueName(uploadFile.name, existingFiles);
+            existingFiles.add(uniqueName);
+            uploadFile = new File([uploadFile], uniqueName, { type: uploadFile.type });
+          }
+        }
+
+        if (isBatchCancelled || item.isCancelled) {
+          delete liveProgress.value[item.tempId];
+          queuedUploadTokens.delete(item.tempId);
+          continue;
+        }
+
+        delete liveProgress.value[item.tempId];
+        queuedUploadTokens.delete(item.tempId);
+
+        const controller = new AbortController();
+        let activeJobId: string | undefined;
+
+        try {
+          await uploader(
+            connectionId,
+            item.targetDir,
+            uploadFile,
+            controller.signal,
+            undefined,
+            (session) => {
+              activeJobId = session.job_id;
+              activeUploadControllers.set(session.job_id, controller);
+            }
+          );
+          successfulCount++;
+          existingFiles.add(uploadFile.name);
+        } catch (err: any) {
+          if (isBatchCancelled || controller.signal.aborted || item.isCancelled) {
+            // Cancelled cleanly
+          } else {
+            const msg = err.response?.data?.error?.message || err.message || 'Upload failed';
+            errors.push(`${uploadFile.name}: ${msg}`);
+          }
+        } finally {
+          if (activeJobId) {
+            activeUploadControllers.delete(activeJobId);
+          }
+        }
+      }
+    }
+
+    const workerCount = Math.min(concurrency, items.length);
+    const workers = Array.from({ length: workerCount }, () => uploadWorker());
+    await Promise.all(workers);
+
+    for (const dir of affectedDirs) {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.directoryPrefix(connectionId, dir),
+      });
+    }
+
+    if (isBatchCancelled) {
+      uiStore.showToast('Upload cancelled', 'warning');
+      return { successfulCount, failedCount: errors.length, cancelled: true };
+    }
+
+    if (errors.length === 0) {
+      uiStore.showToast(`Successfully uploaded ${successfulCount} file(s)`, 'success');
+    } else if (successfulCount > 0) {
+      uiStore.showToast(`Uploaded ${successfulCount} file(s), ${errors.length} failed`, 'warning');
+    } else {
+      uiStore.showToast(errors[0] || 'Failed to upload files', 'error');
+    }
+
+    return { successfulCount, failedCount: errors.length, cancelled: false };
+  }
+
   return {
     jobs,
     displayJobs,
@@ -569,6 +810,7 @@ export const useTransferStore = defineStore('transfer', () => {
     updateClientProgress,
     uploadTrackedFile,
     submitTransfer,
+    submitUploadBatch,
     cancelTransfer,
     retryTransfer,
     removeJob,

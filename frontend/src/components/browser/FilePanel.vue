@@ -1542,45 +1542,28 @@ async function handleExternalFilesDrop(e: DragEvent, targetDir: string) {
 
   if (uploadItems.length === 0) return;
 
-  uiStore.showToast(`Uploading ${uploadItems.length} file(s)...`, 'info');
   const connId = panel.value.connectionId || 'local';
+  const existingFileNames = panel.value.entries.map((e) => e.name);
 
-  // Upload in bounded parallel batches (2 workers)
-  const concurrency = 2;
-  let nextIdx = 0;
-  let successCount = 0;
+  const batchItems = uploadItems.map((item) => {
+    const cleanRel = item.relativePath.replace(/^\/+/, '');
+    const lastSlash = cleanRel.lastIndexOf('/');
+    const subDir = lastSlash > -1 ? cleanRel.substring(0, lastSlash) : '';
+    const destDir = subDir
+      ? (targetDir === '/' ? `/${subDir}` : `${targetDir}/${subDir}`)
+      : targetDir;
+    return {
+      file: item.file,
+      targetDir: destDir,
+    };
+  });
 
-  async function worker() {
-    while (nextIdx < uploadItems.length) {
-      const item = uploadItems[nextIdx++];
-      const cleanRel = item.relativePath.replace(/^\/+/, '');
-      const lastSlash = cleanRel.lastIndexOf('/');
-      const subDir = lastSlash > -1 ? cleanRel.substring(0, lastSlash) : '';
-      const destDir = subDir
-        ? (targetDir === '/' ? `/${subDir}` : `${targetDir}/${subDir}`)
-        : targetDir;
-      try {
-        await transferStore.uploadTrackedFile(
-          connId,
-          destDir,
-          item.file,
-          new AbortController().signal
-        );
-        successCount++;
-      } catch (err) {
-        console.error('Failed uploading item', cleanRel, err);
-      }
-    }
-  }
-
-  const workers = [];
-  for (let w = 0; w < Math.min(concurrency, uploadItems.length); w++) {
-    workers.push(worker());
-  }
-  await Promise.all(workers);
-
-  uiStore.showToast(`Uploaded ${successCount} file(s) to ${targetDir}`, 'success');
-  await workspaceStore.refreshPanel(props.panelId);
+  void transferStore.submitUploadBatch({
+    connectionId: connId,
+    targetDir,
+    files: batchItems,
+    existingNames: existingFileNames,
+  });
 }
 
 async function handleDrop(e: DragEvent, targetFolder?: FileEntry) {

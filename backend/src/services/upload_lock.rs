@@ -33,6 +33,7 @@ pub struct UploadSession {
 struct ReservedUpload {
     session: UploadSession,
     claimed: bool,
+    created_at: std::time::Instant,
     _guard: UploadGuard,
 }
 
@@ -57,11 +58,24 @@ impl UploadLockManager {
         Self::default()
     }
 
+    pub async fn prune_stale(&self) {
+        let mut sessions = self.sessions.lock().await;
+        let now = std::time::Instant::now();
+        sessions.retain(|_, res| {
+            if !res.claimed && now.duration_since(res.created_at) > std::time::Duration::from_secs(60) {
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     pub async fn try_acquire(
         &self,
         connection_id: &str,
         path: &str,
     ) -> Result<UploadGuard, AppError> {
+        self.prune_stale().await;
         let normalized = format!("{}:{}", connection_id, path.trim_start_matches('/'));
         let mut lock = self
             .active_paths
@@ -89,6 +103,7 @@ impl UploadLockManager {
             ReservedUpload {
                 session,
                 claimed: false,
+                created_at: std::time::Instant::now(),
                 _guard: guard,
             },
         );
@@ -102,6 +117,7 @@ impl UploadLockManager {
             ReservedUpload {
                 session,
                 claimed: false,
+                created_at: std::time::Instant::now(),
                 _guard: guard,
             },
         );
@@ -176,6 +192,25 @@ mod tests {
             Err(AppError::Conflict(_))
         ));
         manager.release("job_session").await;
+        assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_unclaimed_session_expires_and_releases_lock() {
+        let manager = UploadLockManager::new();
+        let session = session("job_stale", "alice");
+        let guard = manager.try_acquire("local", "/session.bin").await.unwrap();
+        // Insert with created_at set to 70 seconds ago
+        manager.sessions.lock().await.insert(
+            "job_stale".to_string(),
+            ReservedUpload {
+                session,
+                claimed: false,
+                created_at: std::time::Instant::now() - std::time::Duration::from_secs(70),
+                _guard: guard,
+            },
+        );
+        // Next try_acquire should prune the stale session and succeed
         assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
     }
 }
