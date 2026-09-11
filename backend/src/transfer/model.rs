@@ -260,6 +260,107 @@ pub struct TransferJob {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TransferCapabilities {
+    pub can_cancel: bool,
+    pub can_pause: bool,
+    pub can_resume: bool,
+    pub can_retry: bool,
+}
+
+pub fn is_cancellable_state(status: TransferStatus, phase: TransferPhase) -> bool {
+    if status.is_terminal() || status == TransferStatus::CancellationRequested {
+        return false;
+    }
+    !matches!(
+        phase,
+        TransferPhase::Finalizing
+            | TransferPhase::Verifying
+            | TransferPhase::CleaningUp
+            | TransferPhase::Completed
+    )
+}
+
+impl TransferJob {
+    pub fn is_structurally_retryable(&self) -> bool {
+        self.dismissed_at.is_none()
+            && matches!(
+                self.status,
+                TransferStatus::Failed | TransferStatus::Interrupted
+            )
+            && !matches!(
+                (self.transfer_type, self.execution_mode),
+                (TransferType::Upload, TransferExecutionMode::Inline)
+            )
+    }
+
+    pub fn can_cancel(&self) -> bool {
+        is_cancellable_state(self.status, self.phase)
+    }
+
+    pub fn capabilities(&self) -> TransferCapabilities {
+        TransferCapabilities {
+            can_cancel: self.can_cancel(),
+            can_pause: false,
+            can_resume: false,
+            can_retry: self.is_structurally_retryable(),
+        }
+    }
+
+    pub fn to_response(&self) -> TransferJobResponse {
+        TransferJobResponse {
+            capabilities: self.capabilities(),
+            job: self.clone(),
+        }
+    }
+}
+
+/// DTO for REST responses and WebSocket events, exposing TransferJob with calculated capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TransferJobResponse {
+    #[serde(flatten)]
+    pub job: TransferJob,
+    pub capabilities: TransferCapabilities,
+}
+
+impl std::ops::Deref for TransferJobResponse {
+    type Target = TransferJob;
+
+    fn deref(&self) -> &Self::Target {
+        &self.job
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CancelTransferError {
+    #[error("Transfer job '{0}' not found")]
+    NotFound(String),
+    #[error("Permission denied: cannot cancel another user's transfer")]
+    Unauthorized,
+    #[error("Transfer job '{0}' cannot be cancelled in its current state")]
+    NotCancellable(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RetryTransferError {
+    #[error("Transfer job '{0}' not found")]
+    NotFound(String),
+    #[error("Permission denied: cannot retry another user's transfer")]
+    Unauthorized,
+    #[error("Cannot retry transfer '{0}': {1}")]
+    InvalidStatus(String, String),
+    #[error("Cannot retry transfer '{0}': source is not available on server")]
+    SourceUnavailable(String),
+    #[error("Storage provider '{0}' is not available")]
+    ProviderUnavailable(String),
+    #[error("Cannot retry transfer '{0}': transfer has been dismissed")]
+    Dismissed(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +469,75 @@ mod tests {
         let target = crate::domain::VfsPath::new("c", "/a/b.txt").unwrap();
         let sp = plan_local.staging_path(&target, "jid123").unwrap();
         assert!(sp.path.contains(".aerofs-part-jid123"));
+    }
+
+    #[test]
+    fn test_capabilities_matrix_and_serialization() {
+        let now = chrono::Utc::now();
+        let base_job = TransferJob {
+            id: "job_test_1".to_string(),
+            user_id: Some("user1".to_string()),
+            name: "test.txt".to_string(),
+            transfer_type: TransferType::Copy,
+            source_connection_id: "local".to_string(),
+            source_path: "/src/test.txt".to_string(),
+            destination_connection_id: "local".to_string(),
+            destination_path: "/dst/test.txt".to_string(),
+            status: TransferStatus::Queued,
+            phase: TransferPhase::Preparing,
+            execution_mode: TransferExecutionMode::Background,
+            staging: TransferStaging::None,
+            transferred_bytes: 0,
+            total_bytes: 100,
+            speed_bytes_per_sec: 0,
+            eta_seconds: None,
+            checksum: None,
+            error_message: None,
+            dismissed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // 1. Queued background copy: can_cancel = true, can_retry = false
+        let caps = base_job.capabilities();
+        assert!(caps.can_cancel);
+        assert!(!caps.can_retry);
+        assert!(!caps.can_pause);
+        assert!(!caps.can_resume);
+
+        // 2. Finalizing phase: can_cancel = false
+        let mut fin_job = base_job.clone();
+        fin_job.status = TransferStatus::Running;
+        fin_job.phase = TransferPhase::Finalizing;
+        assert!(!fin_job.capabilities().can_cancel);
+
+        // 3. Failed background copy: can_cancel = false, can_retry = true
+        let mut failed_copy = base_job.clone();
+        failed_copy.status = TransferStatus::Failed;
+        failed_copy.phase = TransferPhase::Completed;
+        assert!(!failed_copy.capabilities().can_cancel);
+        assert!(failed_copy.capabilities().can_retry);
+
+        // 4. Failed inline upload: can_cancel = false, can_retry = false (Upload + Inline invariant)
+        let mut failed_upload = base_job.clone();
+        failed_upload.transfer_type = TransferType::Upload;
+        failed_upload.execution_mode = TransferExecutionMode::Inline;
+        failed_upload.status = TransferStatus::Failed;
+        assert!(!failed_upload.capabilities().can_cancel);
+        assert!(!failed_upload.capabilities().can_retry);
+
+        // 5. Cancelled job: can_retry = false
+        let mut cancelled_job = base_job.clone();
+        cancelled_job.status = TransferStatus::Cancelled;
+        assert!(!cancelled_job.capabilities().can_cancel);
+        assert!(!cancelled_job.capabilities().can_retry);
+
+        // 6. JSON serialization of TransferJobResponse flattens properly
+        let response = base_job.to_response();
+        let json = serde_json::to_value(&response).expect("serialize");
+        assert_eq!(json["id"], "job_test_1");
+        assert_eq!(json["status"], "queued");
+        assert_eq!(json["capabilities"]["can_cancel"], true);
+        assert_eq!(json["capabilities"]["can_retry"], false);
     }
 }

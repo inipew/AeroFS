@@ -12,7 +12,7 @@ import { realtimeClient } from '../transport/websocket';
 import { queryClient } from '../queryClient';
 import { queryKeys } from '../api/queryKeys';
 import { uploadFileAsTransferApi, type UploadSessionResponse } from '../api/files';
-import type { TransferJob, TransferType } from '../types/transfer';
+import type { TransferJob, TransferType, TransferCapabilities } from '../types/transfer';
 import { useUiStore } from './uiStore';
 
 export type ConflictResolution = 'replace' | 'skip' | 'keep_both' | 'cancel';
@@ -79,6 +79,7 @@ export interface LiveTransferProgress {
   etaSeconds: number | null;
   phase?: TransferJob['phase'];
   status: TransferJob['status'];
+  capabilities?: TransferCapabilities;
   updatedAt?: string;
   receivedAt: number;
   terminalObserved?: boolean;
@@ -124,6 +125,7 @@ export const useTransferStore = defineStore('transfer', () => {
   const conflictState = ref<ConflictState | null>(null);
   let batchResolution: ConflictResolution | null = null;
   let isRealtimeSubscribed = false;
+  const uiStore = useUiStore();
 
   // `QueryClient#getQueryData` is not a Vue reactive source by itself.  Keep
   // only a revision signal here; transfer data remains owned by TanStack Query.
@@ -163,19 +165,31 @@ export const useTransferStore = defineStore('transfer', () => {
       knownIds.add(job.id);
       const live = liveProgress.value[job.id];
       if (!live || TERMINAL_STATUSES.has(job.status)) return job;
+      const effectivePhase = live.phase ?? job.phase;
+      // Server-owned job: capability comes from backend event if available, otherwise REST job capabilities.
+      // If cancellation was requested locally, can_cancel is set to false.
+      const baseCaps = live.capabilities ?? job.capabilities;
+      const effectiveCapabilities: TransferCapabilities = {
+        ...baseCaps,
+        can_cancel: live.status === 'cancellation_requested' ? false : baseCaps.can_cancel,
+      };
       return {
         ...job,
         transferred_bytes: Math.max(job.transferred_bytes, live.transferredBytes),
         total_bytes: Math.max(job.total_bytes, live.totalBytes),
         speed_bytes_per_sec: live.speedBytesPerSec,
         eta_seconds: live.etaSeconds ?? undefined,
-        phase: live.phase ?? job.phase,
+        phase: effectivePhase,
         status: live.status,
+        capabilities: effectiveCapabilities,
       };
     });
 
     for (const [id, live] of Object.entries(liveProgress.value)) {
       if (!knownIds.has(id) && !live.terminalObserved) {
+        const effectivePhase = live.phase ?? 'transferring';
+        const isQueuedUpload = id.startsWith('queued-upload-');
+        const canCancel = isQueuedUpload && live.status !== 'cancellation_requested';
         mapped.unshift({
           id,
           user_id: undefined,
@@ -186,13 +200,19 @@ export const useTransferStore = defineStore('transfer', () => {
           destination_connection_id: live.destinationConnectionId || '',
           destination_path: live.destinationPath || '',
           status: live.status,
-          phase: live.phase ?? 'transferring',
+          phase: effectivePhase,
           execution_mode: 'inline',
           staging: 'none',
           transferred_bytes: live.transferredBytes,
           total_bytes: live.totalBytes,
           speed_bytes_per_sec: live.speedBytesPerSec,
           eta_seconds: live.etaSeconds ?? undefined,
+          capabilities: live.capabilities ?? {
+            can_cancel: canCancel,
+            can_pause: false,
+            can_resume: false,
+            can_retry: false,
+          },
           created_at: new Date(live.receivedAt).toISOString(),
           updated_at: live.updatedAt || new Date(live.receivedAt).toISOString(),
         });
@@ -251,6 +271,7 @@ export const useTransferStore = defineStore('transfer', () => {
       etaSeconds: job.eta_seconds ?? null,
       phase: job.phase,
       status: job.status,
+      capabilities: job.capabilities,
       updatedAt: job.updated_at,
       receivedAt: Date.now(),
       stale: false,
@@ -479,30 +500,71 @@ export const useTransferStore = defineStore('transfer', () => {
       queuedUploadTokens.delete(jobId);
     }
 
+    if (jobId.startsWith('queued-upload-')) {
+      delete liveProgress.value[jobId];
+      delete speedMetrics.value[jobId];
+      return;
+    }
+
+    // Do NOT mark terminalObserved or status: 'cancelled' prematurely.
+    // Mark cancellation_requested and let backend emit the terminal cancelled event.
     if (liveProgress.value[jobId]) {
       liveProgress.value[jobId] = {
         ...liveProgress.value[jobId],
-        status: 'cancelled',
+        status: 'cancellation_requested',
         speedBytesPerSec: 0,
         etaSeconds: null,
-        terminalObserved: true,
       };
+    } else {
+      const restJob = jobs.value.find((j) => j.id === jobId);
+      if (restJob) {
+        liveProgress.value[jobId] = {
+          name: restJob.name,
+          transferType: restJob.transfer_type,
+          sourceConnectionId: restJob.source_connection_id,
+          sourcePath: restJob.source_path,
+          destinationConnectionId: restJob.destination_connection_id,
+          destinationPath: restJob.destination_path,
+          transferredBytes: restJob.transferred_bytes,
+          totalBytes: restJob.total_bytes,
+          speedBytesPerSec: 0,
+          etaSeconds: null,
+          phase: restJob.phase,
+          status: 'cancellation_requested',
+          capabilities: {
+            ...restJob.capabilities,
+            can_cancel: false,
+          },
+          receivedAt: Date.now(),
+        };
+      }
     }
 
     queryClient.setQueryData<TransferJob[]>(queryKeys.transfers(), (old) => {
       return (old ?? []).map((j) =>
         j.id === jobId
-          ? { ...j, status: 'cancellation_requested', speed_bytes_per_sec: 0, eta_seconds: undefined }
+          ? {
+              ...j,
+              status: 'cancellation_requested',
+              speed_bytes_per_sec: 0,
+              eta_seconds: undefined,
+              capabilities: {
+                ...j.capabilities,
+                can_cancel: false,
+              },
+            }
           : j
       );
     });
 
-    if (!jobId.startsWith('queued-upload-')) {
-      try {
-        await cancelTransferApi(jobId);
-      } catch (err) {
-        console.error('Failed to cancel transfer', err);
-      }
+    try {
+      await cancelTransferApi(jobId);
+    } catch (err) {
+      console.error('Failed to cancel transfer', err);
+      // Cancellation might have been rejected (e.g. 409 Conflict if already Finalizing/Completed).
+      // Re-invalidate queries immediately to restore accurate server state.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
+      throw err;
     }
 
     await queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
@@ -520,18 +582,35 @@ export const useTransferStore = defineStore('transfer', () => {
   });
 
   async function retryTransfer(jobId: string) {
+    const job = displayJobs.value.find((item) => item.id === jobId);
+    if (!job?.capabilities.can_retry) {
+      uiStore.showToast('Transfer cannot be retried', 'warning');
+      return;
+    }
+
     try {
       await retryTransferApi(jobId);
       queryClient.setQueryData<TransferJob[]>(queryKeys.transfers(), (old) => {
         return (old ?? []).map((j) =>
           j.id === jobId
-            ? { ...j, status: 'queued', phase: 'preparing', error_message: undefined }
+            ? {
+                ...j,
+                status: 'queued',
+                phase: 'preparing',
+                error_message: undefined,
+                capabilities: {
+                  ...j.capabilities,
+                  can_cancel: true,
+                  can_retry: false,
+                },
+              }
             : j
         );
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
     } catch (err) {
       console.error('retryTransferApi failed', err);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.transfers() });
       throw err;
     }
   }

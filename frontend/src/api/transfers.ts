@@ -3,7 +3,7 @@ import type { components } from './generated/openapi';
 
 export type CreateTransferPayload = components['schemas']['CreateTransferRequest'];
 export type CreateTransferResponse = components['schemas']['CreateTransferResponse'];
-export type TransferJob = components['schemas']['TransferJob'];
+export type TransferJob = components['schemas']['TransferJobResponse'];
 export type TransferActionResponse = components['schemas']['TransferActionResponse'];
 export type ClearFinishedTransfersResponse = components['schemas']['ClearFinishedTransfersResponse'];
 

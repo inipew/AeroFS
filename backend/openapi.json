@@ -3315,7 +3315,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/TransferJob"
+                    "$ref": "#/components/schemas/TransferJobResponse"
                   }
                 }
               }
@@ -3519,6 +3519,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict / Not cancellable",
             "content": {
               "application/json": {
                 "schema": {
@@ -6381,6 +6391,29 @@
           }
         }
       },
+      "TransferCapabilities": {
+        "type": "object",
+        "required": [
+          "can_cancel",
+          "can_pause",
+          "can_resume",
+          "can_retry"
+        ],
+        "properties": {
+          "can_cancel": {
+            "type": "boolean"
+          },
+          "can_pause": {
+            "type": "boolean"
+          },
+          "can_resume": {
+            "type": "boolean"
+          },
+          "can_retry": {
+            "type": "boolean"
+          }
+        }
+      },
       "TransferExecutionMode": {
         "type": "string",
         "description": "Execution mode for a transfer — Inline vs Background vs Resumable (§Upload-as-Transfer)",
@@ -6501,6 +6534,25 @@
             ]
           }
         }
+      },
+      "TransferJobResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TransferJob"
+          },
+          {
+            "type": "object",
+            "required": [
+              "capabilities"
+            ],
+            "properties": {
+              "capabilities": {
+                "$ref": "#/components/schemas/TransferCapabilities"
+              }
+            }
+          }
+        ],
+        "description": "DTO for REST responses and WebSocket events, exposing TransferJob with calculated capabilities."
       },
       "TransferPhase": {
         "type": "string",

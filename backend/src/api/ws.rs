@@ -208,7 +208,8 @@ async fn handle_socket(
                 ReplayOutcome::Events(missed) => {
                     let conns_snapshot = authorized_conns.read().await.clone();
                     for envelope in missed {
-                        if is_event_authorized(&envelope.event, &user_id, is_admin, &conns_snapshot) {
+                        if is_event_authorized(&envelope.event, &user_id, is_admin, &conns_snapshot)
+                        {
                             if let Ok(json_str) = serde_json::to_string(&envelope) {
                                 if sender.send(Message::Text(json_str.into())).await.is_err() {
                                     return;

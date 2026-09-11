@@ -104,7 +104,12 @@
                       <FbIcon :name="getTransferTypeIcon(job.transfer_type)" size="12px" />
                       <span class="font-semibold text-gray-800 dark:text-slate-200 truncate">{{ job.name }}</span>
                     </div>
-                    <button @click="transferStore.cancelTransfer(job.id)" class="text-gray-400 hover:text-red-500 p-0.5 cursor-pointer">
+                    <button
+                      v-if="job.capabilities.can_cancel"
+                      @click="transferStore.cancelTransfer(job.id)"
+                      class="text-gray-400 hover:text-red-500 p-0.5 cursor-pointer"
+                      title="Cancel Transfer"
+                    >
                       <FbIcon name="x" size="12px" />
                     </button>
                   </div>
@@ -313,7 +318,7 @@
                         </span>
 
                         <button
-                          v-if="job.status !== 'cancellation_requested'"
+                          v-if="job.capabilities.can_cancel"
                           @click="transferStore.cancelTransfer(job.id)"
                           class="text-gray-400 hover:text-red-500 dark:hover:text-red-400 p-0.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer"
                           title="Cancel Transfer"
@@ -393,9 +398,9 @@
                           {{ job.status }}
                         </span>
 
-                        <!-- Retry for failed / cancelled / interrupted -->
+                        <!-- Retry driven strictly by capability (cancelled jobs cannot be retried) -->
                         <button
-                          v-if="job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted'"
+                          v-if="job.capabilities.can_retry"
                           @click="transferStore.retryTransfer(job.id)"
                           class="text-blue-600 dark:text-blue-400 hover:underline font-medium px-1 cursor-pointer text-[10px]"
                           title="Retry Transfer"

@@ -4,8 +4,8 @@ use crate::domain::VfsPath;
 pub use crate::events::EventEnvelope;
 use crate::events::{DomainEvent, EventJournal, ReplayOutcome};
 pub use crate::transfer::model::{
-    TransferExecutionMode, TransferJob, TransferPhase, TransferStaging, TransferStatus,
-    TransferType,
+    CancelTransferError, RetryTransferError, TransferExecutionMode, TransferJob,
+    TransferJobResponse, TransferPhase, TransferStaging, TransferStatus, TransferType,
 };
 use crate::vfs::FileSystem;
 use chrono::{DateTime, Utc};
@@ -23,8 +23,17 @@ use uuid::Uuid;
 pub type WsEvent = DomainEvent;
 pub type ReplayResult = ReplayOutcome;
 
+#[derive(Clone, Copy, Debug)]
+pub struct PersistenceCheckpoint {
+    pub last_persisted_at: Instant,
+    pub last_persisted_bytes: u64,
+    pub last_persisted_phase: Option<TransferPhase>,
+    pub last_persisted_status: Option<TransferStatus>,
+}
+
 #[derive(Clone)]
 pub struct TransferManager {
+    providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
     jobs: Arc<RwLock<HashMap<String, TransferJob>>>,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     queue_tx: mpsc::Sender<String>,
@@ -35,6 +44,7 @@ pub struct TransferManager {
     worker_semaphore: Arc<tokio::sync::Semaphore>,
     is_accepting_jobs: Arc<std::sync::atomic::AtomicBool>,
     completion_tx: broadcast::Sender<(String, bool)>,
+    checkpoints: Arc<std::sync::Mutex<HashMap<String, PersistenceCheckpoint>>>,
 }
 
 impl TransferManager {
@@ -70,6 +80,7 @@ impl TransferManager {
         let db_clone = db.clone();
         let queue_tx_clone = queue_tx.clone();
         let completion_tx_clone = completion_tx.clone();
+        let providers_clone = Arc::clone(&providers);
 
         // 1. Synchronous startup recovery: Load jobs from SQLite into memory
         // Awaited directly so server readiness is announced only after recovery completes.
@@ -155,7 +166,7 @@ impl TransferManager {
 
                 let jobs_worker = Arc::clone(&jobs_clone);
                 let cancel_tokens_worker = Arc::clone(&cancel_tokens_clone);
-                let providers_worker = Arc::clone(&providers);
+                let providers_worker = Arc::clone(&providers_clone);
                 let event_journal_worker = Arc::clone(&event_journal_clone);
                 let db_worker = db_clone.clone();
                 let completion_tx_worker = completion_tx_clone.clone();
@@ -333,7 +344,10 @@ impl TransferManager {
             }
         });
 
+        let checkpoints = Arc::new(std::sync::Mutex::new(HashMap::new()));
+
         Self {
+            providers,
             jobs,
             cancel_tokens,
             queue_tx,
@@ -344,6 +358,7 @@ impl TransferManager {
             worker_semaphore,
             is_accepting_jobs,
             completion_tx,
+            checkpoints,
         }
     }
 
@@ -361,7 +376,7 @@ impl TransferManager {
     /// Returns Ok(true) if successfully transitioned to Finalizing and executor may rename;
     /// Ok(false) if already cancelled / too late (Finalizing/Verifying/Completed) — executor must not rename.
     /// All checks happen under single `jobs.write()` critical section (token + phase + status).
-    pub(crate) async fn try_enter_finalizing(
+    pub async fn try_enter_finalizing(
         &self,
         job_id: &str,
     ) -> Result<bool, crate::errors::AppError> {
@@ -493,7 +508,7 @@ impl TransferManager {
             destination_path,
             status: TransferStatus::Queued,
             phase: TransferPhase::Preparing,
-            execution_mode: TransferExecutionMode::Inline,
+            execution_mode: TransferExecutionMode::Background,
             staging: TransferStaging::None,
             transferred_bytes: 0,
             total_bytes: 0,
@@ -617,20 +632,64 @@ impl TransferManager {
         speed: u64,
         eta: Option<u64>,
     ) {
-        let mut map = self.jobs.write().await;
-        if let Some(j) = map.get_mut(job_id) {
-            j.transferred_bytes = transferred;
-            j.total_bytes = total;
-            j.speed_bytes_per_sec = speed;
-            j.eta_seconds = eta;
-            j.updated_at = Utc::now();
-            let job = j.clone();
-            drop(map);
+        let job = {
+            let mut map = self.jobs.write().await;
+            if let Some(j) = map.get_mut(job_id) {
+                j.transferred_bytes = transferred;
+                j.total_bytes = total;
+                j.speed_bytes_per_sec = speed;
+                j.eta_seconds = eta;
+                j.updated_at = Utc::now();
+                Some(j.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(job) = job {
             let _ = self
                 .event_journal
                 .append(DomainEvent::transfer_progress(&job), Some(&job.id))
                 .await;
-            let _ = Self::save_job_to_db(&self.db, &job).await;
+
+            let should_persist = {
+                let mut cp_map = self.checkpoints.lock().unwrap();
+                let now = Instant::now();
+                let cp = cp_map
+                    .entry(job_id.to_string())
+                    .or_insert(PersistenceCheckpoint {
+                        last_persisted_at: now,
+                        last_persisted_bytes: 0,
+                        last_persisted_phase: Some(job.phase),
+                        last_persisted_status: Some(job.status),
+                    });
+                let time_elapsed = now.duration_since(cp.last_persisted_at).as_secs_f64() >= 1.0;
+                let bytes_elapsed =
+                    transferred.saturating_sub(cp.last_persisted_bytes) >= 4 * 1024 * 1024;
+                let phase_changed = cp.last_persisted_phase != Some(job.phase);
+                let status_changed = cp.last_persisted_status != Some(job.status);
+                let is_terminal = job.status.is_terminal();
+                let is_done = transferred >= total && total > 0;
+                if time_elapsed
+                    || bytes_elapsed
+                    || phase_changed
+                    || status_changed
+                    || is_terminal
+                    || is_done
+                {
+                    cp.last_persisted_at = now;
+                    cp.last_persisted_bytes = transferred;
+                    cp.last_persisted_phase = Some(job.phase);
+                    cp.last_persisted_status = Some(job.status);
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if should_persist {
+                let _ = Self::save_job_to_db(&self.db, &job).await;
+            }
         }
     }
 
@@ -668,6 +727,7 @@ impl TransferManager {
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), true));
         }
+        self.checkpoints.lock().unwrap().remove(job_id);
         self.cancel_tokens.write().await.remove(job_id);
     }
 
@@ -693,6 +753,7 @@ impl TransferManager {
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
         }
+        self.checkpoints.lock().unwrap().remove(job_id);
         self.cancel_tokens.write().await.remove(job_id);
     }
 
@@ -727,6 +788,7 @@ impl TransferManager {
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
         }
+        self.checkpoints.lock().unwrap().remove(job_id);
         self.cancel_tokens.write().await.remove(job_id);
     }
 
@@ -778,64 +840,73 @@ impl TransferManager {
         list
     }
 
+    /// Retrieve a single transfer job by ID from RAM or SQLite fallback
+    pub async fn get_job(&self, id: &str) -> Option<TransferJob> {
+        if let Some(j) = self.jobs.read().await.get(id).cloned() {
+            return Some(j);
+        }
+        Self::load_single_job_from_db(&self.db, id)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Insert or update a job for testing lifecycle invariants
+    pub async fn insert_job_for_test(&self, job: TransferJob) {
+        let _ = Self::save_job_to_db(&self.db, &job).await;
+        self.jobs.write().await.insert(job.id.clone(), job);
+    }
+
     pub async fn cancel_job(
         &self,
         id: &str,
         user_id: Option<&str>,
         is_admin: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, CancelTransferError> {
         let (token_opt, is_queued, updated_job) = {
             let mut map = self.jobs.write().await;
             if let Some(job) = map.get_mut(id) {
                 if !is_admin {
                     match (&job.user_id, user_id) {
                         (Some(owner), Some(uid)) if owner == uid => {}
-                        _ => {
-                            return Err(
-                                "Permission denied: cannot cancel another user's transfer".into()
-                            )
-                        }
+                        _ => return Err(CancelTransferError::Unauthorized),
                     }
                 }
 
-                // Opsi X: Finalizing is hard cancellation boundary — too late
-                if matches!(
-                    job.phase,
-                    crate::transfer::TransferPhase::Finalizing
-                        | crate::transfer::TransferPhase::Verifying
-                        | crate::transfer::TransferPhase::Completed
-                ) {
-                    return Ok(false);
-                }
-
-                let token = self.cancel_tokens.read().await.get(id).cloned();
-
-                if job.status == TransferStatus::Queued {
-                    job.status = TransferStatus::Cancelled;
-                    job.speed_bytes_per_sec = 0;
-                    job.eta_seconds = None;
-                    job.updated_at = Utc::now();
-                    (token, true, Some(job.clone()))
-                } else if job.status == TransferStatus::Running {
-                    job.status = TransferStatus::CancellationRequested;
-                    job.speed_bytes_per_sec = 0;
-                    job.eta_seconds = None;
-                    job.updated_at = Utc::now();
-                    (token, false, Some(job.clone()))
-                } else if job.status == TransferStatus::CancellationRequested {
+                if job.status == TransferStatus::CancellationRequested {
+                    let token = self.cancel_tokens.read().await.get(id).cloned();
                     (token, false, None)
+                } else if !job.can_cancel() {
+                    return Err(CancelTransferError::NotCancellable(id.to_string()));
                 } else {
-                    (None, false, None)
+                    let token = self.cancel_tokens.read().await.get(id).cloned();
+
+                    if job.status == TransferStatus::Queued {
+                        job.status = TransferStatus::Cancelled;
+                        job.speed_bytes_per_sec = 0;
+                        job.eta_seconds = None;
+                        job.updated_at = Utc::now();
+                        (token, true, Some(job.clone()))
+                    } else if job.status == TransferStatus::Running {
+                        job.status = TransferStatus::CancellationRequested;
+                        job.speed_bytes_per_sec = 0;
+                        job.eta_seconds = None;
+                        job.updated_at = Utc::now();
+                        (token, false, Some(job.clone()))
+                    } else {
+                        return Err(CancelTransferError::NotCancellable(id.to_string()));
+                    }
                 }
             } else {
                 (None, false, None)
             }
         };
 
-        if let Some(token) = token_opt {
+        if let Some(ref token) = token_opt {
             token.cancel();
         }
         let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(&self.db, id).await;
+        self.checkpoints.lock().unwrap().remove(id);
 
         if let Some(job) = updated_job {
             let _ = Self::save_job_to_db(&self.db, &job).await;
@@ -851,43 +922,54 @@ impl TransferManager {
                     .await;
             }
             Ok(true)
+        } else if token_opt.is_some() {
+            // Already in CancellationRequested
+            Ok(true)
         } else {
             // DB Fallback if job is not in RAM
             if let Ok(Some(row)) =
-                sqlx::query("SELECT user_id, status FROM transfer_jobs WHERE id = ?")
+                sqlx::query("SELECT user_id, status, phase FROM transfer_jobs WHERE id = ?")
                     .bind(id)
                     .fetch_optional(&self.db)
                     .await
             {
                 let db_user_id: Option<String> = row.try_get("user_id").ok();
                 let db_status_str: String = row.try_get("status").unwrap_or_default();
+                let db_phase_str: String = row.try_get("phase").unwrap_or_default();
                 let db_status = TransferStatus::from_str(&db_status_str);
+                let db_phase = TransferPhase::from_str(&db_phase_str);
 
                 if !is_admin {
                     match (&db_user_id, user_id) {
                         (Some(owner), Some(uid)) if owner == uid => {}
-                        _ => {
-                            return Err(
-                                "Permission denied: cannot cancel another user's transfer".into()
-                            )
-                        }
+                        _ => return Err(CancelTransferError::Unauthorized),
                     }
                 }
 
-                if db_status == TransferStatus::Queued
-                    || db_status == TransferStatus::Running
-                    || db_status == TransferStatus::CancellationRequested
-                {
-                    let now_str = Utc::now().to_rfc3339();
-                    let res = sqlx::query("UPDATE transfer_jobs SET status = 'cancelled', updated_at = ? WHERE id = ?")
-                        .bind(&now_str)
-                        .bind(id)
-                        .execute(&self.db)
-                        .await;
-                    return Ok(res.map(|r| r.rows_affected() > 0).unwrap_or(false));
+                if db_status == TransferStatus::CancellationRequested {
+                    return Ok(true);
                 }
+
+                if !crate::transfer::model::is_cancellable_state(db_status, db_phase) {
+                    return Err(CancelTransferError::NotCancellable(id.to_string()));
+                }
+
+                let now_str = Utc::now().to_rfc3339();
+                let res = sqlx::query(
+                    "UPDATE transfer_jobs SET status = 'cancelled', updated_at = ? WHERE id = ?",
+                )
+                .bind(&now_str)
+                .bind(id)
+                .execute(&self.db)
+                .await;
+                match res {
+                    Ok(r) if r.rows_affected() > 0 => Ok(true),
+                    Ok(_) => Err(CancelTransferError::NotFound(id.to_string())),
+                    Err(e) => Err(CancelTransferError::Internal(e.to_string())),
+                }
+            } else {
+                Err(CancelTransferError::NotFound(id.to_string()))
             }
-            Ok(false)
         }
     }
 
@@ -897,54 +979,161 @@ impl TransferManager {
         id: &str,
         user_id: Option<&str>,
         is_admin: bool,
-    ) -> Result<bool, String> {
-        let (can_retry, job_opt) = {
-            let mut map = self.jobs.write().await;
-            if let Some(job) = map.get_mut(id) {
-                if !is_admin {
-                    match (&job.user_id, user_id) {
-                        (Some(owner), Some(uid)) if owner == uid => {}
-                        _ => {
-                            return Err(
-                                "Permission denied: cannot retry another user's transfer".into()
-                            )
-                        }
-                    }
-                }
-
-                if matches!(
-                    job.status,
-                    TransferStatus::Failed | TransferStatus::Interrupted
-                ) {
-                    job.status = TransferStatus::Queued;
-                    job.phase = TransferPhase::Preparing;
-                    job.error_message = None;
-                    job.updated_at = Utc::now();
-                    (true, Some(job.clone()))
+    ) -> Result<bool, RetryTransferError> {
+        let job = {
+            let map = self.jobs.read().await;
+            map.get(id).cloned()
+        };
+        let job = match job {
+            Some(j) => j,
+            None => {
+                if let Ok(Some(db_job)) = Self::load_single_job_from_db(&self.db, id).await {
+                    db_job
                 } else {
-                    (false, None)
+                    return Err(RetryTransferError::NotFound(id.to_string()));
                 }
-            } else {
-                (false, None)
             }
         };
 
-        if can_retry {
-            if let Some(job) = job_opt {
-                let _ = Self::save_job_to_db(&self.db, &job).await;
-                let _ = self
-                    .event_journal
-                    .append(DomainEvent::transfer_progress(&job), Some(&job.id))
-                    .await;
-                let _ = self.queue_tx.send(id.to_string()).await;
-                return Ok(true);
+        if !is_admin {
+            match (&job.user_id, user_id) {
+                (Some(owner), Some(uid)) if owner == uid => {}
+                _ => return Err(RetryTransferError::Unauthorized),
             }
         }
 
-        Err(format!(
-            "Transfer job '{}' cannot be retried (not in failed or interrupted state)",
-            id
-        ))
+        if job.dismissed_at.is_some() {
+            return Err(RetryTransferError::Dismissed(id.to_string()));
+        }
+
+        if !job.is_structurally_retryable() {
+            if matches!(
+                (job.transfer_type, job.execution_mode),
+                (TransferType::Upload, TransferExecutionMode::Inline)
+            ) {
+                return Err(RetryTransferError::SourceUnavailable(format!(
+                    "Transfer job '{}' is an inline browser upload and cannot be retried from server",
+                    id
+                )));
+            }
+            return Err(RetryTransferError::InvalidStatus(
+                id.to_string(),
+                format!(
+                    "job in status '{:?}' cannot be retried (only Failed or Interrupted transfers can be retried)",
+                    job.status
+                ),
+            ));
+        }
+
+        let (src_fs, _dst_fs) = {
+            let providers_lock = self.providers.read().await;
+            let src = providers_lock
+                .get(&job.source_connection_id)
+                .cloned()
+                .ok_or_else(|| {
+                    RetryTransferError::ProviderUnavailable(format!(
+                        "Source connection '{}' not found",
+                        job.source_connection_id
+                    ))
+                })?;
+            let dst = providers_lock
+                .get(&job.destination_connection_id)
+                .cloned()
+                .ok_or_else(|| {
+                    RetryTransferError::ProviderUnavailable(format!(
+                        "Destination connection '{}' not found",
+                        job.destination_connection_id
+                    ))
+                })?;
+            (src, dst)
+        };
+
+        let src_vfs = crate::domain::VfsPath::new(&job.source_connection_id, &job.source_path)
+            .map_err(|e| {
+                RetryTransferError::SourceUnavailable(format!("Invalid source path: {}", e))
+            })?;
+
+        if let Err(e) = src_fs.stat(&src_vfs).await {
+            return Err(RetryTransferError::SourceUnavailable(format!(
+                "Source path '{}' is not accessible: {}",
+                job.source_path, e
+            )));
+        }
+
+        let old_status = job.status;
+        let old_phase = job.phase;
+        let old_error = job.error_message.clone();
+
+        let retry_phase =
+            if job.transfer_type == TransferType::Move && old_phase == TransferPhase::CleaningUp {
+                TransferPhase::CleaningUp
+            } else {
+                TransferPhase::Preparing
+            };
+
+        let updated_job = {
+            let mut map = self.jobs.write().await;
+            let j = map.entry(id.to_string()).or_insert_with(|| job.clone());
+            if j.status != old_status || j.phase != old_phase {
+                return Err(RetryTransferError::InvalidStatus(
+                    id.to_string(),
+                    "transfer state changed while retry was being validated".into(),
+                ));
+            }
+            j.status = TransferStatus::Queued;
+            j.phase = retry_phase;
+            j.error_message = None;
+            j.updated_at = Utc::now();
+            j.clone()
+        };
+
+        if let Err(e) = Self::save_job_to_db(&self.db, &updated_job).await {
+            let mut map = self.jobs.write().await;
+            if let Some(j) = map.get_mut(id) {
+                j.status = old_status;
+                j.phase = old_phase;
+                j.error_message = old_error;
+                j.updated_at = Utc::now();
+            }
+            return Err(RetryTransferError::Internal(format!(
+                "Failed to persist retry state: {}",
+                e
+            )));
+        }
+
+        let _ = self
+            .event_journal
+            .append(
+                DomainEvent::transfer_progress(&updated_job),
+                Some(&updated_job.id),
+            )
+            .await;
+
+        if let Err(e) = self.queue_tx.send(id.to_string()).await {
+            let rollback_job = {
+                let mut map = self.jobs.write().await;
+                let j = map.get_mut(id).unwrap();
+                j.status = old_status;
+                j.phase = old_phase;
+                j.error_message = old_error;
+                j.updated_at = Utc::now();
+                j.clone()
+            };
+            let _ = Self::save_job_to_db(&self.db, &rollback_job).await;
+            let _ = self
+                .event_journal
+                .append(
+                    DomainEvent::transfer_progress(&rollback_job),
+                    Some(&rollback_job.id),
+                )
+                .await;
+            return Err(RetryTransferError::Internal(format!(
+                "Failed to enqueue retry job: {}",
+                e
+            )));
+        }
+
+        Ok(true)
     }
 
     pub async fn dismiss_job(
@@ -1256,12 +1445,13 @@ impl TransferManager {
         let src_vfs = VfsPath::new(&job.source_connection_id, &job.source_path)?;
         let dst_vfs = VfsPath::new(&job.destination_connection_id, &job.destination_path)?;
 
-        job.phase = TransferPhase::Preparing;
-
         // If a Move operation previously completed copying and verified destination,
-        // but failed during source cleanup, complete source cleanup directly.
+        // but failed during source cleanup, complete source cleanup directly without re-copying.
         if job.transfer_type == TransferType::Move && job.phase == TransferPhase::CleaningUp {
-            let _ = src_fs.delete(&src_vfs).await;
+            src_fs
+                .delete(&src_vfs)
+                .await
+                .map_err(|e| anyhow::anyhow!("Delete source failed during Move cleanup: {}", e))?;
             job.phase = TransferPhase::Completed;
             job.transferred_bytes = job.total_bytes;
             job.speed_bytes_per_sec = 0;
@@ -1269,6 +1459,8 @@ impl TransferManager {
             job.updated_at = Utc::now();
             return Ok(());
         }
+
+        job.phase = TransferPhase::Preparing;
 
         // 1. Get source metadata
         let meta = src_fs
@@ -1523,7 +1715,6 @@ impl TransferManager {
 
             let transferred_atomic = Arc::new(AtomicU64::new(0));
             let total_bytes_atomic = Arc::new(AtomicU64::new(0));
-            let start_time = Instant::now();
 
             let worker_src_fs = Arc::clone(&src_fs);
             let worker_dst_fs = Arc::clone(&dst_fs);
@@ -1542,23 +1733,19 @@ impl TransferManager {
             let ticker_job_id = job.id.clone();
             let ticker_jobs_map = Arc::clone(jobs_map);
             let ticker_journal = Arc::clone(event_journal);
-            let ticker_start = start_time;
 
             let ticker_handle = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(100));
+                let mut rate_estimator =
+                    crate::transfer::rate::TransferRateEstimator::new(Instant::now(), 0);
                 loop {
                     tokio::select! {
                         _ = ticker_cancel.cancelled() => break,
                         _ = interval.tick() => {
+                            let now = Instant::now();
                             let current_bytes = ticker_transferred.load(Ordering::Relaxed);
                             let total = ticker_total.load(Ordering::Relaxed);
-                            let elapsed_secs = ticker_start.elapsed().as_secs_f64().max(0.001);
-                            let speed = (current_bytes as f64 / elapsed_secs) as u64;
-                            let eta = if speed > 0 && total > current_bytes {
-                                Some((total - current_bytes) / speed)
-                            } else {
-                                Some(0)
-                            };
+                            let sample = rate_estimator.observe(now, current_bytes, total);
                             let updated = {
                                 let mut map = ticker_jobs_map.write().await;
                                 if let Some(j) = map.get_mut(&ticker_job_id) {
@@ -1570,8 +1757,8 @@ impl TransferManager {
                                     } else {
                                         j.transferred_bytes = current_bytes;
                                         j.total_bytes = total;
-                                        j.speed_bytes_per_sec = speed;
-                                        j.eta_seconds = eta;
+                                        j.speed_bytes_per_sec = sample.speed_bytes_per_sec;
+                                        j.eta_seconds = sample.eta_seconds;
                                         j.phase = TransferPhase::Transferring;
                                         j.updated_at = Utc::now();
                                         Some(j.clone())
@@ -1926,7 +2113,8 @@ impl TransferManager {
             let mut buffer = vec![0u8; 64 * 1024];
             let mut transferred = resume_offset;
             let mut hasher = Sha256::new();
-            let start_time = Instant::now();
+            let mut rate_estimator =
+                crate::transfer::rate::TransferRateEstimator::new(Instant::now(), 0);
             let mut last_emit = Instant::now();
             let mut last_db_save = Instant::now();
 
@@ -1959,24 +2147,20 @@ impl TransferManager {
                 };
 
                 transferred += n as u64;
-
+                let bytes_since_start = transferred.saturating_sub(resume_offset);
                 let now = Instant::now();
+
                 if now.duration_since(last_emit) >= Duration::from_millis(100)
                     || transferred == total_bytes
                 {
                     last_emit = now;
-                    let elapsed_sec = start_time.elapsed().as_secs_f64();
-                    let bytes_since_start = transferred.saturating_sub(resume_offset);
-                    let speed = if elapsed_sec > 0.05 {
-                        (bytes_since_start as f64 / elapsed_sec) as u64
-                    } else {
-                        0
-                    };
-                    let eta = if speed > 0 && total_bytes > transferred {
-                        Some((total_bytes - transferred) / speed)
-                    } else {
-                        Some(0)
-                    };
+                    let sample = rate_estimator.observe(
+                        now,
+                        bytes_since_start,
+                        total_bytes.saturating_sub(resume_offset),
+                    );
+                    let speed = sample.speed_bytes_per_sec;
+                    let eta = sample.eta_seconds;
 
                     let updated_job = {
                         let mut map = jobs_map_clone.write().await;
@@ -2186,6 +2370,74 @@ impl TransferManager {
         Ok(())
     }
 
+    fn row_to_job(r: &sqlx::sqlite::SqliteRow) -> TransferJob {
+        use sqlx::Row;
+        let id: String = r.get("id");
+        let user_id: Option<String> = r.get("user_id");
+        let name: String = r.get("name");
+        let transfer_type_str: String = r.get("transfer_type");
+        let source_connection_id: String = r.get("source_connection_id");
+        let source_path: String = r.get("source_path");
+        let destination_connection_id: String = r.get("destination_connection_id");
+        let destination_path: String = r.get("destination_path");
+        let status_str: String = r.get("status");
+        let phase_str: Option<String> = r.try_get("phase").ok();
+        let transferred_bytes: i64 = r.get("transferred_bytes");
+        let total_bytes: i64 = r.get("total_bytes");
+        let speed_bytes_per_sec: i64 = r.get("speed_bytes_per_sec");
+        let eta_seconds: Option<i64> = r.get("eta_seconds");
+        let checksum: Option<String> = r.get("checksum");
+        let error_message: Option<String> = r.get("error_message");
+        let dismissed_at_str: Option<String> = r.get("dismissed_at");
+        let created_at_str: String = r.get("created_at");
+        let updated_at_str: String = r.get("updated_at");
+
+        let dismissed_at = dismissed_at_str.and_then(|d| {
+            DateTime::parse_from_rfc3339(&d)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        });
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        let phase = phase_str
+            .as_deref()
+            .map(TransferPhase::from_str)
+            .unwrap_or(TransferPhase::Preparing);
+
+        let execution_mode: String = r
+            .try_get("execution_mode")
+            .unwrap_or_else(|_| "inline".to_string());
+        let staging: String = r.try_get("staging").unwrap_or_else(|_| "none".to_string());
+        TransferJob {
+            id,
+            user_id,
+            name,
+            transfer_type: TransferType::from_str(&transfer_type_str),
+            source_connection_id,
+            source_path,
+            destination_connection_id,
+            destination_path,
+            status: TransferStatus::from_str(&status_str),
+            phase,
+            execution_mode: TransferExecutionMode::from_str(&execution_mode),
+            staging: TransferStaging::from_str(&staging),
+            transferred_bytes: transferred_bytes as u64,
+            total_bytes: total_bytes as u64,
+            speed_bytes_per_sec: speed_bytes_per_sec as u64,
+            eta_seconds: eta_seconds.map(|e| e as u64),
+            checksum,
+            error_message,
+            dismissed_at,
+            created_at,
+            updated_at,
+        }
+    }
+
     /// Load transfer jobs from SQLite
     async fn load_jobs_from_db(db: &DbPool) -> anyhow::Result<Vec<TransferJob>> {
         let rows = sqlx::query(
@@ -2200,75 +2452,23 @@ impl TransferManager {
         .fetch_all(db)
         .await?;
 
-        let mut jobs = Vec::new();
-        for r in rows {
-            let id: String = r.get("id");
-            let user_id: Option<String> = r.get("user_id");
-            let name: String = r.get("name");
-            let transfer_type_str: String = r.get("transfer_type");
-            let source_connection_id: String = r.get("source_connection_id");
-            let source_path: String = r.get("source_path");
-            let destination_connection_id: String = r.get("destination_connection_id");
-            let destination_path: String = r.get("destination_path");
-            let status_str: String = r.get("status");
-            let phase_str: Option<String> = r.try_get("phase").ok();
-            let transferred_bytes: i64 = r.get("transferred_bytes");
-            let total_bytes: i64 = r.get("total_bytes");
-            let speed_bytes_per_sec: i64 = r.get("speed_bytes_per_sec");
-            let eta_seconds: Option<i64> = r.get("eta_seconds");
-            let checksum: Option<String> = r.get("checksum");
-            let error_message: Option<String> = r.get("error_message");
-            let dismissed_at_str: Option<String> = r.get("dismissed_at");
-            let created_at_str: String = r.get("created_at");
-            let updated_at_str: String = r.get("updated_at");
+        Ok(rows.iter().map(Self::row_to_job).collect())
+    }
 
-            let dismissed_at = dismissed_at_str.and_then(|d| {
-                DateTime::parse_from_rfc3339(&d)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&Utc))
-            });
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+    async fn load_single_job_from_db(db: &DbPool, id: &str) -> anyhow::Result<Option<TransferJob>> {
+        let row = sqlx::query(
+            "SELECT id, user_id, name, transfer_type, source_connection_id, source_path,
+                    destination_connection_id, destination_path, status, phase,
+                    transferred_bytes, total_bytes, speed_bytes_per_sec,
+                    eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
+             FROM transfer_jobs
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
 
-            let phase = phase_str
-                .as_deref()
-                .map(TransferPhase::from_str)
-                .unwrap_or(TransferPhase::Preparing);
-
-            let execution_mode: String = r
-                .try_get("execution_mode")
-                .unwrap_or_else(|_| "inline".to_string());
-            let staging: String = r.try_get("staging").unwrap_or_else(|_| "none".to_string());
-            jobs.push(TransferJob {
-                id,
-                user_id,
-                name,
-                transfer_type: TransferType::from_str(&transfer_type_str),
-                source_connection_id,
-                source_path,
-                destination_connection_id,
-                destination_path,
-                status: TransferStatus::from_str(&status_str),
-                phase,
-                execution_mode: TransferExecutionMode::from_str(&execution_mode),
-                staging: TransferStaging::from_str(&staging),
-                transferred_bytes: transferred_bytes as u64,
-                total_bytes: total_bytes as u64,
-                speed_bytes_per_sec: speed_bytes_per_sec as u64,
-                eta_seconds: eta_seconds.map(|e| e as u64),
-                checksum,
-                error_message,
-                dismissed_at,
-                created_at,
-                updated_at,
-            });
-        }
-
-        Ok(jobs)
+        Ok(row.as_ref().map(Self::row_to_job))
     }
 
     /// Conditional save: do not overwrite cancelled status with completed (race guard)

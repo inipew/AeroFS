@@ -3,7 +3,9 @@ use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
 use crate::errors::AppError;
 use crate::state::AppState;
-use crate::transfer::{TransferJob, TransferType};
+use crate::transfer::{
+    CancelTransferError, RetryTransferError, TransferJob, TransferJobResponse, TransferType,
+};
 use std::collections::HashSet;
 
 pub struct TransferService;
@@ -114,7 +116,7 @@ impl TransferService {
     pub async fn list_transfers(
         state: &AppState,
         user: &AuthenticatedUser,
-    ) -> Result<Vec<TransferJob>, AppError> {
+    ) -> Result<Vec<TransferJobResponse>, AppError> {
         let mut jobs = state
             .transfer_manager
             .list_jobs(Some(&user.id), user.is_admin, false)
@@ -135,7 +137,8 @@ impl TransferService {
             jobs.retain(|j| Self::authorize_transfer_visibility(user, j, &allowed));
         }
 
-        Ok(jobs)
+        let responses = jobs.into_iter().map(|j| j.to_response()).collect();
+        Ok(responses)
     }
 
     /// Cancel an active transfer job (enforcing user ownership)
@@ -149,7 +152,7 @@ impl TransferService {
             .cancel_job(job_id, Some(&user.id), user.is_admin)
             .await
         {
-            Ok(true) => {
+            Ok(_) => {
                 record_audit_log(
                     &state.db,
                     Some(&user.id),
@@ -163,11 +166,18 @@ impl TransferService {
                 .await;
                 Ok(true)
             }
-            Ok(false) => Err(AppError::NotFound(format!(
-                "Transfer job '{}' not running or not found",
-                job_id
+            Err(CancelTransferError::NotFound(id)) => Err(AppError::NotFound(format!(
+                "Transfer job '{}' not found",
+                id
             ))),
-            Err(e) => Err(AppError::Forbidden(e)),
+            Err(CancelTransferError::Unauthorized) => Err(AppError::Forbidden(
+                "Permission denied: cannot cancel another user's transfer".into(),
+            )),
+            Err(CancelTransferError::NotCancellable(id)) => Err(AppError::Conflict(format!(
+                "Transfer job '{}' cannot be cancelled in its current state",
+                id
+            ))),
+            Err(CancelTransferError::Internal(e)) => Err(AppError::Internal(anyhow::anyhow!(e))),
         }
     }
 
@@ -177,12 +187,79 @@ impl TransferService {
         user: &AuthenticatedUser,
         job_id: &str,
     ) -> Result<bool, AppError> {
+        // 1. Fetch job to inspect and re-authorize
+        let job = state
+            .transfer_manager
+            .get_job(job_id)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("Transfer job '{}' not found", job_id)))?;
+
+        // 2. Ownership verification for non-admin and dismissed guard
+        if job.dismissed_at.is_some() {
+            return Err(AppError::BadRequest(format!(
+                "Transfer job '{}' has been dismissed and cannot be retried",
+                job_id
+            )));
+        }
+
+        if !user.is_admin {
+            match (&job.user_id, Some(&user.id)) {
+                (Some(owner), Some(uid)) if owner == uid => {}
+                _ => {
+                    return Err(AppError::Forbidden(
+                        "Permission denied: cannot retry another user's transfer".into(),
+                    ))
+                }
+            }
+        }
+
+        // 3. Re-verify permissions for source and destination connections
+        if !user.is_admin {
+            check_permission(
+                &state.db,
+                user,
+                &job.source_connection_id,
+                PermissionAction::Read,
+            )
+            .await?;
+
+            if job.transfer_type == TransferType::Move {
+                check_permission(
+                    &state.db,
+                    user,
+                    &job.source_connection_id,
+                    PermissionAction::Delete,
+                )
+                .await?;
+            }
+
+            check_permission(
+                &state.db,
+                user,
+                &job.destination_connection_id,
+                PermissionAction::Write,
+            )
+            .await?;
+            check_permission(
+                &state.db,
+                user,
+                &job.destination_connection_id,
+                PermissionAction::Create,
+            )
+            .await?;
+        }
+
+        // 4. Verify that both connections are enabled
+        verify_connection_enabled(&state.db, &job.source_connection_id).await?;
+        verify_connection_enabled(&state.db, &job.destination_connection_id).await?;
+
+        // 5. Delegate to transfer engine
         match state
             .transfer_manager
             .retry_job(job_id, Some(&user.id), user.is_admin)
             .await
         {
-            Ok(true) => {
+            Ok(_) => {
                 record_audit_log(
                     &state.db,
                     Some(&user.id),
@@ -196,11 +273,24 @@ impl TransferService {
                 .await;
                 Ok(true)
             }
-            Ok(false) => Err(AppError::NotFound(format!(
-                "Transfer job '{}' cannot be retried or not found",
-                job_id
+            Err(RetryTransferError::NotFound(id)) => Err(AppError::NotFound(format!(
+                "Transfer job '{}' not found",
+                id
             ))),
-            Err(e) => Err(AppError::BadRequest(e)),
+            Err(RetryTransferError::Unauthorized) => Err(AppError::Forbidden(
+                "Permission denied: cannot retry another user's transfer".into(),
+            )),
+            Err(RetryTransferError::InvalidStatus(id, msg)) => Err(AppError::BadRequest(format!(
+                "Cannot retry transfer '{}': {}",
+                id, msg
+            ))),
+            Err(RetryTransferError::SourceUnavailable(msg)) => Err(AppError::BadRequest(msg)),
+            Err(RetryTransferError::ProviderUnavailable(msg)) => Err(AppError::BadRequest(msg)),
+            Err(RetryTransferError::Dismissed(id)) => Err(AppError::BadRequest(format!(
+                "Cannot retry transfer '{}': transfer has been dismissed",
+                id
+            ))),
+            Err(RetryTransferError::Internal(e)) => Err(AppError::Internal(anyhow::anyhow!(e))),
         }
     }
 
@@ -481,5 +571,36 @@ impl TransferService {
 
             Ok(res.rows_affected() as usize)
         }
+    }
+}
+
+async fn verify_connection_enabled(
+    db: &crate::db::DbPool,
+    connection_id: &str,
+) -> Result<(), AppError> {
+    if connection_id == "local" {
+        return Ok(());
+    }
+    let conn_row: Option<(i64,)> = sqlx::query_as("SELECT enabled FROM connections WHERE id = ?")
+        .bind(connection_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            AppError::Internal(anyhow::anyhow!(
+                "Database error checking connection status: {}",
+                e
+            ))
+        })?;
+
+    match conn_row {
+        Some((enabled,)) if enabled != 0 => Ok(()),
+        Some(_) => Err(AppError::BadRequest(format!(
+            "Storage connection '{}' is disabled",
+            connection_id
+        ))),
+        None => Err(AppError::NotFound(format!(
+            "Storage connection '{}' not found",
+            connection_id
+        ))),
     }
 }

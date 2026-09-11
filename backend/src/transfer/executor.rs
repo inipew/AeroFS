@@ -82,8 +82,9 @@ where
 
     let mut uploaded_bytes: u64 = 0;
     let mut stream_err: Option<AppError> = None;
-    let start_time = Instant::now();
-    let mut last_emit = Instant::now();
+    let now = Instant::now();
+    let mut rate_estimator = crate::transfer::rate::TransferRateEstimator::new(now, 0);
+    let mut last_emit = now;
     let total_for_progress = context.total_hint.unwrap_or(0);
 
     futures::pin_mut!(byte_stream);
@@ -133,23 +134,19 @@ where
                 }
             }
         }
-        if last_emit.elapsed().as_millis() >= 100 {
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.05 {
-                (uploaded_bytes as f64 / elapsed) as u64
-            } else {
-                0
-            };
+        let now = Instant::now();
+        if now.duration_since(last_emit).as_millis() >= 100 {
+            let sample = rate_estimator.observe(now, uploaded_bytes, total_for_progress);
             manager
                 .update_inline_progress(
                     &context.job_id,
                     uploaded_bytes,
                     total_for_progress,
-                    speed,
-                    None,
+                    sample.speed_bytes_per_sec,
+                    sample.eta_seconds,
                 )
                 .await;
-            last_emit = Instant::now();
+            last_emit = now;
         }
     }
     drop(duplex_writer);
@@ -224,21 +221,15 @@ where
         }
     }
 
-    // Emit final progress
-    let elapsed = start_time.elapsed().as_secs_f64();
-    let speed = if elapsed > 0.05 {
-        (uploaded_bytes as f64 / elapsed) as u64
+    // Emit final progress (100% completion before finalize)
+    let final_total = if total_for_progress > 0 {
+        total_for_progress
     } else {
-        0
+        uploaded_bytes
     };
+
     manager
-        .update_inline_progress(
-            &context.job_id,
-            uploaded_bytes,
-            total_for_progress,
-            speed,
-            Some(0),
-        )
+        .update_inline_progress(&context.job_id, uploaded_bytes, final_total, 0, Some(0))
         .await;
 
     Ok(uploaded_bytes)
@@ -574,11 +565,14 @@ mod tests {
         let cancel_res = state
             .transfer_manager
             .cancel_job(&job.id, Some("user1"), false)
-            .await
-            .unwrap();
-        assert_eq!(
-            cancel_res, false,
-            "cancel should be too late after Finalizing"
+            .await;
+        assert!(
+            matches!(
+                cancel_res,
+                Err(crate::transfer::CancelTransferError::NotCancellable(_))
+            ),
+            "cancel should return NotCancellable after Finalizing, got {:?}",
+            cancel_res
         );
         // Allow rename to complete
         mock_clone.rename_continue.notify_waiters();

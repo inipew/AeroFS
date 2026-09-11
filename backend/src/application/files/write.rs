@@ -21,10 +21,7 @@ impl FileApplicationService {
             .get(connection.as_str())
             .await
             .ok_or_else(|| {
-                VfsError::ConnectionError(format!(
-                    "Connection '{}' not found",
-                    connection.as_str()
-                ))
+                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
             })?;
         let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
 

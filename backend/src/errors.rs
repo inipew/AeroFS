@@ -481,11 +481,12 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let error_resp: ErrorResponse = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(error_resp.error.code, "ALREADY_EXISTS");
         assert_eq!(error_resp.error.category, ErrorCategory::Conflict);
         assert!(!error_resp.error.retryable);
     }
 }
-

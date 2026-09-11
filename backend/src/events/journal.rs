@@ -104,19 +104,19 @@ impl DomainEvent {
     }
 
     pub fn transfer_progress(job: &crate::transfer::TransferJob) -> Self {
-        DomainEvent::TransferProgress(serde_json::to_value(job).unwrap_or_default())
+        DomainEvent::TransferProgress(serde_json::to_value(job.to_response()).unwrap_or_default())
     }
 
     pub fn transfer_completed(job: &crate::transfer::TransferJob) -> Self {
-        DomainEvent::TransferCompleted(serde_json::to_value(job).unwrap_or_default())
+        DomainEvent::TransferCompleted(serde_json::to_value(job.to_response()).unwrap_or_default())
     }
 
     pub fn transfer_failed(job: &crate::transfer::TransferJob) -> Self {
-        DomainEvent::TransferFailed(serde_json::to_value(job).unwrap_or_default())
+        DomainEvent::TransferFailed(serde_json::to_value(job.to_response()).unwrap_or_default())
     }
 
     pub fn transfer_cancelled(job: &crate::transfer::TransferJob) -> Self {
-        DomainEvent::TransferCancelled(serde_json::to_value(job).unwrap_or_default())
+        DomainEvent::TransferCancelled(serde_json::to_value(job.to_response()).unwrap_or_default())
     }
 
     pub fn event_type_name(&self) -> &'static str {
@@ -351,6 +351,9 @@ mod tests {
     fn transfer_cancelled_has_a_distinct_wire_type() {
         let event = DomainEvent::TransferCancelled(serde_json::json!({ "id": "job-1" }));
         assert_eq!(event.event_type_name(), "transfer_cancelled");
-        assert_eq!(serde_json::to_value(event).unwrap()["type"], "transfer_cancelled");
+        assert_eq!(
+            serde_json::to_value(event).unwrap()["type"],
+            "transfer_cancelled"
+        );
     }
 }

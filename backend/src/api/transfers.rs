@@ -3,7 +3,7 @@ use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, ErrorResponse};
 use crate::services::TransferService;
 use crate::state::AppState;
-use crate::transfer::model::TransferJob;
+use crate::transfer::model::TransferJobResponse;
 use crate::transfer::TransferType;
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ pub async fn create_transfer(
     get,
     path = "/api/v1/transfers",
     responses(
-        (status = 200, description = "List of transfer jobs", body = Vec<TransferJob>),
+        (status = 200, description = "List of transfer jobs", body = Vec<TransferJobResponse>),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
@@ -118,6 +118,7 @@ pub async fn list_transfers(
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 409, description = "Conflict / Not cancellable", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     security(

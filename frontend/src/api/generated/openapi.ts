@@ -1459,6 +1459,12 @@ export interface components {
             message: string;
             success: boolean;
         };
+        TransferCapabilities: {
+            can_cancel: boolean;
+            can_pause: boolean;
+            can_resume: boolean;
+            can_retry: boolean;
+        };
         /**
          * @description Execution mode for a transfer — Inline vs Background vs Resumable (§Upload-as-Transfer)
          * @enum {string}
@@ -1495,6 +1501,10 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             user_id?: string | null;
+        };
+        /** @description DTO for REST responses and WebSocket events, exposing TransferJob with calculated capabilities. */
+        TransferJobResponse: components["schemas"]["TransferJob"] & {
+            capabilities: components["schemas"]["TransferCapabilities"];
         };
         /** @enum {string} */
         TransferPhase: "preparing" | "transferring" | "finalizing" | "verifying" | "cleaning_up" | "completed";
@@ -3854,7 +3864,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TransferJob"][];
+                    "application/json": components["schemas"]["TransferJobResponse"][];
                 };
             };
             /** @description Unauthorized */
@@ -4007,6 +4017,15 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict / Not cancellable */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
