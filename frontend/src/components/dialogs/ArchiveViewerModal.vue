@@ -175,6 +175,24 @@
           </div>
         </nav>
 
+        <!-- Error Retry Banner -->
+        <div
+          v-if="error"
+          class="bg-red-500/15 border-b border-red-500/30 px-4 py-2 flex items-center justify-between text-red-600 dark:text-red-400 text-xs shrink-0"
+        >
+          <div class="flex items-center space-x-2 truncate">
+            <span>⚠️</span>
+            <span class="truncate">{{ error }}</span>
+          </div>
+          <button
+            type="button"
+            @click="refreshArchive"
+            class="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg cursor-pointer shrink-0 ml-2"
+          >
+            Retry
+          </button>
+        </div>
+
         <!-- 3-Pane Explorer Main Viewport -->
         <main class="flex-1 flex min-h-0 overflow-hidden relative">
           <!-- Left Pane: Interactive Folder Tree -->
@@ -200,19 +218,21 @@
             @toggle-select="handleToggleSelect"
             @toggle-select-all="handleToggleSelectAll"
             @navigate="navigateTo"
+            @navigate-up="navigateUp"
             @open-preview="handleOpenPreview"
             class="flex-1 min-w-0"
           />
 
-          <!-- Right Pane: Live Inspector & Preview -->
+          <!-- Right Pane: Live Inspector & Preview (Desktop aside & Mobile bottom sheet) -->
           <ArchiveInspectorPane
             v-if="showInspectorPane"
             :connection-id="connectionId"
             :archive-path="archivePath"
             :entry="activeEntry"
+            :is-mobile="uiStore.isMobile"
             @collapse="showInspectorPane = false"
             @extract="handleExtractSelected"
-            class="w-72 sm:w-80 shrink-0 hidden md:flex"
+            :class="uiStore.isMobile ? '' : 'w-72 sm:w-80 shrink-0 hidden md:flex'"
           />
 
           <!-- Inline Extraction Confirmation Sheet -->
@@ -231,16 +251,23 @@
         <footer class="h-8 bg-gray-50 dark:bg-[#0a0c10] border-t border-gray-200/80 dark:border-white/[0.08] px-4 sm:px-5 flex items-center justify-between text-[11px] text-gray-500 dark:text-slate-400 shrink-0 select-none font-mono">
           <!-- Total Archive Metrics -->
           <div class="flex items-center space-x-2 truncate">
-            <span>{{ totalItemsCount }} {{ totalItemsCount === 1 ? 'item' : 'items' }}</span>
-            <span class="text-gray-300 dark:text-slate-700">•</span>
-            <span>{{ formatBytes(totalUnpackedSize) }} unpacked</span>
-            <template v-if="totalCompressedSize > 0">
-              <span class="text-gray-300 dark:text-slate-700">•</span>
-              <span>{{ formatBytes(totalCompressedSize) }} compressed</span>
+            <template v-if="currentSubpath !== ''">
+              <span class="font-semibold text-gray-700 dark:text-slate-300">
+                Folder: {{ entries.length }} {{ entries.length === 1 ? 'item' : 'items' }} ({{ formatBytes(totalUnpackedSize) }})
+              </span>
             </template>
-            <template v-if="overallCompressionRatio > 0">
+            <template v-else>
+              <span>{{ totalItemsCount }} {{ totalItemsCount === 1 ? 'item' : 'items' }}</span>
               <span class="text-gray-300 dark:text-slate-700">•</span>
-              <span class="text-emerald-600 dark:text-emerald-400 font-bold">{{ overallCompressionRatio }}% saved</span>
+              <span>{{ formatBytes(totalUnpackedSize) }} unpacked</span>
+              <template v-if="totalCompressedSize > 0">
+                <span class="text-gray-300 dark:text-slate-700">•</span>
+                <span>{{ formatBytes(totalCompressedSize) }} compressed</span>
+              </template>
+              <template v-if="overallCompressionRatio > 0">
+                <span class="text-gray-300 dark:text-slate-700">•</span>
+                <span class="text-emerald-600 dark:text-emerald-400 font-bold">{{ overallCompressionRatio }}% saved</span>
+              </template>
             </template>
           </div>
 
@@ -275,6 +302,8 @@ import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { useOverlayStore } from '../../overlays/overlayStore';
 import { normalizeApiError } from '../../utils/errorNormalizer';
+import { queryClient } from '../../queryClient';
+import { queryKeys } from '../../api/queryKeys';
 
 import ArchiveTreePane from './archive/ArchiveTreePane.vue';
 import ArchiveFileTable from './archive/ArchiveFileTable.vue';
@@ -390,8 +419,12 @@ async function fetchEntries() {
     entries.value = list;
 
     // Auto-select first entry for instant inspector preview if available
-    if (list.length > 0 && (!activeEntry.value || !list.some((e) => e.path === activeEntry.value?.path))) {
-      activeEntry.value = list.find((e) => e.kind !== 'directory') || list[0];
+    if (list.length > 0) {
+      if (!activeEntry.value || !list.some((e) => e.path === activeEntry.value?.path)) {
+        activeEntry.value = list.find((e) => e.kind !== 'directory') || list[0];
+      }
+    } else {
+      activeEntry.value = null;
     }
   } catch (err: any) {
     error.value = normalizeApiError(err).message;
@@ -491,7 +524,8 @@ async function executeExtraction(options: {
 }) {
   extracting.value = true;
   try {
-    let target = options.destinationDir;
+    const cleanDest = options.destinationDir.trim().replace(/\/+$/, '') || '/';
+    let target = cleanDest;
     if (options.createSubfolder) {
       const subName = archiveName.value.replace(/\.(zip|tar\.gz|tgz|tar\.bz2|tar\.xz|tar|7z|rar)$/i, '');
       target = target === '/' ? `/${subName}` : `${target}/${subName}`;
@@ -518,6 +552,14 @@ async function executeExtraction(options: {
     }
 
     isExtractSheetOpen.value = false;
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.directory(props.connectionId, cleanDest),
+    });
+    if (target !== cleanDest) {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.directory(props.connectionId, target),
+      });
+    }
     await workspaceStore.refreshPanel(workspaceStore.activePanelId);
     close();
   } catch (err: any) {

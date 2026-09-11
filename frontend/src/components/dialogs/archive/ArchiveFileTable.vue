@@ -1,5 +1,9 @@
 <template>
-  <div class="flex-1 flex flex-col min-h-0 bg-white dark:bg-[#111317] overflow-hidden select-none">
+  <div
+    class="flex-1 flex flex-col min-h-0 bg-white dark:bg-[#111317] overflow-hidden select-none outline-none"
+    tabindex="0"
+    @keydown="handleKeyDown"
+  >
     <!-- Table Header with Sortable Columns -->
     <div class="h-9 px-3 flex items-center border-b border-gray-200/80 dark:border-white/[0.08] bg-gray-50/70 dark:bg-[#0c0e12]/80 text-[11px] font-semibold text-gray-500 dark:text-slate-400 shrink-0 select-none">
       <!-- Checkbox Column -->
@@ -98,8 +102,14 @@
         v-else-if="sortedEntries.length === 0"
         class="py-20 flex flex-col items-center justify-center text-gray-400 dark:text-slate-500 space-y-2"
       >
-        <FbIcon name="folder" size="32px" class="opacity-40" />
-        <span class="text-xs font-medium">This folder inside the archive is empty</span>
+        <template v-if="searchQuery && searchQuery.trim()">
+          <FbIcon name="search" size="32px" class="opacity-40" />
+          <span class="text-xs font-medium">No files matching "{{ searchQuery }}"</span>
+        </template>
+        <template v-else>
+          <FbIcon name="folder" size="32px" class="opacity-40" />
+          <span class="text-xs font-medium">This folder inside the archive is empty</span>
+        </template>
       </div>
 
       <!-- Rows -->
@@ -214,6 +224,7 @@ const emit = defineEmits<{
   (e: 'toggleSelect', path: string): void;
   (e: 'toggleSelectAll'): void;
   (e: 'navigate', path: string): void;
+  (e: 'navigateUp'): void;
   (e: 'openPreview', entry: VirtualArchiveEntry): void;
 }>();
 
@@ -244,7 +255,11 @@ const isPartiallySelected = computed(() => {
 });
 
 const sortedEntries = computed(() => {
-  const list = [...props.entries];
+  const q = props.searchQuery ? props.searchQuery.trim().toLowerCase() : '';
+  const list = q
+    ? props.entries.filter((e) => e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q))
+    : [...props.entries];
+
   list.sort((a, b) => {
     // Directories always first
     if (a.kind === 'directory' && b.kind !== 'directory') return -1;
@@ -274,6 +289,42 @@ function handleDoubleClick(entry: VirtualArchiveEntry) {
     emit('navigate', entry.path);
   } else {
     emit('openPreview', entry);
+  }
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (['input', 'textarea'].includes((e.target as HTMLElement)?.tagName?.toLowerCase())) {
+    return;
+  }
+
+  const list = sortedEntries.value;
+  if (list.length === 0) return;
+
+  const currentIdx = props.activeEntry
+    ? list.findIndex((x) => x.path === props.activeEntry?.path)
+    : -1;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const nextIdx = currentIdx < list.length - 1 ? currentIdx + 1 : 0;
+    const nextEntry = list[nextIdx];
+    emit('select', nextEntry, e as unknown as MouseEvent);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prevIdx = currentIdx > 0 ? currentIdx - 1 : list.length - 1;
+    const prevEntry = list[prevIdx];
+    emit('select', prevEntry, e as unknown as MouseEvent);
+  } else if (e.key === 'Enter') {
+    if (props.activeEntry) {
+      e.preventDefault();
+      handleDoubleClick(props.activeEntry);
+    }
+  } else if (e.key === 'Backspace') {
+    e.preventDefault();
+    emit('navigateUp');
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+    e.preventDefault();
+    emit('toggleSelectAll');
   }
 }
 
@@ -370,10 +421,21 @@ function getTypeBadgeClass(entry: VirtualArchiveEntry): string {
   return 'bg-gray-100 dark:bg-white/[0.06] text-gray-600 dark:text-slate-300';
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function highlightMatch(text: string, query: string): string {
-  if (!query) return text;
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const safeText = escapeHtml(text);
+  if (!query || !query.trim()) return safeText;
+  const safeQuery = escapeHtml(query.trim());
+  const escaped = safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp(`(${escaped})`, 'gi');
-  return text.replace(regex, '<mark class="bg-amber-400/40 dark:bg-amber-500/40 text-inherit rounded-xs px-0.5">$1</mark>');
+  return safeText.replace(regex, '<mark class="bg-amber-400/40 dark:bg-amber-500/40 text-inherit rounded-xs px-0.5">$1</mark>');
 }
 </script>

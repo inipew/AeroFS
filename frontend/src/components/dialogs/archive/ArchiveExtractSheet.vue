@@ -137,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import FbIcon from '../../common/FbIcon.vue';
 import type { ArchiveOverwriteMode } from '../../../api/archive';
 
@@ -165,13 +165,23 @@ const destinationDir = ref(props.defaultDestination || '/');
 const createSubfolder = ref(true);
 const overwriteMode = ref<ArchiveOverwriteMode>('overwrite');
 
+watch(
+  () => props.defaultDestination,
+  (newDest) => {
+    if (newDest) destinationDir.value = newDest;
+  }
+);
+
 const folderNameSuggestion = computed(() => {
   return props.archiveName.replace(/\.(zip|tar\.gz|tgz|tar\.bz2|tar\.xz|tar|7z|rar)$/i, '');
 });
 
 function submit() {
+  const raw = destinationDir.value.trim() || '/';
+  const withLeading = raw.startsWith('/') ? raw : `/${raw}`;
+  const clean = withLeading.length > 1 ? withLeading.replace(/\/+$/, '') : '/';
   emit('extract', {
-    destinationDir: destinationDir.value.trim() || '/',
+    destinationDir: clean,
     createSubfolder: createSubfolder.value,
     overwriteMode: overwriteMode.value,
   });

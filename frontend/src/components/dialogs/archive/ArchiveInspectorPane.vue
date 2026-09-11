@@ -1,22 +1,40 @@
 <template>
-  <aside class="flex flex-col h-full select-none text-xs border-l border-gray-200/80 dark:border-white/[0.08] bg-gray-50/40 dark:bg-[#0c0e12]/60 overflow-hidden">
-    <!-- Header -->
-    <div class="px-4 py-2.5 flex items-center justify-between border-b border-gray-200/70 dark:border-white/[0.06] shrink-0 text-[11px]">
-      <div class="flex items-center space-x-2 truncate">
-        <span class="font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider">Inspector</span>
-        <span v-if="entry" class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold uppercase bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 truncate">
-          {{ getFileExt(entry.name) }}
-        </span>
+  <component
+    :is="isMobile ? 'div' : 'aside'"
+    :class="[
+      isMobile
+        ? 'fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex flex-col justify-end select-none text-xs animate-in fade-in duration-150'
+        : 'flex flex-col h-full select-none text-xs border-l border-gray-200/80 dark:border-white/[0.08] bg-gray-50/40 dark:bg-[#0c0e12]/60 overflow-hidden'
+    ]"
+    @click.self="isMobile ? $emit('collapse') : undefined"
+  >
+    <div
+      :class="[
+        isMobile
+          ? 'bg-white dark:bg-[#111317] border-t border-gray-200 dark:border-white/[0.1] rounded-t-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in slide-in-from-bottom duration-200 pb-safe'
+          : 'flex flex-col h-full overflow-hidden'
+      ]"
+      @click.stop
+    >
+      <div v-if="isMobile" class="w-10 h-1 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-2.5 mb-1 shrink-0"></div>
+
+      <!-- Header -->
+      <div class="px-4 py-2.5 flex items-center justify-between border-b border-gray-200/70 dark:border-white/[0.06] shrink-0 text-[11px]">
+        <div class="flex items-center space-x-2 truncate">
+          <span class="font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider">Inspector</span>
+          <span v-if="entry" class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold uppercase bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 truncate">
+            {{ getFileExt(entry.name) }}
+          </span>
+        </div>
+        <button
+          type="button"
+          @click="$emit('collapse')"
+          class="p-1 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-200/60 dark:hover:bg-white/[0.08] transition cursor-pointer"
+          :title="isMobile ? 'Close Sheet' : 'Hide Inspector'"
+        >
+          <FbIcon name="x" size="13px" />
+        </button>
       </div>
-      <button
-        type="button"
-        @click="$emit('collapse')"
-        class="p-1 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-200/60 dark:hover:bg-white/[0.08] transition cursor-pointer"
-        title="Hide Inspector"
-      >
-        <FbIcon name="x" size="13px" />
-      </button>
-    </div>
 
     <!-- Empty / No Selection State -->
     <div
@@ -166,7 +184,8 @@
         </a>
       </div>
     </div>
-  </aside>
+  </div>
+  </component>
 </template>
 
 <script setup lang="ts">
@@ -177,11 +196,17 @@ import type { VirtualArchiveEntry } from '../../../api/archive';
 import { getArchiveEntryReadUrl, readArchiveEntryTextApi } from '../../../api/archive';
 import { useUiStore } from '../../../stores/uiStore';
 
-const props = defineProps<{
-  connectionId: string;
-  archivePath: string;
-  entry: VirtualArchiveEntry | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    connectionId: string;
+    archivePath: string;
+    entry: VirtualArchiveEntry | null;
+    isMobile?: boolean;
+  }>(),
+  {
+    isMobile: false,
+  }
+);
 
 defineEmits<{
   (e: 'collapse'): void;
@@ -191,23 +216,32 @@ defineEmits<{
 const uiStore = useUiStore();
 const textContent = ref('');
 const isLoadingText = ref(false);
+let currentRequestId = 0;
 
 watch(
   () => props.entry,
   async (newEntry) => {
     textContent.value = '';
     if (newEntry && isText(newEntry) && (newEntry.size || 0) < 500000) {
+      const reqId = ++currentRequestId;
       isLoadingText.value = true;
       try {
-        textContent.value = await readArchiveEntryTextApi(
+        const text = await readArchiveEntryTextApi(
           props.connectionId,
           props.archivePath,
           newEntry.path
         );
+        if (reqId === currentRequestId) {
+          textContent.value = text;
+        }
       } catch {
-        textContent.value = 'Failed to load preview text';
+        if (reqId === currentRequestId) {
+          textContent.value = 'Failed to load preview text';
+        }
       } finally {
-        isLoadingText.value = false;
+        if (reqId === currentRequestId) {
+          isLoadingText.value = false;
+        }
       }
     }
   },
