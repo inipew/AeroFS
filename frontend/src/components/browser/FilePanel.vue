@@ -181,7 +181,7 @@
               >
                 <div class="flex items-center space-x-2">
                   <FbIcon name="refresh" size="14px" class="text-gray-400" :class="{ 'animate-spin': panel.loading }" />
-                  <span>Reload Panel</span>
+                  <span>Refresh Panel</span>
                 </div>
                 <kbd class="text-[10px] text-gray-400 font-mono">F5</kbd>
               </button>
@@ -1699,10 +1699,6 @@ function handleKeyDown(e: KeyboardEvent) {
   } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'ArrowRight') {
     e.preventDefault();
     workspaceStore.setActivePanel('right');
-    return;
-  } else if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r')) {
-    e.preventDefault();
-    workspaceStore.refreshPanel(props.panelId);
     return;
   } else if (e.key === 'Escape') {
     e.preventDefault();

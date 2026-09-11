@@ -5,13 +5,25 @@
  */
 import { computed } from 'vue';
 import type { Ref } from 'vue';
-import { useInfiniteQuery } from '@tanstack/vue-query';
+import { useInfiniteQuery, type QueryClient } from '@tanstack/vue-query';
 import { listFilesApi } from '../api/files';
 import { queryKeys, type DirectoryQueryKeyParams } from '../api/queryKeys';
 import { queryClient as singletonQueryClient } from '../queryClient';
 import type { DirectoryListing } from '../types/vfs';
 
 export type DirectoryQueryParams = DirectoryQueryKeyParams;
+
+/** Mark cached variants of a directory stale without starting a background fetch. */
+export function invalidateDirectoryForRefresh(
+  client: QueryClient,
+  connectionId: string,
+  path: string
+) {
+  return client.invalidateQueries({
+    queryKey: queryKeys.directoryPrefix(connectionId, path),
+    refetchType: 'none',
+  });
+}
 
 export function directoryQueryOptions(
   connectionId: string,

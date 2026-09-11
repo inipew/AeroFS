@@ -262,7 +262,7 @@ export function initializeCommandRegistry() {
 
   commandRegistry.register({
     id: 'view.refresh',
-    label: 'Refresh Directory',
+    label: 'Refresh Panel',
     category: 'Navigation',
     shortcut: 'F5',
     icon: 'refresh',

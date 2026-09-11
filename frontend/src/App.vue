@@ -849,7 +849,7 @@ onMounted(async () => {
   await authStore.checkAuth();
   if (authStore.isAuthenticated) {
     await preferencesStore.fetchPreferences();
-    await connStore.fetchConnections();
+    await connStore.fetchConnections().catch(() => undefined);
     await workspaceStore.refreshPanel('left');
     if (workspaceStore.isDualPane) {
       await workspaceStore.refreshPanel('right');

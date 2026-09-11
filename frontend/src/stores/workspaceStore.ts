@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, computed, reactive, watch } from 'vue';
 import { queryClient } from '../queryClient';
 import { queryKeys } from '../api/queryKeys';
-import { directoryQueryOptions } from '../composables/useDirectoryQuery';
+import { directoryQueryOptions, invalidateDirectoryForRefresh } from '../composables/useDirectoryQuery';
 import { ensureDirectoryData, getCachedDirectoryEntries } from '../composables/usePanelDirectory';
 import { realtimeSync } from '../services/realtimeSync';
 import { useTransferStore } from './transferStore';
@@ -695,19 +695,38 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function goForwardPanel(panelId: PanelId) { await goForward(panelId); }
   async function navigateUpPanel(panelId: PanelId) { await navigateUp(panelId); }
 
-  function invalidatePanel(panelId: PanelId) {
+  async function invalidatePanel(panelId: PanelId) {
     const p = getPanel(panelId);
     try {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.directoryPrefix(p.location.connectionId, p.location.path),
-      });
+      await invalidateDirectoryForRefresh(
+        queryClient,
+        p.location.connectionId,
+        p.location.path
+      );
     } catch {}
   }
 
   async function refresh(panelId: PanelId): Promise<{ ok: boolean; path?: string; error?: string }> {
     const p = getPanel(panelId);
+    // Mark the current query stale before fetching. Invalidating afterwards can
+    // return the still-fresh (30 s staleTime) cache and make F5 appear to do nothing.
+    await invalidatePanel(panelId);
+
+    const connectionRefresh = useConnectionStore()
+      .fetchConnections()
+      .then(() => null)
+      .catch((err: unknown) => normalizeApiError(err));
     const res = await navigateTo(panelId, p.location.path, false);
-    invalidatePanel(panelId);
+    const connectionError = await connectionRefresh;
+
+    // Connection status is supplemental: a failure must not discard a valid
+    // directory listing, but the user should know the status may be stale.
+    if (connectionError && res.ok) {
+      useUiStore().showToast(
+        connectionError.message || 'Folder refreshed, but connection status could not be updated',
+        'warning'
+      );
+    }
     return res;
   }
 
@@ -979,11 +998,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     { deep: false }
   );
 
-  // Global keyboard shortcuts (66.md §30) — file-manager like
+  // Global keyboard shortcuts (66.md §30) — file-manager like. Refresh is
+  // handled here only; FilePanel must not issue a duplicate request.
+  let workspaceKeydownHandler: ((e: KeyboardEvent) => void) | null = null;
   if (typeof window !== 'undefined') {
-    window.addEventListener('keydown', (e: KeyboardEvent) => {
+    workspaceKeydownHandler = (e: KeyboardEvent) => {
       // F5 or Ctrl+R → refresh active panel (prevent browser reload on F5)
-      if (e.key === 'F5' || (e.ctrlKey && e.key.toLowerCase() === 'r' && !e.shiftKey)) {
+      if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r' && !e.shiftKey)) {
         e.preventDefault();
         refreshActive();
         return;
@@ -1011,10 +1032,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           abortPanel(activePanelId.value);
         }
       }
-    });
+    };
+    window.addEventListener('keydown', workspaceKeydownHandler);
   }
 
   function disposeWorkspace() {
+    if (typeof window !== 'undefined' && workspaceKeydownHandler) {
+      window.removeEventListener('keydown', workspaceKeydownHandler);
+      workspaceKeydownHandler = null;
+    }
     cancelPendingInvalidations();
     leftSession.dispose();
     rightSession.dispose();

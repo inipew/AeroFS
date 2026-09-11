@@ -26,8 +26,10 @@ export const useConnectionStore = defineStore('connection', () => {
       if (data && data.length > 0) {
         connections.value = data;
       }
+      return data;
     } catch (err) {
       console.error('Failed to fetch connections', err);
+      throw err;
     }
   }
 

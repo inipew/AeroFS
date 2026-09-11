@@ -324,12 +324,12 @@
         </button>
 
         <button
-          @click="workspaceStore.refreshAll(); uiStore.closeContextMenu()"
+          @click="handleRefreshPanel"
           class="w-full text-left px-3.5 py-2 hover:bg-blue-600 hover:text-white flex items-center justify-between transition rounded-xl cursor-pointer"
         >
           <div class="flex items-center space-x-2.5">
             <FbIcon name="refresh" size="1.1em" class="text-gray-500 shrink-0" />
-            <span>Refresh Directory</span>
+            <span>Refresh Panel</span>
           </div>
           <span class="text-[10px] text-gray-400 opacity-75 font-mono">F5</span>
         </button>
@@ -545,6 +545,12 @@ function handleSyncFolder() {
   const panel = workspaceStore.getPanel(sourcePanelId);
   uiStore.openSync(panel.connectionId || 'local', item.path);
   uiStore.closeContextMenu();
+}
+
+function handleRefreshPanel() {
+  const panelId = uiStore.contextMenu.panelId || workspaceStore.activePanelId;
+  uiStore.closeContextMenu();
+  void workspaceStore.refreshPanel(panelId);
 }
 
 async function handleCopyToOtherPane() {
