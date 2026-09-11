@@ -11,6 +11,12 @@ import { normalizePath, parentPath } from '../utils/path';
 import { isAbortError, normalizeApiError } from '../utils/errorNormalizer';
 import { PanelSession } from '../workspace/panelSession';
 import { useConnectionStore } from './connectionStore';
+import {
+  loadWorkspaceState,
+  saveWorkspaceState,
+  loadUserPreferences,
+} from '../workspace/workspacePersistence';
+import { generateConflictResolvedName } from '../utils/naming';
 import type { FileEntry } from '../types/vfs';
 import type {
   PanelId,
@@ -173,40 +179,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   let initialRightHistory: string[] | undefined;
   let initialRightHistoryIndex: number | undefined;
 
-  try {
-    const rawV1 = localStorage.getItem('fb:workspace_v1');
-    if (rawV1) {
-      const parsed: PersistedWorkspace = JSON.parse(rawV1);
-      if (parsed.version === 1) {
-        initialLayout = parsed.layout || 'single';
-        initialSplitRatio = parsed.splitRatio || 0.5;
-        if (parsed.left) {
-          initialLeftConn = parsed.left.connectionId || 'local';
-          initialLeftPath = parsed.left.path || '/';
-          initialLeftView = parsed.left.viewMode || 'grid';
-          initialLeftHidden = !!parsed.left.showHidden;
-          initialLeftHistory = parsed.left.history;
-          initialLeftHistoryIndex = parsed.left.historyIndex;
-        }
-        if (parsed.right) {
-          initialRightConn = parsed.right.connectionId || 'local';
-          initialRightPath = parsed.right.path || '/';
-          initialRightView = parsed.right.viewMode || 'grid';
-          initialRightHidden = !!parsed.right.showHidden;
-          initialRightHistory = parsed.right.history;
-          initialRightHistoryIndex = parsed.right.historyIndex;
-        }
-      }
-    } else {
-      // Fallback for legacy keys and cleanup
-      if (localStorage.getItem('fb:isDualPane') === 'true') initialLayout = 'split';
-      initialLeftConn = localStorage.getItem('fb:left:connectionId') || 'local';
-      initialLeftPath = localStorage.getItem('fb:left:path') || '/';
-      initialRightConn = localStorage.getItem('fb:right:connectionId') || 'local';
-      initialRightPath = localStorage.getItem('fb:right:path') || '/';
+  const loadedState = loadWorkspaceState();
+  if (loadedState) {
+    initialLayout = loadedState.layout || 'single';
+    initialSplitRatio = loadedState.splitRatio || 0.5;
+    if (loadedState.left) {
+      initialLeftConn = loadedState.left.connectionId || 'local';
+      initialLeftPath = loadedState.left.path || '/';
+      initialLeftView = loadedState.left.viewMode || 'grid';
+      initialLeftHidden = !!loadedState.left.showHidden;
+      initialLeftHistory = loadedState.left.history;
+      initialLeftHistoryIndex = loadedState.left.historyIndex;
     }
-  } catch {
-    // ignore
+    if (loadedState.right) {
+      initialRightConn = loadedState.right.connectionId || 'local';
+      initialRightPath = loadedState.right.path || '/';
+      initialRightView = loadedState.right.viewMode || 'grid';
+      initialRightHidden = !!loadedState.right.showHidden;
+      initialRightHistory = loadedState.right.history;
+      initialRightHistoryIndex = loadedState.right.historyIndex;
+    }
   }
 
   const leftPanel = ref<Panel>(createPanel('left', initialLeftConn, initialLeftPath));
@@ -290,17 +282,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function saveState() {
-    const prefsJson = localStorage.getItem('fb:user_preferences');
+    const prefs = loadUserPreferences() as any;
     let rememberLastDir = true;
-    if (prefsJson) {
-      try {
-        const parsed = JSON.parse(prefsJson);
-        if (parsed.remember_last_directories !== undefined) {
-          rememberLastDir = Boolean(parsed.remember_last_directories);
-        } else if (parsed.remember_last_dir !== undefined) {
-          rememberLastDir = Boolean(parsed.remember_last_dir);
-        }
-      } catch {}
+    if (prefs) {
+      if (prefs.remember_last_directories !== undefined) {
+        rememberLastDir = Boolean(prefs.remember_last_directories);
+      } else if (prefs.remember_last_dir !== undefined) {
+        rememberLastDir = Boolean(prefs.remember_last_dir);
+      }
     }
 
     const persisted: PersistedWorkspace = {
@@ -329,8 +318,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         historyIndex: rightPanel.value.navigation.historyIndex,
       },
     };
-    localStorage.setItem('fb:workspace_v1', JSON.stringify(persisted));
-    localStorage.setItem('fb:isDualPane', isDualPane.value ? 'true' : 'false');
+    saveWorkspaceState(persisted, isDualPane.value);
   }
 
   function getPanel(id: PanelId): Panel {
@@ -829,20 +817,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
             continue;
           }
           if (resolution === 'keep_both') {
-            const dotIdx = fileName.lastIndexOf('.');
-            let count = 1;
-            let candidateName = dotIdx > 0
-              ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
-              : `${fileName} (${count})`;
-
-            while (targetEntries.some((e) => e.name === candidateName)) {
-              count++;
-              candidateName = dotIdx > 0
-                ? `${fileName.substring(0, dotIdx)} (${count})${fileName.substring(dotIdx)}`
-                : `${fileName} (${count})`;
-            }
-
-            fileName = candidateName;
+            fileName = generateConflictResolvedName(fileName, targetEntries.map((e) => e.name));
             destPath = targetPanel.location.path === '/'
               ? `/${fileName}`
               : `${targetPanel.location.path}/${fileName}`;
