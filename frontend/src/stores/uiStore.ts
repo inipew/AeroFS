@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import type { FileEntry } from '../types/vfs';
 import { getContentUrl } from '../api/files';
+import { useEditorStore } from './editorStore';
 
 export interface ToastMessage {
   id: string;
@@ -28,12 +29,28 @@ export const useUiStore = defineStore('ui', () => {
   const syncDestConnection = ref<string>('local');
   const syncDestPath = ref<string>('/');
 
-  // Code Editor
-  const isEditorOpen = ref<boolean>(false);
-  const editorFile = ref<FileEntry | null>(null);
-  const editorContent = ref<string>('');
-  const editorEtag = ref<string>('');
-  const editorConnectionId = ref<string>('local');
+  // Code Editor (Delegated to editorStore)
+  const editorStore = useEditorStore();
+  const isEditorOpen = computed<boolean>({
+    get: () => editorStore.isOpen,
+    set: (val) => { editorStore.isOpen = val; },
+  });
+  const editorFile = computed<FileEntry | null>({
+    get: () => editorStore.activeFile,
+    set: (val) => { editorStore.activeFile = val; },
+  });
+  const editorContent = computed<string>({
+    get: () => editorStore.content,
+    set: (val) => { editorStore.content = val; },
+  });
+  const editorEtag = computed<string>({
+    get: () => editorStore.etag,
+    set: (val) => { editorStore.etag = val; },
+  });
+  const editorConnectionId = computed<string>({
+    get: () => editorStore.connectionId,
+    set: (val) => { editorStore.connectionId = val; },
+  });
 
   // Media Viewer & Player
   const isMediaViewerOpen = ref<boolean>(false);
@@ -120,11 +137,7 @@ export const useUiStore = defineStore('ui', () => {
     etag: string = '',
     connectionId: string = 'local'
   ) {
-    editorFile.value = entry;
-    editorContent.value = content;
-    editorEtag.value = etag;
-    editorConnectionId.value = connectionId;
-    isEditorOpen.value = true;
+    editorStore.openFile(entry, content, etag, connectionId);
   }
 
   function isMediaEntry(entry: FileEntry): boolean {

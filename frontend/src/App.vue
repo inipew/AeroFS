@@ -30,6 +30,7 @@ import { useTransferStore } from './stores/transferStore';
 import { useUiStore } from './stores/uiStore';
 import { usePreferencesStore } from './stores/preferencesStore';
 import { useOverlayStore } from './overlays/overlayStore';
+import { useEditorStore } from './stores/editorStore';
 import { initializeCommandRegistry, commandRegistry } from './services/commandRegistry';
 
 // Core layout & host components
@@ -47,6 +48,7 @@ const transferStore = useTransferStore();
 const uiStore = useUiStore();
 const preferencesStore = usePreferencesStore();
 const overlayStore = useOverlayStore();
+const editorStore = useEditorStore();
 
 function handleGlobalKeydown(e: KeyboardEvent) {
   const target = e.target as HTMLElement;
@@ -128,11 +130,16 @@ function handleGlobalDrop(e: DragEvent) {
   e.preventDefault();
 }
 
+function handleBeforeUnload() {
+  editorStore.flushSession();
+}
+
 onMounted(async () => {
   initializeCommandRegistry();
   window.addEventListener('keydown', handleGlobalKeydown);
   window.addEventListener('dragover', handleGlobalDragOver);
   window.addEventListener('drop', handleGlobalDrop);
+  window.addEventListener('beforeunload', handleBeforeUnload);
   await authStore.checkAuth();
   if (authStore.isAuthenticated) {
     await preferencesStore.fetchPreferences();
@@ -143,6 +150,7 @@ onMounted(async () => {
     }
     transferStore.connectWs();
     await transferStore.fetchJobs();
+    await editorStore.restoreSession();
   }
 });
 
@@ -150,5 +158,6 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeydown);
   window.removeEventListener('dragover', handleGlobalDragOver);
   window.removeEventListener('drop', handleGlobalDrop);
+  window.removeEventListener('beforeunload', handleBeforeUnload);
 });
 </script>

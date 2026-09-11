@@ -2,30 +2,41 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
 export const useThemeStore = defineStore('theme', () => {
-  const currentTheme = ref<'light' | 'dark' | 'system'>(
-    (localStorage.getItem('theme') as any) || 'system'
-  );
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const savedTheme = typeof localStorage !== 'undefined' ? (localStorage.getItem('theme') as any) : null;
+  const currentTheme = ref<'light' | 'dark' | 'system'>(savedTheme || 'system');
+  const prefersDark =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false;
   const isDark = ref<boolean>(
     currentTheme.value === 'dark' || (currentTheme.value === 'system' && prefersDark)
   );
 
   function applyTheme(dark: boolean) {
     isDark.value = dark;
-    if (dark) {
-      document.documentElement.classList.add('dark');
-      document.body.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      document.body.classList.remove('dark');
+    if (typeof document !== 'undefined') {
+      if (dark) {
+        document.documentElement.classList.add('dark');
+        document.body.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+        document.body.classList.remove('dark');
+      }
     }
   }
 
   function setTheme(theme: 'light' | 'dark' | 'system') {
     currentTheme.value = theme;
-    localStorage.setItem('theme', theme);
+    try {
+      localStorage.setItem('theme', theme);
+    } catch {
+      // Ignore
+    }
     if (theme === 'system') {
-      const isSysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const isSysDark =
+        typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+          ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          : false;
       applyTheme(isSysDark);
     } else {
       applyTheme(theme === 'dark');
