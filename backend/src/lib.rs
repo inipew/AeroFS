@@ -5,6 +5,7 @@
 pub mod api;
 pub mod application;
 pub mod auth;
+pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod db;
