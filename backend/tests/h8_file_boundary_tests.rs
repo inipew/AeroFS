@@ -114,6 +114,14 @@ fn permission_inheritance_failures_are_not_best_effort() {
         "file writes must not swallow inherited permission failures"
     );
     assert!(
+        mutation.contains("resolve_destination_permissions_strict"),
+        "directory creation must use strict permission lookup semantics"
+    );
+    assert!(
+        write.contains("resolve_destination_permissions_strict"),
+        "file writes must use strict permission lookup semantics"
+    );
+    assert!(
         mutation.contains("Filesystem mutation committed; recovery required"),
         "post-create permission failure must expose partial-commit recovery semantics"
     );
@@ -122,7 +130,7 @@ fn permission_inheritance_failures_are_not_best_effort() {
         "direct-write permission failure must expose partial-commit recovery semantics"
     );
     assert!(
-        policy.contains("Result<Option<String>, VfsError>"),
-        "permission resolution must distinguish provider failure from no permission value"
+        policy.contains("resolve_destination_permissions_strict"),
+        "strict permission resolver must remain available for mutation callers"
     );
 }
