@@ -18,8 +18,10 @@ use crate::infrastructure::{
     CredentialStore,
 };
 use crate::runtime::ResourceBudget;
-use crate::services::{connection_service::ConnectionService, HealthService, SearchService};
-use crate::state::{AppRuntime, AppState, HealthState, SearchState};
+use crate::services::{
+    connection_service::ConnectionService, HealthService, RealtimeService, SearchService,
+};
+use crate::state::{AppRuntime, AppState, HealthState, RealtimeState, SearchState};
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
@@ -182,6 +184,12 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         runtime.view(),
     ));
 
+    let realtime = RealtimeState::new(RealtimeService::new(
+        db.clone(),
+        event_journal.clone(),
+        runtime.shutdown_token.clone(),
+    ));
+
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
             file_authorization,
@@ -216,6 +224,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         uploads,
         search,
         health,
+        realtime,
     };
 
     ConnectionService::load_all_providers_from_db(&state).await;

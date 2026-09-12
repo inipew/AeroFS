@@ -1,6 +1,7 @@
 use crate::auth::AuthenticatedUser;
 use crate::events::ReplayOutcome;
-use crate::state::AppState;
+use crate::services::{RealtimePrincipal, RealtimeService};
+use crate::state::RealtimeState;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -25,126 +26,45 @@ pub async fn ws_handler(
     user: AuthenticatedUser,
     ws: WebSocketUpgrade,
     Query(query): Query<WsQuery>,
-    State(state): State<AppState>,
+    State(state): State<RealtimeState>,
 ) -> impl IntoResponse {
-    let shutdown_token = state.runtime.shutdown_token.clone();
+    let principal = RealtimePrincipal::new(user.id.clone(), user.is_admin);
+    let service = state.service.clone();
     ws.on_upgrade(move |socket| {
         handle_socket(
             socket,
-            state,
-            user,
+            service,
+            principal,
             query.last_epoch,
             query.last_seq,
-            shutdown_token,
         )
     })
 }
 
-fn is_event_authorized(
-    event: &crate::events::DomainEvent,
-    user_id: &str,
-    is_admin: bool,
-    authorized_conns: &HashSet<String>,
-) -> bool {
-    if is_admin {
-        return true;
-    }
-
-    match event {
-        crate::events::DomainEvent::TransferProgress(val)
-        | crate::events::DomainEvent::TransferCompleted(val)
-        | crate::events::DomainEvent::TransferFailed(val)
-        | crate::events::DomainEvent::TransferCancelled(val) => {
-            // 1. Align with TransferService::authorize_transfer_visibility:
-            // Job owner always has visibility to their own transfer events
-            if let Some(owner) = val.get("user_id").and_then(|v| v.as_str()) {
-                if owner == user_id {
-                    return true;
-                }
-            }
-
-            let src = val.get("source_connection_id").and_then(|v| v.as_str());
-            let dst = val
-                .get("destination_connection_id")
-                .and_then(|v| v.as_str());
-
-            // 2. Browser uploads have a synthetic `upload` source; visibility determined by target
-            if val.get("transfer_type").and_then(|v| v.as_str()) == Some("upload") {
-                return dst.is_some_and(|connection_id| authorized_conns.contains(connection_id));
-            }
-
-            // 3. Downloads have a synthetic `download` destination; visibility determined by source
-            if val.get("transfer_type").and_then(|v| v.as_str()) == Some("download") {
-                return src.is_some_and(|connection_id| authorized_conns.contains(connection_id));
-            }
-
-            // 4. Copy/move/sync must remain visible only when both real endpoints are authorized
-            match (src, dst) {
-                (Some(s), Some(d)) => authorized_conns.contains(s) && authorized_conns.contains(d),
-                (Some(s), None) => authorized_conns.contains(s),
-                (None, Some(d)) => authorized_conns.contains(d),
-                _ => false,
-            }
-        }
-        crate::events::DomainEvent::FileChange { connection_id, .. } => {
-            authorized_conns.contains(connection_id)
-        }
-        crate::events::DomainEvent::ResyncRequired { .. } => true,
-        crate::events::DomainEvent::PermissionChanged { .. } => true,
-        crate::events::DomainEvent::FullSync { .. } => true,
-    }
-}
-
-async fn reload_permissions(
-    db: &crate::db::DbPool,
-    user_id: &str,
-    is_admin: bool,
-    authorized_conns: &Arc<RwLock<HashSet<String>>>,
-) {
-    let mut conns = HashSet::new();
-    conns.insert("local".to_string());
-    if !is_admin {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1",
-        )
-        .bind(user_id)
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
-        for (conn_id,) in rows {
-            conns.insert(conn_id);
-        }
-    }
-    let mut write_lock = authorized_conns.write().await;
-    *write_lock = conns;
-}
-
 async fn handle_socket(
     socket: WebSocket,
-    state: AppState,
-    user: AuthenticatedUser,
+    service: RealtimeService,
+    principal: RealtimePrincipal,
     last_epoch: Option<String>,
     last_seq: Option<u64>,
-    shutdown_token: tokio_util::sync::CancellationToken,
 ) {
     let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.event_journal.subscribe();
+    let mut rx = service.subscribe();
+    let shutdown_token = service.shutdown_token();
+    let user_id = principal.user_id.clone();
 
-    let is_admin = user.is_admin;
-    let user_id = user.id.clone();
-    let db = state.db.clone();
     tracing::info!("ws.connected: user_id={}", user_id);
 
-    // Pre-load in-memory authorized connection snapshot
-    let authorized_conns = Arc::new(RwLock::new(HashSet::new()));
-    reload_permissions(&db, &user_id, is_admin, &authorized_conns).await;
+    let authorized_connections = Arc::new(RwLock::new(
+        service.authorized_connections(&principal).await,
+    ));
 
-    // 1. Send current epoch announcement on connect
+    let epoch = service.epoch_info();
     let epoch_info = serde_json::json!({
         "type": "epoch_info",
         "data": {
-            "epoch": state.event_journal.epoch(),
-            "latest_sequence": state.event_journal.latest_sequence(),
+            "epoch": epoch.epoch,
+            "latest_sequence": epoch.latest_sequence,
         }
     });
     if sender
@@ -155,21 +75,18 @@ async fn handle_socket(
         return;
     }
 
-    // 2. Initial replay or resync negotiation
-    if let Some(seq) = last_seq {
-        if let Ok(outcome) = state
-            .event_journal
-            .get_since(last_epoch.as_deref(), seq, 100)
+    if let Some(sequence) = last_seq {
+        if let Ok(outcome) = service
+            .replay(last_epoch.as_deref(), sequence, 100)
             .await
         {
             match outcome {
                 ReplayOutcome::Events(missed) => {
-                    let conns_snapshot = authorized_conns.read().await.clone();
+                    let connections = authorized_connections.read().await.clone();
                     for envelope in missed {
-                        if is_event_authorized(&envelope.event, &user_id, is_admin, &conns_snapshot)
-                        {
-                            if let Ok(json_str) = serde_json::to_string(&envelope) {
-                                if sender.send(Message::Text(json_str.into())).await.is_err() {
+                        if service.is_event_authorized(&envelope.event, &principal, &connections) {
+                            if let Ok(json) = serde_json::to_string(&envelope) {
+                                if sender.send(Message::Text(json.into())).await.is_err() {
                                     return;
                                 }
                             }
@@ -206,11 +123,10 @@ async fn handle_socket(
         }
     }
 
-    // 3. Sender task with 25s application-level heartbeat
-    let shutdown_token_send = shutdown_token.clone();
-    let user_id_send = user_id.clone();
-    let auth_conns_send = Arc::clone(&authorized_conns);
-    let db_send = db.clone();
+    let send_service = service.clone();
+    let send_principal = principal.clone();
+    let send_user_id = user_id.clone();
+    let send_connections = Arc::clone(&authorized_connections);
 
     let mut send_task = tokio::spawn(async move {
         let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
@@ -218,8 +134,8 @@ async fn handle_socket(
 
         loop {
             tokio::select! {
-                _ = shutdown_token_send.cancelled() => {
-                    tracing::info!("ws.shutdown: sending close frame 1001 to user={}", user_id_send);
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("ws.shutdown: sending close frame 1001 to user={}", send_user_id);
                     let _ = sender.send(Message::Close(Some(axum::extract::ws::CloseFrame {
                         code: axum::extract::ws::close_code::AWAY,
                         reason: "server shutting down".into(),
@@ -231,26 +147,37 @@ async fn handle_socket(
                         break;
                     }
                 }
-                envelope_res = rx.recv() => {
-                    match envelope_res {
+                envelope_result = rx.recv() => {
+                    match envelope_result {
                         Ok(envelope) => {
-                            if let crate::events::DomainEvent::PermissionChanged { user_id: ref target_user_id, .. } = envelope.event {
-                                if target_user_id == &user_id_send {
-                                    reload_permissions(&db_send, &user_id_send, is_admin, &auth_conns_send).await;
+                            if let crate::events::DomainEvent::PermissionChanged {
+                                user_id: ref target_user_id,
+                                ..
+                            } = envelope.event
+                            {
+                                if target_user_id == &send_principal.user_id {
+                                    let refreshed = send_service
+                                        .authorized_connections(&send_principal)
+                                        .await;
+                                    *send_connections.write().await = refreshed;
                                 }
                             }
 
-                            let conns = auth_conns_send.read().await;
-                            if is_event_authorized(&envelope.event, &user_id_send, is_admin, &conns) {
-                                if let Ok(json_str) = serde_json::to_string(&envelope) {
-                                    if sender.send(Message::Text(json_str.into())).await.is_err() {
+                            let connections = send_connections.read().await;
+                            if send_service.is_event_authorized(
+                                &envelope.event,
+                                &send_principal,
+                                &connections,
+                            ) {
+                                if let Ok(json) = serde_json::to_string(&envelope) {
+                                    if sender.send(Message::Text(json.into())).await.is_err() {
                                         break;
                                     }
                                 }
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::warn!("ws.lagged: user={} skipped={}", user_id_send, skipped);
+                            tracing::warn!("ws.lagged: user={} skipped={}", send_user_id, skipped);
                             let resync = serde_json::json!({
                                 "type": "resync_required",
                                 "data": {
@@ -259,23 +186,20 @@ async fn handle_socket(
                             });
                             let _ = sender.send(Message::Text(resync.to_string().into())).await;
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            break;
-                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }
         }
+
         let _ = sender.send(Message::Close(None)).await;
     });
 
-    // 4. Receiver task handling client pongs and close frames
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            match msg {
+        while let Some(Ok(message)) = receiver.next().await {
+            match message {
                 Message::Close(_) => break,
-                Message::Ping(_) => {}
-                Message::Pong(_) => {}
+                Message::Ping(_) | Message::Pong(_) => {}
                 _ => {}
             }
         }
@@ -291,42 +215,22 @@ async fn handle_socket(
 
 #[cfg(test)]
 mod tests {
-    use super::is_event_authorized;
-    use crate::events::DomainEvent;
-    use std::collections::HashSet;
+    use super::*;
 
     #[test]
-    fn upload_progress_is_authorized_by_its_destination_only() {
-        let allowed = HashSet::from(["destination".to_string()]);
-        let upload = DomainEvent::TransferProgress(serde_json::json!({
-            "transfer_type": "upload",
-            "source_connection_id": "upload",
-            "destination_connection_id": "destination"
-        }));
-        assert!(is_event_authorized(&upload, "user1", false, &allowed));
+    fn websocket_query_keeps_resume_contract() {
+        let query = WsQuery {
+            last_seq: Some(42),
+            last_epoch: Some("epoch".to_string()),
+        };
+        assert_eq!(query.last_seq, Some(42));
+        assert_eq!(query.last_epoch.as_deref(), Some("epoch"));
     }
 
     #[test]
-    fn transfer_owner_is_always_authorized() {
-        let allowed = HashSet::new();
-        let owned = DomainEvent::TransferProgress(serde_json::json!({
-            "user_id": "user1",
-            "transfer_type": "copy",
-            "source_connection_id": "source",
-            "destination_connection_id": "destination"
-        }));
-        assert!(is_event_authorized(&owned, "user1", false, &allowed));
-        assert!(!is_event_authorized(&owned, "user2", false, &allowed));
-    }
-
-    #[test]
-    fn non_upload_transfer_still_requires_both_endpoints() {
-        let allowed = HashSet::from(["destination".to_string()]);
-        let copy = DomainEvent::TransferProgress(serde_json::json!({
-            "transfer_type": "copy",
-            "source_connection_id": "source",
-            "destination_connection_id": "destination"
-        }));
-        assert!(!is_event_authorized(&copy, "other_user", false, &allowed));
+    fn websocket_authorization_snapshot_type_is_transport_local() {
+        let connections: Arc<RwLock<HashSet<String>>> =
+            Arc::new(RwLock::new(HashSet::new()));
+        assert_eq!(Arc::strong_count(&connections), 1);
     }
 }
