@@ -306,6 +306,12 @@ impl axum::extract::FromRef<AppState> for SettingsState {
     }
 }
 
+impl crate::services::settings_service::SystemSettingsSource for AppState {
+    fn settings_db(&self) -> &DbPool {
+        &self.db
+    }
+}
+
 impl AppState {
     /// Compatibility constructor for tests and non-server callers.
     /// Production startup should use `bootstrap::build_app_state` directly.
