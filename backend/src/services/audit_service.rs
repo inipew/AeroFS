@@ -3,12 +3,19 @@ use crate::auth::AuthenticatedUser;
 use crate::db::DbPool;
 use crate::errors::AppError;
 
-pub struct AuditService;
+#[derive(Clone)]
+pub struct AuditService {
+    db: DbPool,
+}
 
 impl AuditService {
+    pub fn new(db: DbPool) -> Self {
+        Self { db }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record(
-        db: &DbPool,
+        &self,
         user_id: Option<&str>,
         action: &str,
         connection_id: Option<&str>,
@@ -18,7 +25,7 @@ impl AuditService {
         details: Option<&str>,
     ) {
         record_audit_log(
-            db,
+            &self.db,
             user_id,
             action,
             connection_id,
@@ -31,7 +38,7 @@ impl AuditService {
     }
 
     pub async fn list_logs(
-        db: &DbPool,
+        &self,
         user: &AuthenticatedUser,
         limit: usize,
         offset: usize,
@@ -43,18 +50,15 @@ impl AuditService {
         }
 
         let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<String>, String)>(
-            "SELECT a.id, a.user_id, u.username, a.action, a.connection_id, a.path, a.status, a.ip_address, a.details, a.created_at 
-             FROM audit_logs a
-             LEFT JOIN users u ON a.user_id = u.id
-             ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
+            "SELECT a.id, a.user_id, u.username, a.action, a.connection_id, a.path, a.status, a.ip_address, a.details, a.created_at \n             FROM audit_logs a\n             LEFT JOIN users u ON a.user_id = u.id\n             ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
         )
         .bind(limit as i64)
         .bind(offset as i64)
-        .fetch_all(db)
+        .fetch_all(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
-        let entries = rows
+        Ok(rows
             .into_iter()
             .map(
                 |(
@@ -68,23 +72,19 @@ impl AuditService {
                     ip_address,
                     details,
                     created_at,
-                )| {
-                    AuditLogEntry {
-                        id,
-                        user_id,
-                        username,
-                        action,
-                        connection_id,
-                        path,
-                        status,
-                        ip_address,
-                        details,
-                        created_at,
-                    }
+                )| AuditLogEntry {
+                    id,
+                    user_id,
+                    username,
+                    action,
+                    connection_id,
+                    path,
+                    status,
+                    ip_address,
+                    details,
+                    created_at,
                 },
             )
-            .collect();
-
-        Ok(entries)
+            .collect())
     }
 }

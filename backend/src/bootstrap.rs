@@ -18,14 +18,15 @@ use crate::infrastructure::{
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
     CredentialStore,
 };
-use crate::runtime::ResourceBudget;
 use crate::services::{
-    connection_service::ConnectionService, ArchiveService, FileApiService, HealthService,
-    RealtimeService, SearchService, SettingsService, SyncService,
+    ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
+    PreferencesService, RealtimeService, SearchService, SettingsService, ShareService, SyncService,
+    TrashService,
 };
 use crate::state::{
-    AppState, ArchiveState, FileApiState, HealthState, RealtimeState, RuntimeOwner, RuntimeState,
-    SearchState, SettingsState, SyncState,
+    AppState, ArchiveState, AuditState, AuthState, ConnectionState, FileApiState, HealthState,
+    PreferencesState, RealtimeState, RouterState, RuntimeOwner, RuntimeState, SearchState,
+    SettingsState, ShareState, SyncState, TransferState, TrashState,
 };
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
@@ -33,17 +34,24 @@ use crate::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-/// Fully composed process application. Request adapters receive only `state`;
-/// process lifecycle code retains `runtime` ownership.
 pub struct BuiltApplication {
     pub state: AppState,
     pub runtime: RuntimeOwner,
 }
 
-/// Build the full application graph once at process startup.
-/// This is the composition root: concrete adapters are selected here and are
-/// injected into application use-cases through their ports.
 pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplication {
+    let is_dev = config
+        .get_by_key_path("aero_env")
+        .map(|v| v == "development")
+        .unwrap_or_else(|| {
+            std::env::var("AEROFS_ENV").unwrap_or_else(|_| "development".into()) == "development"
+                || cfg!(test)
+        });
+    let allowed_origins = config.security.allowed_origins.clone();
+    let trusted_proxies = config.security.trusted_proxies.clone();
+    let cookie_secure = config.security.cookie_secure;
+    let session_ttl_secs = config.security.session_ttl_secs;
+
     let cred_key = config
         .security
         .credential_encryption_key
@@ -63,7 +71,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             .await
             .expect("Failed to initialize durable event journal"),
     );
-    let resource_budget = Arc::new(ResourceBudget::default());
 
     let transfer_manager = TransferManager::new(
         registry.providers_map(),
@@ -99,7 +106,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     );
 
     let upload_locks = Arc::new(crate::services::UploadLockManager::default());
-    let cfg_limits_global = config.limits.global_io_concurrency;
     let cfg_limits_archive = config.limits.archive_concurrency;
     let cfg_limits_search = config.limits.search_concurrency;
     let max_editable_size = config.limits.max_editable_size;
@@ -187,50 +193,17 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         max_upload_size,
     );
 
-    let search = SearchState::new(SearchService::new(
-        file_authorization.clone(),
-        file_filesystem.clone(),
-        Arc::new(Semaphore::new(cfg_limits_search)),
-    ));
-
-    let health = HealthState::new(HealthService::new(
-        db.clone(),
-        local_root.clone(),
-        registry.clone(),
-        runtime.view(),
-    ));
-
-    let realtime = RealtimeState::new(RealtimeService::new(
-        db.clone(),
-        event_journal.clone(),
-        runtime.shutdown_token.clone(),
-    ));
-
-    let sync = SyncState::new(SyncService::new(
-        file_authorization.clone(),
-        sync_manager.clone(),
-    ));
-
-    let archive = ArchiveState::new(ArchiveService::new(
-        file_authorization.clone(),
-        file_filesystem.clone(),
-        Arc::new(SqliteArchiveEffects::new(
-            db.clone(),
-            transfer_manager.clone(),
-        )),
-        Arc::new(Semaphore::new(cfg_limits_archive)),
-    ));
-
-    let settings = SettingsState::new(SettingsService::new(
+    let settings_service = SettingsService::new(
         db.clone(),
         config.clone(),
         registry.clone(),
         transfer_manager.clone(),
-    ));
+    );
+    let settings = SettingsState::new(settings_service.clone());
 
     let file_api = FileApiState::new(
         files.clone(),
-        uploads.clone(),
+        uploads,
         FileApiService::new(
             db.clone(),
             config.clone(),
@@ -238,66 +211,96 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             file_filesystem.clone(),
             file_effects.clone(),
             file_effects.clone(),
-            settings.service.clone(),
+            settings_service,
+            metadata_cache.clone(),
         ),
     );
 
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
-            file_authorization,
-            file_filesystem,
-            Arc::new(TransferEngineQueue::new(transfer_engine.clone())),
+            file_authorization.clone(),
+            file_filesystem.clone(),
+            Arc::new(TransferEngineQueue::new(transfer_engine)),
             Arc::new(SqliteTransferEffects::new(db.clone())),
         ),
         Arc::new(SqliteTransferControl::new(
             db.clone(),
             transfer_manager.clone(),
-            upload_locks.clone(),
+            upload_locks,
         )),
     );
 
-    let connections = ConnectionService::new(
+    let connection_service = ConnectionService::new(
         db.clone(),
         config.clone(),
         registry.clone(),
-        credentials.clone(),
-        metadata_cache.clone(),
+        credentials,
+        metadata_cache,
         transfer_manager.clone(),
     );
-    connections.load_all_providers_from_db().await;
+    connection_service.load_all_providers_from_db().await;
 
     let state = AppState {
-        config,
-        db: db.clone(),
-        registry,
-        credentials,
-        transfer_manager,
-        transfer_engine,
-        metadata_cache,
-        upload_locks,
-        global_io_semaphore: Arc::new(Semaphore::new(cfg_limits_global)),
-        resource_budget,
-        event_journal: event_journal.clone(),
-        sync_manager,
-        files,
-        transfers,
-        uploads,
+        router: RouterState::new(is_dev, allowed_origins),
         runtime: RuntimeState::new(runtime.view()),
-        search,
-        health,
-        realtime,
-        sync,
-        archive,
-        settings,
+        auth: AuthState::new(AuthService::new(
+            db.clone(),
+            trusted_proxies,
+            cookie_secure,
+            session_ttl_secs,
+        )),
+        connections: ConnectionState::new(connection_service),
         file_api,
+        transfers: TransferState::new(transfers),
+        search: SearchState::new(SearchService::new(
+            file_authorization.clone(),
+            file_filesystem.clone(),
+            Arc::new(Semaphore::new(cfg_limits_search)),
+        )),
+        health: HealthState::new(HealthService::new(
+            db.clone(),
+            local_root.clone(),
+            registry,
+            runtime.view(),
+        )),
+        realtime: RealtimeState::new(RealtimeService::new(
+            db.clone(),
+            event_journal.clone(),
+            runtime.shutdown_token.clone(),
+        )),
+        sync: SyncState::new(SyncService::new(
+            file_authorization.clone(),
+            sync_manager,
+        )),
+        archive: ArchiveState::new(ArchiveService::new(
+            file_authorization.clone(),
+            file_filesystem.clone(),
+            Arc::new(SqliteArchiveEffects::new(
+                db.clone(),
+                transfer_manager,
+            )),
+            Arc::new(Semaphore::new(cfg_limits_archive)),
+        )),
+        settings,
+        audit: AuditState::new(AuditService::new(db.clone())),
+        preferences: PreferencesState::new(PreferencesService::new(db.clone())),
+        shares: ShareState::new(ShareService::new(
+            db.clone(),
+            file_authorization.clone(),
+            file_filesystem.clone(),
+        )),
+        trash: TrashState::new(TrashService::new(
+            db.clone(),
+            file_authorization,
+            file_filesystem,
+            file_effects,
+        )),
     };
 
     spawn_runtime_tasks(&runtime, local_root, event_journal, db);
     BuiltApplication { state, runtime }
 }
 
-/// Compatibility constructor for tests and non-server callers. Production code
-/// must retain the `RuntimeOwner` returned by `build_application`.
 pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
     build_application(config, db).await.state
 }

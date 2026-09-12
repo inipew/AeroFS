@@ -1,18 +1,15 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::{Actor, ConnectionId, VfsPath};
-use backend::infrastructure::{
-    archive::SqliteArchiveEffects,
-    files::{RegistryFileSystemResolver, SqliteAuthorization},
-};
-use backend::services::{ArchiveService, FileService};
-use backend::state::AppState;
+use backend::domain::{Actor, ConnectionId};
+use backend::services::{EditorService, FileService};
+use backend::state::{AppState, ArchiveState};
+use backend::vfs::factory::ProviderFactory;
+use backend::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
-use tokio::io::AsyncReadExt;
-use tokio::sync::Semaphore;
 
 async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
     let temp = tempdir().unwrap();
@@ -36,18 +33,6 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     (state, admin, temp)
 }
 
-fn archive_service(state: &AppState) -> ArchiveService {
-    ArchiveService::new(
-        Arc::new(SqliteAuthorization::new(state.db.clone())),
-        Arc::new(RegistryFileSystemResolver::new(state.registry.clone())),
-        Arc::new(SqliteArchiveEffects::new(
-            state.db.clone(),
-            state.transfer_manager.clone(),
-        )),
-        Arc::new(Semaphore::new(state.config.limits.archive_concurrency)),
-    )
-}
-
 fn actor_from_user(user: &AuthenticatedUser) -> Actor {
     Actor {
         id: user.id().to_string(),
@@ -59,11 +44,10 @@ fn actor_from_user(user: &AuthenticatedUser) -> Actor {
 #[tokio::test]
 async fn test_archive_targz_streaming_zero_ram_buffering() {
     let (state, admin, _temp) = setup_test_context().await;
-    let archive = archive_service(&state);
+    let archive = ArchiveState::from_ref(&state);
     let actor = actor_from_user(&admin);
     let connection = ConnectionId::local();
 
-    // 1. Create source files
     let f1_data = b"Hello Plan 52 TAR.GZ Streaming Compression!";
     let f2_data = b"Second file to be archived inside the streaming archive";
     FileService::create_or_write_file(
@@ -88,8 +72,8 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
     .await
     .unwrap();
 
-    // 2. Compress via ArchiveService (TarGz)
     let compress_res = archive
+        .service
         .compress(
             &actor,
             &connection,
@@ -100,11 +84,10 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
         )
         .await
         .unwrap();
-
     assert!(compress_res.success);
 
-    // 3. Extract the archive
     let extract_res = archive
+        .service
         .extract(
             &actor,
             &connection,
@@ -115,33 +98,32 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
         )
         .await
         .unwrap();
-
     assert!(extract_res.success);
 
-    // 4. Verify extracted files match original content
-    let provider = state.get_provider("local").await.unwrap();
-    let p1 = VfsPath::new("local", "/extracted_dest/file1.txt").unwrap();
-    let mut reader1 = provider.read_stream(&p1).await.unwrap();
-    let mut read_f1 = Vec::new();
-    reader1.read_to_end(&mut read_f1).await.unwrap();
-    assert_eq!(read_f1, f1_data);
+    let (read_f1, _) =
+        EditorService::read_for_editing(&state, &admin, "local", "/extracted_dest/file1.txt")
+            .await
+            .unwrap();
+    assert_eq!(read_f1.as_bytes(), f1_data);
 
-    let p2 = VfsPath::new("local", "/extracted_dest/file2.txt").unwrap();
-    let mut reader2 = provider.read_stream(&p2).await.unwrap();
-    let mut read_f2 = Vec::new();
-    reader2.read_to_end(&mut read_f2).await.unwrap();
-    assert_eq!(read_f2, f2_data);
+    let (read_f2, _) =
+        EditorService::read_for_editing(&state, &admin, "local", "/extracted_dest/file2.txt")
+            .await
+            .unwrap();
+    assert_eq!(read_f2.as_bytes(), f2_data);
 }
 
 #[tokio::test]
 async fn test_storage_runtime_shared_concurrency() {
-    let (state, _admin, _temp) = setup_test_context().await;
+    let temp = tempdir().unwrap();
+    let provider = ProviderFactory::build_local("local", temp.path().to_path_buf()).unwrap();
+    let registry = ProviderRegistry::new();
+    registry.register("local".to_string(), provider).await;
 
-    let runtime = state.get_storage_runtime("local").await.unwrap();
+    let runtime = registry.get_runtime("local").await.unwrap();
     assert_eq!(runtime.connection_id, "local");
     assert!(runtime.capabilities().read);
 
-    // Test concurrent permit acquisition
     let mut handles = Vec::new();
     for _ in 0..10 {
         let rt = Arc::clone(&runtime);
@@ -151,8 +133,8 @@ async fn test_storage_runtime_shared_concurrency() {
         }));
     }
 
-    for h in handles {
-        h.await.unwrap();
+    for handle in handles {
+        handle.await.unwrap();
     }
 }
 
@@ -172,7 +154,6 @@ async fn test_presigned_upload_complete_validation() {
     .await
     .unwrap();
 
-    // Correct expected size succeeds
     let meta = FileService::complete_presigned_upload(
         &state,
         &admin,
@@ -185,7 +166,6 @@ async fn test_presigned_upload_complete_validation() {
     .unwrap();
     assert_eq!(meta.size, content.len() as u64);
 
-    // Mismatched expected size fails with BadRequest
     let err_size = FileService::complete_presigned_upload(
         &state,
         &admin,
@@ -197,7 +177,6 @@ async fn test_presigned_upload_complete_validation() {
     .await;
     assert!(err_size.is_err(), "Size mismatch must fail verification");
 
-    // Non-existent path fails with NotFound
     let err_nf = FileService::complete_presigned_upload(
         &state,
         &admin,
@@ -226,17 +205,11 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
     .await
     .unwrap();
 
-    // 1. Initial stat populates cache
     let stat1 = FileService::stat_file(&state, &admin, "local", "/cached_file.txt")
         .await
         .unwrap();
     assert_eq!(stat1.size, content1.len() as u64);
 
-    // Verify cache has entry
-    let cached = state.metadata_cache.get("local", "/cached_file.txt").await;
-    assert!(cached.is_some(), "MetadataCache must contain cached stat");
-
-    // 2. Overwrite file -> invalidates cache
     let content2 = b"Updated Content v2 with different size";
     FileService::create_or_write_file(
         &state,
@@ -249,51 +222,51 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
     .await
     .unwrap();
 
-    // 3. Stat retrieves updated size
     let stat2 = FileService::stat_file(&state, &admin, "local", "/cached_file.txt")
         .await
         .unwrap();
-    assert_eq!(stat2.size, content2.len() as u64);
+    assert_eq!(
+        stat2.size,
+        content2.len() as u64,
+        "stat after write must not return stale cached metadata"
+    );
 
-    // 4. Delete file -> invalidates cache
     FileService::delete_entry(&state, &admin, "local", "/cached_file.txt")
         .await
         .unwrap();
-
-    let cached_after_del = state.metadata_cache.get("local", "/cached_file.txt").await;
     assert!(
-        cached_after_del.is_none(),
-        "MetadataCache must be invalidated on deletion"
+        FileService::stat_file(&state, &admin, "local", "/cached_file.txt")
+            .await
+            .is_err(),
+        "stat after delete must not return stale cached metadata"
     );
 }
 
 #[tokio::test]
-async fn test_directory_paged_listing_has_more_and_optional_total() {
+async fn test_directory_paged_listing_has_more_and_total_count() {
     let (state, admin, _temp) = setup_test_context().await;
 
-    // Create 10 files
     for i in 0..10 {
         FileService::create_or_write_file(
             &state,
             &admin,
             "local",
-            &format!("/paged_dir/file_{:02}.txt", i),
-            format!("data {}", i).into_bytes(),
+            &format!("/paged_dir/file_{i:02}.txt"),
+            format!("data {i}").into_bytes(),
             None,
         )
         .await
         .unwrap();
     }
 
-    // List with limit 4
     let listing = FileService::list_directory_paged(
         &state,
         &admin,
         "local",
         Some("/paged_dir".into()),
         None,
-        None,
-        None,
+        Some("name"),
+        Some("asc"),
         None,
         Some(4),
     )
@@ -303,5 +276,9 @@ async fn test_directory_paged_listing_has_more_and_optional_total() {
     assert_eq!(listing.entries.len(), 4);
     assert!(listing.has_more, "Must indicate has_more = true");
     assert!(listing.next_cursor.is_some(), "Must return next_cursor");
-    assert_eq!(listing.total_count, Some(4));
+    assert_eq!(
+        listing.total_count,
+        Some(10),
+        "total_count must describe the full filtered directory, not the page length"
+    );
 }

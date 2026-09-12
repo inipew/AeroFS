@@ -1,3 +1,4 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
@@ -7,10 +8,9 @@ use backend::domain::{
 };
 use backend::errors::{AppError, VfsError};
 use backend::services::{
-    ConnectionService, CreateConnectionRequest, MetadataCache, UpdateConnectionRequest,
-    UploadLockManager,
+    CreateConnectionRequest, MetadataCache, UpdateConnectionRequest, UploadLockManager,
 };
-use backend::state::AppState;
+use backend::state::{AppState, ConnectionState};
 use backend::vfs::cleanup_stale_staging_files;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -39,17 +39,6 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     (state, admin, temp)
 }
 
-fn connection_service(state: &AppState) -> ConnectionService {
-    ConnectionService::new(
-        state.db.clone(),
-        state.config.clone(),
-        state.registry.clone(),
-        state.credentials.clone(),
-        state.metadata_cache.clone(),
-        state.transfer_manager.clone(),
-    )
-}
-
 fn actor(user: &AuthenticatedUser) -> Actor {
     Actor {
         id: user.id().to_string(),
@@ -62,13 +51,11 @@ fn actor(user: &AuthenticatedUser) -> Actor {
 async fn test_in_flight_upload_lock_rejects_concurrent_same_path() {
     let lock_manager = UploadLockManager::new();
 
-    // 1. Acquire lock on /movies/big.mkv
     let guard1 = lock_manager
         .try_acquire("conn_s3", "/movies/big.mkv")
         .await
         .unwrap();
 
-    // 2. Second attempt for same path on same connection fails with Conflict
     let err2 = lock_manager.try_acquire("conn_s3", "/movies/big.mkv").await;
     assert!(
         err2.is_err(),
@@ -76,10 +63,9 @@ async fn test_in_flight_upload_lock_rejects_concurrent_same_path() {
     );
     match err2.unwrap_err() {
         AppError::Conflict(msg) => assert!(msg.contains("already in progress")),
-        other => panic!("Expected Conflict error, got: {:?}", other),
+        other => panic!("Expected Conflict error, got: {other:?}"),
     }
 
-    // 3. Different connection or different path succeeds
     let _guard_diff_conn = lock_manager
         .try_acquire("conn_ftp", "/movies/big.mkv")
         .await
@@ -89,7 +75,6 @@ async fn test_in_flight_upload_lock_rejects_concurrent_same_path() {
         .await
         .unwrap();
 
-    // 4. Dropping guard releases path lock
     drop(guard1);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -104,17 +89,11 @@ async fn test_operation_aware_retry_policy() {
     let timeout_err = AppError::Vfs(VfsError::Timeout("connection timed out".into()));
     let checksum_err = AppError::ChecksumMismatch("mismatched sha256".into());
 
-    // 1. Idempotent Read allows retry on timeout
     assert!(policy.is_retryable_for_operation(OperationKind::Read, &timeout_err, 1));
     assert!(policy.is_retryable_for_operation(OperationKind::Stat, &timeout_err, 1));
     assert!(policy.is_retryable_for_operation(OperationKind::List, &timeout_err, 1));
-
-    // 2. Non-idempotent Append NEVER retries blind on timeout
     assert!(!policy.is_retryable_for_operation(OperationKind::Append, &timeout_err, 1));
-
-    // 3. Checksum mismatch allowed on attempt 1 (rule out transient network glitch)
     assert!(policy.is_retryable_for_operation(OperationKind::Read, &checksum_err, 1));
-    // Checksum mismatch rejected on attempt >= 2 (fail hard on persistent corruption)
     assert!(!policy.is_retryable_for_operation(OperationKind::Read, &checksum_err, 2));
     assert!(!policy.is_retryable_for_operation(OperationKind::Read, &checksum_err, 3));
 }
@@ -152,12 +131,11 @@ async fn test_single_flight_cache_request_coalescing() {
         }));
     }
 
-    for h in handles {
-        let meta = h.await.unwrap().unwrap();
+    for handle in handles {
+        let meta = handle.await.unwrap().unwrap();
         assert_eq!(meta.size, 4096);
     }
 
-    // Coalesced: exactly 1 actual fetch execution across 10 concurrent requests
     assert_eq!(
         counter.load(Ordering::SeqCst),
         1,
@@ -168,10 +146,9 @@ async fn test_single_flight_cache_request_coalescing() {
 #[tokio::test]
 async fn test_connection_hot_swap_runtime_replacement() {
     let (state, admin, _temp) = setup_test_context().await;
-    let service = connection_service(&state);
+    let connections = ConnectionState::from_ref(&state);
     let admin_actor = actor(&admin);
 
-    // 1. Create a connection
     let create_payload = CreateConnectionRequest {
         name: "Test FTP Server".to_string(),
         provider: backend::domain::ProviderKind::Ftp,
@@ -183,14 +160,19 @@ async fn test_connection_hot_swap_runtime_replacement() {
         read_only: Some(false),
     };
 
-    let conn_id = service
+    let conn_id = connections
+        .service
         .create_connection(&admin_actor, create_payload)
         .await
         .unwrap();
 
-    assert!(state.registry.get(&conn_id).await.is_some());
+    let created = connections
+        .service
+        .get_connection(&admin_actor, &conn_id)
+        .await
+        .unwrap();
+    assert_eq!(created.connection.name, "Test FTP Server");
 
-    // 2. Update connection properties
     let update_payload = UpdateConnectionRequest {
         name: Some("Updated FTP Server".to_string()),
         host: Some("127.0.0.1".to_string()),
@@ -202,13 +184,14 @@ async fn test_connection_hot_swap_runtime_replacement() {
         enabled: Some(true),
     };
 
-    let update_res = service
+    connections
+        .service
         .update_connection(&admin_actor, &conn_id, update_payload)
-        .await;
-    assert!(update_res.is_ok(), "Hot-swap update must succeed");
+        .await
+        .expect("Hot-swap update must succeed through connection lifecycle capability");
 
-    // 3. Verify connection reflects updated name
-    let detail = service
+    let detail = connections
+        .service
         .get_connection(&admin_actor, &conn_id)
         .await
         .unwrap();
@@ -231,16 +214,12 @@ async fn test_orphan_staging_cleanup() {
     std::fs::write(&stale_part2, b"incomplete payload 2").unwrap();
     std::fs::write(&valid_file, b"permanent content").unwrap();
 
-    // 1. Calling cleanup with 0s max_age purges both orphan staging files
     let cleaned = cleanup_stale_staging_files(&root, Duration::from_secs(0)).await;
     assert_eq!(cleaned, 2, "Must delete exactly 2 orphan staging files");
 
     assert!(!stale_part1.exists());
     assert!(!stale_part2.exists());
-    assert!(
-        valid_file.exists(),
-        "Regular non-staging file must be preserved"
-    );
+    assert!(valid_file.exists(), "Regular non-staging file must be preserved");
 }
 
 #[tokio::test]

@@ -2,8 +2,7 @@ use crate::api::extractors::Json;
 use crate::auth::session::UserInfo;
 use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, ErrorResponse};
-use crate::services::AuthService;
-use crate::state::AppState;
+use crate::state::AuthState;
 use axum::{
     extract::State,
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
@@ -30,18 +29,16 @@ pub struct LogoutResponse {
 }
 
 fn extract_client_ip(headers: &HeaderMap, trusted_proxies: &[String]) -> String {
-    // §23: Only trust X-Forwarded-For if request comes from trusted proxy.
-    // If trusted_proxies is empty, forwarded headers are ignored (secure-by-default).
     if trusted_proxies.is_empty() {
         return "127.0.0.1".to_string();
     }
-    let ip_opt = headers
+    headers
         .get("x-forwarded-for")
         .or_else(|| headers.get("x-real-ip"))
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string());
-    ip_opt.unwrap_or_else(|| "127.0.0.1".to_string())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 #[utoipa::path(
@@ -57,30 +54,30 @@ fn extract_client_ip(headers: &HeaderMap, trusted_proxies: &[String]) -> String 
     tag = "auth"
 )]
 pub async fn login(
-    State(state): State<AppState>,
+    State(state): State<AuthState>,
     headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let client_ip = extract_client_ip(&headers, &state.config.security.trusted_proxies);
+    let client_ip = extract_client_ip(&headers, state.service.trusted_proxies());
+    let (user_info, session_id) = state
+        .service
+        .login(&payload.username, &payload.password, &client_ip)
+        .await?;
 
-    let (user_info, session_id) =
-        AuthService::login(&state, &payload.username, &payload.password, &client_ip).await?;
-
-    // Build session cookie via `cookie` crate — explicit policy (§21-22)
     let cookie_val = {
         use cookie::{Cookie, SameSite};
-        let same_site = if state.config.security.cookie_secure {
+        let same_site = if state.service.cookie_secure() {
             SameSite::None
         } else {
             SameSite::Lax
         };
-        let mut c = Cookie::new("session_id", session_id.clone());
+        let mut c = Cookie::new("session_id", session_id);
         c.set_path("/");
         c.set_http_only(true);
         c.set_same_site(same_site);
-        c.set_secure(state.config.security.cookie_secure);
+        c.set_secure(state.service.cookie_secure());
         c.set_max_age(cookie::time::Duration::seconds(
-            state.config.security.session_ttl_secs as i64,
+            state.service.session_ttl_secs() as i64,
         ));
         c.to_string()
     };
@@ -109,18 +106,17 @@ pub async fn login(
     tag = "auth"
 )]
 pub async fn logout(
-    State(state): State<AppState>,
+    State(state): State<AuthState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let client_ip = extract_client_ip(&headers, &state.config.security.trusted_proxies);
+    let client_ip = extract_client_ip(&headers, state.service.trusted_proxies());
 
     if let Some(cookie_header) = headers.get(axum::http::header::COOKIE) {
         let cookie_str = cookie_header.to_str().unwrap_or_default();
         if let Some(session_id) = cookie_str.split(';').find_map(|c| {
-            let trimmed = c.trim();
-            trimmed.strip_prefix("session_id=")
+            c.trim().strip_prefix("session_id=")
         }) {
-            let _ = AuthService::logout(&state, session_id, None, &client_ip).await;
+            let _ = state.service.logout(session_id, None, &client_ip).await;
         }
     }
 
@@ -158,10 +154,7 @@ pub async fn logout(
         (status = 200, description = "Current authenticated user profile", body = UserInfo),
         (status = 401, description = "Not authenticated", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "auth"
 )]
 pub async fn me(AuthenticatedUser(user): AuthenticatedUser) -> Result<impl IntoResponse, AppError> {

@@ -4,9 +4,9 @@ use crate::domain::operation::{
 };
 use crate::domain::path::VfsPath;
 use crate::domain::policy::PermissionInheritanceMode;
+use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
 use crate::filesystem::archive::ArchiveOverwriteMode;
-use crate::services::authorization_service::AuthorizationService;
 use crate::services::file_service::FileService;
 use crate::state::AppState;
 use uuid::Uuid;
@@ -39,25 +39,31 @@ impl OperationService {
         }
     }
 
-    /// Authorize and execute an operation plan across providers
     pub async fn execute_plan(
         state: &AppState,
         user: &AuthenticatedUser,
         plan: &OperationPlan,
     ) -> Result<OperationExecutionResult, AppError> {
-        // 1. Authorize operation intent
-        AuthorizationService::authorize_intent(
-            &state.db,
-            user,
-            plan.intent_type,
-            &plan.source_connection_id,
-            plan.destination_connection_id.as_deref(),
-        )
-        .await?;
+        let actor = Actor {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+        };
+        let source = ConnectionId::new(plan.source_connection_id.clone())
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        let destination = match plan.destination_connection_id.as_ref() {
+            Some(id) => Some(
+                ConnectionId::new(id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?,
+            ),
+            None => None,
+        };
+        state
+            .file_api
+            .service
+            .authorize_intent(&actor, plan.intent_type, &source, destination.as_ref())
+            .await?;
 
         let mut result = OperationExecutionResult::new(plan.id.clone(), plan.source_paths.len());
-
-        // 2. Dispatch execution per item with chosen failure strategy
         for path in &plan.source_paths {
             let res = match plan.intent_type {
                 OperationIntentType::Delete => {
@@ -88,9 +94,7 @@ impl OperationService {
             };
 
             match res {
-                Ok(_) => {
-                    result.succeeded_items.push(path.path.clone());
-                }
+                Ok(_) => result.succeeded_items.push(path.path.clone()),
                 Err(e) => {
                     result.failed_items.push((path.path.clone(), e.to_string()));
                     if plan.failure_strategy == FailureStrategy::FailFast {

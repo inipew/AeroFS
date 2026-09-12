@@ -48,7 +48,6 @@ pub async fn execute_inline_upload_stream<S>(
 where
     S: Stream<Item = Result<Bytes, AppError>> + Send,
 {
-    // Initial cancellation guard — handles race where cancel_job fired between create and executor start (P0)
     if cancel_token.is_cancelled() {
         if context.plan.uses_staging() {
             if let Some(staging) = context.plan.staging_path(&context.target, &context.job_id) {
@@ -58,14 +57,12 @@ where
         return Err(AppError::Cancelled("upload cancelled before start".into()));
     }
 
-    // Resolve staging target via plan (canonical naming)
     let write_target = context
         .plan
         .staging_path(&context.target, &context.job_id)
         .unwrap_or_else(|| context.target.clone());
     let use_staging = context.plan.uses_staging();
 
-    // Prepare duplex (cancellation token is manager-owned, not local)
     let (duplex_reader, mut duplex_writer) = tokio::io::duplex(64 * 1024);
 
     let write_handle = tokio::spawn({
@@ -89,7 +86,6 @@ where
 
     futures::pin_mut!(byte_stream);
     loop {
-        // Check cancellation before each poll (handles race where cancel fires between chunks)
         if cancel_token.is_cancelled() {
             stream_err = Some(AppError::Cancelled("upload cancelled".into()));
             break;
@@ -117,7 +113,6 @@ where
             )));
             break;
         }
-        // Write with cancellation — abort if token fires while pipe is full
         let write_fut = duplex_writer.write_all(&chunk);
         tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -151,16 +146,12 @@ where
     }
     drop(duplex_writer);
 
-    // If cancelled, abort writer and cleanup staging, propagate cancellation error (P0: no commit)
     if cancel_token.is_cancelled() {
-        // Wake writer task via cancel_token (it selects on same token)
         let _ = tokio::time::timeout(std::time::Duration::from_millis(200), write_handle).await;
         if use_staging || !context.target_exists {
             cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
         }
-        // Prefer explicit cancelled error so caller can avoid fail->Failed overwrite
         if let Some(err) = stream_err {
-            // If stream_err already is cancelled, return it; otherwise override with cancelled
             if matches!(err, AppError::Cancelled(_)) {
                 return Err(err);
             }
@@ -187,8 +178,6 @@ where
         return Err(AppError::from(e));
     }
 
-    // Atomic commit boundary Opsi X: try_enter_finalizing under jobs.write() lock
-    // Returns Ok(false) if already cancelled / Finalizing — must not rename
     let can_commit = manager
         .try_enter_finalizing(&context.job_id)
         .await
@@ -213,15 +202,12 @@ where
     }
 
     if let Some(ref perms) = context.target_perms {
-        // Permission inheritance is best-effort: the committed file remains valid,
-        // but an operator must be able to diagnose a provider-side failure.
         if let Err(error) = provider.set_permissions(&context.target, perms).await {
             tracing::warn!(job_id = %context.job_id, path = %context.target.path, ?error,
                 "upload committed but inherited permissions could not be applied");
         }
     }
 
-    // Emit final progress (100% completion before finalize)
     let final_total = if total_for_progress > 0 {
         total_for_progress
     } else {
@@ -239,13 +225,12 @@ where
 mod tests {
     use super::*;
     use crate::{
-        config::AppConfig,
         db::init_db,
         domain::{Capabilities, FileEntry, FileMetadata, VfsPath},
         errors::VfsError,
+        events::EventJournal,
         transfer::{TransferPlan, TransferStaging},
-        vfs::FileSystem,
-        AppState,
+        vfs::{registry::ProviderRegistry, FileSystem},
     };
     use bytes::Bytes;
     use futures::Stream;
@@ -257,11 +242,25 @@ mod tests {
         },
     };
     use tokio::sync::Notify;
+    use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+    struct ManagerFixture {
+        manager: TransferManager,
+        _temp: tempfile::TempDir,
+        shutdown: CancellationToken,
+        tracker: TaskTracker,
+    }
+
+    impl Drop for ManagerFixture {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+            self.tracker.close();
+        }
+    }
 
     struct BlockingMockFs {
         capabilities: Capabilities,
         write_started: Arc<Notify>,
-        write_continue: Arc<Notify>,
         delete_called: Arc<AtomicBool>,
         rename_called: Arc<AtomicBool>,
         rename_started: Arc<Notify>,
@@ -307,8 +306,6 @@ mod tests {
         ) -> Result<(), VfsError> {
             self.write_calls.fetch_add(1, Ordering::SeqCst);
             self.write_started.notify_one();
-            // Consume input until EOF (or cancellation via drop). For pending byte_stream,
-            // input will block on read, which is cancelled via token select in executor.
             let mut buf = vec![0u8; 8192];
             use tokio::io::AsyncReadExt;
             loop {
@@ -332,7 +329,6 @@ mod tests {
         }
         async fn rename(&self, _from: &VfsPath, _to: &VfsPath) -> Result<(), VfsError> {
             self.rename_started.notify_one();
-            // Wait for test to allow continue (deterministic, not sleep)
             self.rename_continue.notified().await;
             self.rename_called.store(true, Ordering::SeqCst);
             Ok(())
@@ -342,17 +338,24 @@ mod tests {
         }
     }
 
-    async fn setup_manager() -> (AppState, Arc<BlockingMockFs>) {
+    async fn setup_manager() -> (ManagerFixture, Arc<BlockingMockFs>) {
         let temp = tempfile::tempdir().unwrap();
         let db_path = temp.path().join("p0_test.db");
-        let storage_dir = temp.path().join("storage");
-        std::fs::create_dir_all(&storage_dir).unwrap();
-        let mut config = AppConfig::default();
-        config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-        config.filesystem.default_local_root = storage_dir.clone();
-        let db = init_db(&config.database.url).await.unwrap();
-        let state = AppState::new_with_db(config, db).await;
-        std::mem::forget(temp);
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let db = init_db(&database_url).await.unwrap();
+        let journal = Arc::new(EventJournal::init(db.clone()).await.unwrap());
+        let registry = ProviderRegistry::new();
+        let shutdown = CancellationToken::new();
+        let tracker = TaskTracker::new();
+        let manager = TransferManager::new(
+            registry.providers_map(),
+            db,
+            4,
+            journal,
+            shutdown.clone(),
+            &tracker,
+        )
+        .await;
         let caps = Capabilities {
             atomic_rename: true,
             write: true,
@@ -362,28 +365,39 @@ mod tests {
         let mock = Arc::new(BlockingMockFs {
             capabilities: caps,
             write_started: Arc::new(Notify::new()),
-            write_continue: Arc::new(Notify::new()),
             delete_called: Arc::new(AtomicBool::new(false)),
             rename_called: Arc::new(AtomicBool::new(false)),
             rename_started: Arc::new(Notify::new()),
             rename_continue: Arc::new(Notify::new()),
             write_calls: Arc::new(AtomicUsize::new(0)),
         });
-        (state, mock)
+        (
+            ManagerFixture {
+                manager,
+                _temp: temp,
+                shutdown,
+                tracker,
+            },
+            mock,
+        )
+    }
+
+    fn plan() -> TransferPlan {
+        TransferPlan {
+            execution_mode: crate::transfer::TransferExecutionMode::Inline,
+            staging: TransferStaging::LocalTemp,
+            commit: crate::domain::CommitSemantics::AtomicRename,
+        }
     }
 
     #[tokio::test]
     async fn test_initial_cancel_no_commit() {
-        let (state, mock) = setup_manager().await;
+        let (fixture, mock) = setup_manager().await;
         let provider: Arc<dyn FileSystem> = mock.clone();
         let target = VfsPath::new("local", "/upload_test.txt").unwrap();
-        let plan = TransferPlan {
-            execution_mode: crate::transfer::TransferExecutionMode::Inline,
-            staging: TransferStaging::LocalTemp,
-            commit: crate::domain::CommitSemantics::AtomicRename,
-        };
-        let job = state
-            .transfer_manager
+        let plan = plan();
+        let job = fixture
+            .manager
             .create_inline_upload_job_with_plan(
                 Some("user1".into()),
                 "upload_test.txt".into(),
@@ -393,18 +407,15 @@ mod tests {
                 plan.clone(),
             )
             .await;
-        let token = state
-            .transfer_manager
-            .cancel_token(&job.id)
-            .expect("token exists");
+        let token = fixture.manager.cancel_token(&job.id).expect("token exists");
         token.cancel();
-        let _ = state
-            .transfer_manager
+        let _ = fixture
+            .manager
             .cancel_job(&job.id, Some("user1"), false)
             .await;
-        let byte_stream = futures::stream::empty::<Result<Bytes, crate::errors::AppError>>();
+        let byte_stream = futures::stream::empty::<Result<Bytes, AppError>>();
         let res = execute_inline_upload_stream(
-            &state.transfer_manager,
+            &fixture.manager,
             provider,
             InlineUploadContext {
                 target,
@@ -415,7 +426,7 @@ mod tests {
                 target_exists: false,
                 target_perms: None,
             },
-            token.clone(),
+            token,
             byte_stream,
         )
         .await;
@@ -425,16 +436,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_mid_stream_cancel_aborts_and_no_rename() {
-        let (state, mock) = setup_manager().await;
+        let (fixture, mock) = setup_manager().await;
         let provider: Arc<dyn FileSystem> = mock.clone();
         let target = VfsPath::new("local", "/mid_cancel.txt").unwrap();
-        let plan = TransferPlan {
-            execution_mode: crate::transfer::TransferExecutionMode::Inline,
-            staging: TransferStaging::LocalTemp,
-            commit: crate::domain::CommitSemantics::AtomicRename,
-        };
-        let job = state
-            .transfer_manager
+        let plan = plan();
+        let job = fixture
+            .manager
             .create_inline_upload_job_with_plan(
                 Some("user1".into()),
                 "mid_cancel.txt".into(),
@@ -444,19 +451,15 @@ mod tests {
                 plan.clone(),
             )
             .await;
-        let token = state
-            .transfer_manager
-            .cancel_token(&job.id)
-            .expect("token exists");
+        let token = fixture.manager.cancel_token(&job.id).expect("token exists");
         let byte_stream = futures::stream::unfold(0, |state| async move {
             if state == 0 {
                 Some((Ok(Bytes::from(vec![1u8; 1024])), 1))
             } else {
-                std::future::pending::<Option<(Result<Bytes, crate::errors::AppError>, i32)>>()
-                    .await
+                std::future::pending::<Option<(Result<Bytes, AppError>, i32)>>().await
             }
         });
-        let manager_clone = state.transfer_manager.clone();
+        let manager_clone = fixture.manager.clone();
         let job_id_clone = job.id.clone();
         let token_clone = token.clone();
         let provider_clone = provider.clone();
@@ -486,8 +489,8 @@ mod tests {
         )
         .await
         .expect("write_stream should start");
-        let _ = state
-            .transfer_manager
+        let _ = fixture
+            .manager
             .cancel_job(&job.id, Some("user1"), false)
             .await;
         assert!(token.is_cancelled());
@@ -498,21 +501,16 @@ mod tests {
         assert!(matches!(res, Err(AppError::Cancelled(_))));
         assert!(!mock.rename_called.load(Ordering::SeqCst));
         assert!(mock.write_calls.load(Ordering::SeqCst) >= 1);
-        mock.write_continue.notify_waiters();
     }
 
     #[tokio::test]
     async fn test_cancel_during_rename_is_too_late() {
-        let (state, mock) = setup_manager().await;
+        let (fixture, mock) = setup_manager().await;
         let provider: Arc<dyn FileSystem> = mock.clone();
         let target = VfsPath::new("local", "/race_rename.txt").unwrap();
-        let plan = TransferPlan {
-            execution_mode: crate::transfer::TransferExecutionMode::Inline,
-            staging: TransferStaging::LocalTemp,
-            commit: crate::domain::CommitSemantics::AtomicRename,
-        };
-        let job = state
-            .transfer_manager
+        let plan = plan();
+        let job = fixture
+            .manager
             .create_inline_upload_job_with_plan(
                 Some("user1".into()),
                 "race_rename.txt".into(),
@@ -522,19 +520,14 @@ mod tests {
                 plan.clone(),
             )
             .await;
-        let token = state
-            .transfer_manager
-            .cancel_token(&job.id)
-            .expect("token exists");
-        // Stream that completes immediately (one small chunk)
+        let token = fixture.manager.cancel_token(&job.id).expect("token exists");
         let byte_stream = futures::stream::once(async { Ok(Bytes::from(vec![1u8; 10])) });
-        let manager_clone = state.transfer_manager.clone();
+        let manager_clone = fixture.manager.clone();
         let job_id_clone = job.id.clone();
         let token_clone = token.clone();
         let provider_clone = provider.clone();
         let plan_clone = plan.clone();
         let target_clone = target.clone();
-        let mock_clone = mock.clone();
         let handle = tokio::spawn(async move {
             execute_inline_upload_stream(
                 &manager_clone,
@@ -553,48 +546,26 @@ mod tests {
             )
             .await
         });
-        // Wait for rename to start (deterministic)
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            mock_clone.rename_started.notified(),
+            mock.rename_started.notified(),
         )
         .await
         .expect("rename should start");
-        // Now cancel — should be too late (Finalizing)
-        let cancel_res = state
-            .transfer_manager
+        let cancel_res = fixture
+            .manager
             .cancel_job(&job.id, Some("user1"), false)
             .await;
-        assert!(
-            matches!(
-                cancel_res,
-                Err(crate::transfer::CancelTransferError::NotCancellable(_))
-            ),
-            "cancel should return NotCancellable after Finalizing, got {:?}",
-            cancel_res
-        );
-        // Allow rename to complete
-        mock_clone.rename_continue.notify_waiters();
-        mock_clone.write_continue.notify_waiters();
+        assert!(matches!(
+            cancel_res,
+            Err(crate::transfer::CancelTransferError::NotCancellable(_))
+        ));
+        mock.rename_continue.notify_waiters();
         let res = tokio::time::timeout(std::time::Duration::from_secs(3), handle)
             .await
             .expect("executor should complete")
             .unwrap();
-        assert!(
-            res.is_ok(),
-            "executor should succeed despite late cancel, got {:?}",
-            res
-        );
-        assert!(mock_clone.rename_called.load(Ordering::SeqCst));
-        // Final job should be Completed, not Cancelled
-        let jobs = state
-            .transfer_manager
-            .list_jobs(Some("user1"), false, false)
-            .await;
-        // Find job
-        let _final_job = jobs.iter().find(|j| j.id == job.id);
-        // Alternative: check via manager internal? Use list_jobs includes completed
-        // If not found in list, check directly via manager's job map via list
-        // For now assert rename happened and executor succeeded
+        assert!(res.is_ok());
+        assert!(mock.rename_called.load(Ordering::SeqCst));
     }
 }

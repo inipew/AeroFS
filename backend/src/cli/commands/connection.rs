@@ -2,7 +2,9 @@ use crate::cli::args::{ConnectionAction, ConnectionCommand};
 use crate::cli::context::CliContext;
 use crate::cli::error::CliError;
 use crate::domain::Actor;
-use crate::services::connection_service::{ConnectionService, UpdateConnectionRequest};
+use crate::services::connection_service::UpdateConnectionRequest;
+use crate::state::ConnectionState;
+use axum::extract::FromRef;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -14,14 +16,7 @@ struct ConnectionActionOutput {
 
 pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliError> {
     let state = ctx.state().await?;
-    let service = ConnectionService::new(
-        state.db.clone(),
-        state.config.clone(),
-        state.registry.clone(),
-        state.credentials.clone(),
-        state.metadata_cache.clone(),
-        state.transfer_manager.clone(),
-    );
+    let service = ConnectionState::from_ref(&state).service;
     let admin = Actor {
         id: "cli_admin".to_string(),
         username: "admin".to_string(),

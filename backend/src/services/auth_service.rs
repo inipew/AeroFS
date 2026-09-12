@@ -1,8 +1,8 @@
 use crate::auth::audit::record_audit_log;
 use crate::auth::password::verify_password;
-use crate::auth::session::{create_session, delete_session, UserInfo};
+use crate::auth::session::{create_session, delete_session, validate_session, UserInfo};
+use crate::db::DbPool;
 use crate::errors::{AppError, AuthError};
-use crate::state::AppState;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -10,11 +10,47 @@ use std::time::{Duration, Instant};
 static FAILED_ATTEMPTS: LazyLock<Mutex<HashMap<String, Vec<Instant>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub struct AuthService;
+#[derive(Clone)]
+pub struct AuthService {
+    db: DbPool,
+    trusted_proxies: Vec<String>,
+    cookie_secure: bool,
+    session_ttl_secs: u64,
+}
 
 impl AuthService {
+    pub fn new(
+        db: DbPool,
+        trusted_proxies: Vec<String>,
+        cookie_secure: bool,
+        session_ttl_secs: u64,
+    ) -> Self {
+        Self {
+            db,
+            trusted_proxies,
+            cookie_secure,
+            session_ttl_secs,
+        }
+    }
+
+    pub fn trusted_proxies(&self) -> &[String] {
+        &self.trusted_proxies
+    }
+
+    pub fn cookie_secure(&self) -> bool {
+        self.cookie_secure
+    }
+
+    pub fn session_ttl_secs(&self) -> u64 {
+        self.session_ttl_secs
+    }
+
+    pub async fn validate_session(&self, session_id: &str) -> Result<Option<UserInfo>, AppError> {
+        validate_session(&self.db, session_id).await
+    }
+
     pub async fn login(
-        state: &AppState,
+        &self,
         username: &str,
         password: &str,
         client_ip: &str,
@@ -27,7 +63,6 @@ impl AuthService {
         const MAX_FAILED_PER_USER: usize = 5;
         const MAX_FAILED_PER_IP: usize = 20;
 
-        // 1. Rate limiting check (Per-User: 5/60s, Per-IP: 20/60s)
         {
             if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
                 if let Some(ip_attempts) = map.get_mut(&ip_key) {
@@ -56,19 +91,18 @@ impl AuthService {
             "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
         )
         .bind(username)
-        .fetch_optional(&state.db)
+        .fetch_optional(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database query error: {}", e))?;
 
         let (user_id, valid_username, password_hash, is_admin) = match row {
             Some(r) => r,
             None => {
-                // Record failed attempt for IP
                 if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
                     map.entry(ip_key).or_default().push(now);
                 }
                 record_audit_log(
-                    &state.db,
+                    &self.db,
                     None,
                     "AUTH_LOGIN_FAILED",
                     None,
@@ -83,13 +117,12 @@ impl AuthService {
         };
 
         if !verify_password(password, &password_hash) {
-            // Record failed attempt for IP & User
             if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
                 map.entry(ip_key).or_default().push(now);
                 map.entry(user_key).or_default().push(now);
             }
             record_audit_log(
-                &state.db,
+                &self.db,
                 Some(&user_id),
                 "AUTH_LOGIN_FAILED",
                 None,
@@ -102,17 +135,15 @@ impl AuthService {
             return Err(AppError::Auth(AuthError::InvalidCredentials));
         }
 
-        // Clear failed attempts on successful login
         if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
             map.remove(&user_key);
             map.remove(&ip_key);
         }
 
-        let session_id =
-            create_session(&state.db, &user_id, state.config.security.session_ttl_secs).await?;
+        let session_id = create_session(&self.db, &user_id, self.session_ttl_secs).await?;
 
         record_audit_log(
-            &state.db,
+            &self.db,
             Some(&user_id),
             "AUTH_LOGIN_SUCCESS",
             None,
@@ -123,25 +154,25 @@ impl AuthService {
         )
         .await;
 
-        let user_info = UserInfo {
-            id: user_id,
-            username: valid_username,
-            is_admin: is_admin != 0,
-        };
-
-        Ok((user_info, session_id))
+        Ok((
+            UserInfo {
+                id: user_id,
+                username: valid_username,
+                is_admin: is_admin != 0,
+            },
+            session_id,
+        ))
     }
 
     pub async fn logout(
-        state: &AppState,
+        &self,
         session_id: &str,
         user_id: Option<&str>,
         client_ip: &str,
     ) -> Result<(), AppError> {
-        delete_session(&state.db, session_id).await?;
-
+        delete_session(&self.db, session_id).await?;
         record_audit_log(
-            &state.db,
+            &self.db,
             user_id,
             "AUTH_LOGOUT",
             None,
@@ -151,7 +182,6 @@ impl AuthService {
             Some("User logged out"),
         )
         .await;
-
         Ok(())
     }
 }
