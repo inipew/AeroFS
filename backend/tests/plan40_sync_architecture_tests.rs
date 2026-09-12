@@ -1,16 +1,20 @@
 use axum::{
     body::{to_bytes, Body},
+    extract::FromRef,
     http::{header, Request, StatusCode},
 };
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::create_router;
 use backend::db::init_db;
+use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::middleware::REQUEST_ID_HEADER;
-use backend::services::FileService;
-use backend::transfer::{ReplayResult, TransferType, WsEvent};
+use backend::services::{FileService, TransferService};
+use backend::state::RealtimeState;
+use backend::transfer::TransferType;
 use backend::AppState;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
@@ -28,7 +32,6 @@ async fn setup_test_app() -> (axum::Router, AppState, String, tempfile::TempDir)
     let state = AppState::new_with_db(config, db).await;
     let app = create_router(state.clone());
 
-    // Login as admin to get session cookie
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -51,11 +54,18 @@ async fn setup_test_app() -> (axum::Router, AppState, String, tempfile::TempDir)
     (app, state, cookie, temp)
 }
 
+fn admin_user() -> AuthenticatedUser {
+    AuthenticatedUser(UserInfo {
+        id: "admin-id".to_string(),
+        username: "admin".to_string(),
+        is_admin: true,
+    })
+}
+
 #[tokio::test]
 async fn test_request_id_middleware_propagation() {
     let (app, _state, _cookie, _temp) = setup_test_app().await;
 
-    // 1. Without X-Request-ID (should auto-generate UUID)
     let req1 = Request::builder()
         .uri("/api/v1/health/live")
         .method("GET")
@@ -68,7 +78,6 @@ async fn test_request_id_middleware_propagation() {
     assert!(req_id1.is_some(), "Response must include x-request-id");
     assert!(!req_id1.unwrap().to_str().unwrap().is_empty());
 
-    // 2. With client-supplied X-Request-ID (should echo back)
     let custom_id = "custom-trace-id-abc123xyz";
     let req2 = Request::builder()
         .uri("/api/v1/health/live")
@@ -91,13 +100,8 @@ async fn test_request_id_middleware_propagation() {
 #[tokio::test]
 async fn test_part_file_filtered_from_directory_listing() {
     let (_app, state, _cookie, _temp) = setup_test_app().await;
-    let admin = AuthenticatedUser(UserInfo {
-        id: "admin-id".to_string(),
-        username: "admin".to_string(),
-        is_admin: true,
-    });
+    let admin = admin_user();
 
-    // 1. Create a normal file and a .aerofs-part- staging file
     FileService::create_or_write_file(
         &state,
         &admin,
@@ -131,7 +135,6 @@ async fn test_part_file_filtered_from_directory_listing() {
     .await
     .unwrap();
 
-    // 2. List files with show_hidden = true
     let listing = FileService::list_directory(
         &state,
         &admin,
@@ -154,44 +157,44 @@ async fn test_part_file_filtered_from_directory_listing() {
 
 #[tokio::test]
 async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
-    let (_app, state, _cookie, _temp) = setup_test_app().await;
+    let temp = tempdir().unwrap();
+    let db_path = temp.path().join("replay_retention.db");
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db = init_db(&database_url).await.unwrap();
+    let journal = Arc::new(EventJournal::init(db.clone()).await.unwrap());
 
-    // 1. Broadcast 550 events to SQLite journal
     for i in 0..550 {
-        let _ = state
-            .event_journal
+        journal
             .append(
-                WsEvent::file_change("local", format!("/file_{}.txt", i), "create"),
+                DomainEvent::file_change("local", format!("/file_{i}.txt"), "create"),
                 None,
             )
-            .await;
+            .await
+            .unwrap();
     }
 
-    // Simulate retention expiration by purging oldest 50 events from SQLite
     sqlx::query("DELETE FROM event_journal WHERE sequence <= 50")
-        .execute(&state.db)
+        .execute(&db)
         .await
         .unwrap();
 
-    // 2. Query sequence 1 (which has expired from retention)
-    let replay_result = state.transfer_manager.get_events_since(1).await;
+    let replay_result = journal.get_since(Some(journal.epoch()), 1, 1000).await.unwrap();
     match replay_result {
-        ReplayResult::Expired { latest_sequence } => {
+        ReplayOutcome::Expired { latest_sequence } => {
             assert!(latest_sequence >= 550);
         }
-        other => panic!("Expected Expired result for sequence 1, got {:?}", other),
+        other => panic!("Expected Expired result for sequence 1, got {other:?}"),
     }
 
-    // 3. Query a recent sequence (e.g. 540)
-    let recent_result = state.transfer_manager.get_events_since(540).await;
+    let recent_result = journal
+        .get_since(Some(journal.epoch()), 540, 1000)
+        .await
+        .unwrap();
     match recent_result {
-        ReplayResult::Events(events) => {
-            assert!(
-                !events.is_empty(),
-                "Should replay recent events within buffer"
-            );
+        ReplayOutcome::Events(events) => {
+            assert!(!events.is_empty(), "Should replay recent retained events");
         }
-        other => panic!("Expected Events result for sequence 540, got {:?}", other),
+        other => panic!("Expected Events result for sequence 540, got {other:?}"),
     }
 }
 
@@ -208,7 +211,6 @@ async fn test_transfer_idempotency_key_deduplication() {
         "destination_path": "/file_0_idempotent.txt",
     });
 
-    // Submit with idempotency key
     let response1 = app
         .clone()
         .oneshot(
@@ -229,7 +231,6 @@ async fn test_transfer_idempotency_key_deduplication() {
             .unwrap();
     let job_id1 = body1["job_id"].as_str().unwrap().to_string();
 
-    // Submit again with same idempotency key
     let response2 = app
         .clone()
         .oneshot(
@@ -259,29 +260,27 @@ async fn test_transfer_idempotency_key_deduplication() {
 #[tokio::test]
 async fn test_transfer_event_ordering_and_causality() {
     let (_app, state, _cookie, temp) = setup_test_app().await;
+    let admin = admin_user();
 
-    // Create source file
     let src_file = temp.path().join("storage").join("order_src.txt");
     std::fs::write(&src_file, b"ordering test").unwrap();
 
-    let mut rx = state.transfer_manager.subscribe();
+    let realtime = RealtimeState::from_ref(&state);
+    let mut rx = realtime.service.subscribe();
 
-    // Submit transfer
-    state
-        .transfer_manager
-        .submit_job(
-            None,
-            "order_test".to_string(),
-            TransferType::Copy,
-            "local".to_string(),
-            "/order_src.txt".to_string(),
-            "local".to_string(),
-            "/order_dst.txt".to_string(),
-        )
-        .await
-        .unwrap();
+    TransferService::create_transfer(
+        &state,
+        &admin,
+        "order_test".to_string(),
+        TransferType::Copy,
+        "local".to_string(),
+        "/order_src.txt".to_string(),
+        "local".to_string(),
+        "/order_dst.txt".to_string(),
+    )
+    .await
+    .unwrap();
 
-    // Collect events until TransferCompleted
     let mut file_change_seq = None;
     let mut completed_seq = None;
 
@@ -290,12 +289,12 @@ async fn test_transfer_event_ordering_and_causality() {
             tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
         {
             match env.event {
-                WsEvent::FileChange { path, action, .. }
+                DomainEvent::FileChange { path, action, .. }
                     if path == "/order_dst.txt" && action == "create" =>
                 {
                     file_change_seq = Some(env.sequence);
                 }
-                WsEvent::TransferCompleted(job)
+                DomainEvent::TransferCompleted(job)
                     if job.get("destination_path").and_then(|v| v.as_str())
                         == Some("/order_dst.txt") =>
                 {
@@ -317,6 +316,6 @@ async fn test_transfer_event_ordering_and_causality() {
     );
     assert!(
         file_change_seq.unwrap() < completed_seq.unwrap(),
-        "FileChange must have a lower sequence number (emitted earlier) than TransferCompleted"
+        "FileChange must have a lower sequence number than TransferCompleted"
     );
 }

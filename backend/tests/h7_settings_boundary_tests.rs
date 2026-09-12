@@ -48,8 +48,7 @@ fn app_state_stores_precomposed_settings_capability() {
 
     assert!(src.contains("pub struct SettingsState"));
     assert!(compact.contains("pub(crate)settings:SettingsState"));
-    assert!(compact.contains("FromRef<AppState>forSettingsState"));
-    assert!(compact.contains("state.settings.clone()"));
+    assert!(compact.contains("impl_from_ref!(SettingsState,settings)"));
 }
 
 #[test]
@@ -57,7 +56,8 @@ fn bootstrap_owns_settings_composition() {
     let src = source("src/bootstrap.rs");
     let compact = compact(&src);
 
-    assert!(compact.contains("SettingsState::new(SettingsService::new("));
+    assert!(compact.contains("letsettings_service=SettingsService::new("));
+    assert!(compact.contains("letsettings=SettingsState::new(settings_service.clone())"));
     assert!(compact.contains("settings,"));
 }
 

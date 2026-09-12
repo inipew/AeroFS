@@ -1,16 +1,14 @@
 use crate::api::extractors::{Json, Path, Query};
 use crate::auth::AuthenticatedUser;
-use crate::domain::VfsPath;
 use crate::errors::{AppError, ErrorResponse};
-use crate::services::share_service::{CreateShareRequest, ShareItem, ShareService};
-use crate::state::AppState;
+use crate::services::share_service::{CreateShareRequest, ShareItem};
+use crate::state::ShareState;
 use axum::{
     extract::State,
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
 use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
@@ -33,18 +31,14 @@ pub struct ShareActionResponse {
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn list_shares(
-    State(state): State<AppState>,
+    State(state): State<ShareState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let shares = ShareService::list_shares(&state, &user).await?;
-    Ok(Json(shares))
+    Ok(Json(state.service.list_shares(&user).await?))
 }
 
 /// Create a new shared link for a file or directory
@@ -58,28 +52,22 @@ pub async fn list_shares(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn create_share(
-    State(state): State<AppState>,
+    State(state): State<ShareState>,
     user: AuthenticatedUser,
     Json(payload): Json<CreateShareRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let share = ShareService::create_share(&state, &user, payload).await?;
-    Ok((StatusCode::CREATED, Json(share)))
+    Ok((StatusCode::CREATED, Json(state.service.create_share(&user, payload).await?)))
 }
 
 /// Delete / revoke a shared link
 #[utoipa::path(
     delete,
     path = "/api/v1/shares/{id}",
-    params(
-        ("id" = String, Path, description = "Share ID"),
-    ),
+    params(("id" = String, Path, description = "Share ID")),
     responses(
         (status = 200, description = "Share revoked", body = ShareActionResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
@@ -87,19 +75,15 @@ pub async fn create_share(
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "shares"
 )]
 pub async fn delete_share(
-    State(state): State<AppState>,
+    State(state): State<ShareState>,
     user: AuthenticatedUser,
     Path(share_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    ShareService::delete_share(&state, &user, &share_id).await?;
-
+    state.service.delete_share(&user, &share_id).await?;
     Ok(Json(ShareActionResponse {
         success: true,
         message: "Share link revoked".to_string(),
@@ -124,33 +108,17 @@ pub async fn delete_share(
     tag = "shares"
 )]
 pub async fn public_get_share(
-    State(state): State<AppState>,
+    State(state): State<ShareState>,
     Path(token): Path<String>,
     Query(query): Query<PublicShareQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (connection_id, path) =
-        ShareService::verify_and_get_public_share(&state, &token, query.password.as_deref())
-            .await?;
-
-    let provider = state
-        .registry
-        .get(&connection_id)
-        .await
-        .ok_or_else(|| AppError::NotFound("Storage connection not available".into()))?;
-
-    let vfs_path = VfsPath::new(&connection_id, &path)?;
-    let metadata = provider.stat(&vfs_path).await?;
-    let mut stream = provider.read_stream(&vfs_path).await?;
-    let mut data = Vec::new();
-    stream
-        .read_to_end(&mut data)
-        .await
-        .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
-
-    let mime_type = mime_guess::from_path(&metadata.name)
+    let content = state
+        .service
+        .read_public_share(&token, query.password.as_deref())
+        .await?;
+    let mime_type = mime_guess::from_path(&content.name)
         .first_or_octet_stream()
         .to_string();
-
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -159,9 +127,8 @@ pub async fn public_get_share(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("inline; filename=\"{}\"", metadata.name))
+        HeaderValue::from_str(&format!("inline; filename=\"{}\"", content.name))
             .unwrap_or_else(|_| HeaderValue::from_static("inline")),
     );
-
-    Ok((headers, data))
+    Ok((headers, content.data))
 }

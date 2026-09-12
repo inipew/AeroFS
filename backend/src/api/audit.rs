@@ -2,8 +2,7 @@ use crate::api::extractors::Query;
 use crate::auth::audit::AuditLogEntry;
 use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, ErrorResponse};
-use crate::services::audit_service::AuditService;
-use crate::state::AppState;
+use crate::state::AuditState;
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -18,29 +17,22 @@ pub struct AuditLogQuery {
 #[utoipa::path(
     get,
     path = "/api/v1/audit-logs",
-    params(
-        AuditLogQuery
-    ),
+    params(AuditLogQuery),
     responses(
         (status = 200, description = "List of audit logs", body = Vec<AuditLogEntry>),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "audit"
 )]
 pub async fn list_audit_logs(
-    State(state): State<AppState>,
+    State(state): State<AuditState>,
     user: AuthenticatedUser,
     Query(query): Query<AuditLogQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500) as usize;
     let offset = query.offset.unwrap_or(0).max(0) as usize;
-
-    let logs = AuditService::list_logs(&state.db, &user, limit, offset).await?;
-    Ok(Json(logs))
+    Ok(Json(state.service.list_logs(&user, limit, offset).await?))
 }

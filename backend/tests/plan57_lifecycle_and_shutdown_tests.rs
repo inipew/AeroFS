@@ -1,9 +1,10 @@
+use axum::extract::FromRef;
 use backend::bootstrap::build_application;
 use backend::cli::daemon_lock::DaemonLock;
 use backend::config::AppConfig;
 use backend::create_router;
 use backend::db::init_db;
-use backend::state::RuntimeOwner;
+use backend::state::{RuntimeOwner, TransferState};
 use backend::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -220,34 +221,45 @@ async fn test_shutdown_guard_rejects_mutations_with_503() {
 
 #[tokio::test]
 async fn test_transfer_submit_job_rejected_during_shutdown() {
+    use backend::application::transfers::CreateTransferCommand;
+    use backend::domain::{Actor, ConnectionId};
     use backend::state::RuntimePhase;
     use backend::transfer::TransferType;
 
     let (state, runtime, _temp) = setup_test_context().await;
     runtime.set_phase(RuntimePhase::Running);
+    let transfers = TransferState::from_ref(&state);
 
     runtime.shutdown_token.cancel();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let res = state
-        .transfer_manager
-        .submit_job(
-            None,
-            "test_shutdown_job".to_string(),
-            TransferType::Copy,
-            "local".to_string(),
-            "/src.txt".to_string(),
-            "local".to_string(),
-            "/dst.txt".to_string(),
+    let actor = Actor {
+        id: "shutdown-test-admin".to_string(),
+        username: "admin".to_string(),
+        is_admin: true,
+    };
+    let res = transfers
+        .use_cases
+        .create_transfer
+        .execute(
+            &actor,
+            CreateTransferCommand {
+                name: "test_shutdown_job".to_string(),
+                transfer_type: TransferType::Copy,
+                source_connection: ConnectionId::local(),
+                source_path: "/src.txt".to_string(),
+                destination_connection: ConnectionId::local(),
+                destination_path: "/dst.txt".to_string(),
+            },
         )
         .await;
 
     assert!(
         res.is_err(),
-        "submit_job must be rejected when server is shutting down"
+        "transfer submission must be rejected when server is shutting down"
     );
     assert!(
-        res.unwrap_err().contains("shutting down"),
+        res.unwrap_err().to_string().contains("shutting down"),
         "Error message should explain server is shutting down"
     );
 }

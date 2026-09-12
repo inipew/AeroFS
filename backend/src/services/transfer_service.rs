@@ -1,17 +1,21 @@
-use crate::auth::audit::record_audit_log;
-use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
+use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
 use crate::state::AppState;
-use crate::transfer::{
-    CancelTransferError, RetryTransferError, TransferJob, TransferJobResponse, TransferType,
-};
+use crate::transfer::{TransferJob, TransferJobResponse, TransferType};
 use std::collections::HashSet;
 
 pub struct TransferService;
 
 impl TransferService {
-    /// Queue a new transfer job with full source (Read/Download, +Delete if Move) and destination (Write, Create) authorization
+    fn actor(user: &AuthenticatedUser) -> Actor {
+        Actor {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn create_transfer(
         state: &AppState,
@@ -23,313 +27,96 @@ impl TransferService {
         destination_connection_id: String,
         destination_path: String,
     ) -> Result<String, AppError> {
-        // 1. Authorize source connection: Read / Download
-        check_permission(
-            &state.db,
-            user,
-            &source_connection_id,
-            PermissionAction::Read,
-        )
-        .await?;
-
-        // If Move transfer, user must also have Delete permission on source connection
-        if transfer_type == TransferType::Move {
-            check_permission(
-                &state.db,
-                user,
-                &source_connection_id,
-                PermissionAction::Delete,
-            )
-            .await?;
-        }
-
-        // 2. Authorize destination connection: Write / Create
-        check_permission(
-            &state.db,
-            user,
-            &destination_connection_id,
-            PermissionAction::Write,
-        )
-        .await?;
-        check_permission(
-            &state.db,
-            user,
-            &destination_connection_id,
-            PermissionAction::Create,
-        )
-        .await?;
-
-        let job_id = state
-            .transfer_manager
-            .submit_job(
-                Some(user.id.clone()),
-                name,
-                transfer_type,
-                source_connection_id.clone(),
-                source_path.clone(),
-                destination_connection_id.clone(),
-                destination_path.clone(),
+        let source_connection = ConnectionId::new(source_connection_id)
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let destination_connection = ConnectionId::new(destination_connection_id)
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+        state
+            .transfers
+            .use_cases
+            .create_transfer
+            .execute(
+                &Self::actor(user),
+                crate::application::transfers::CreateTransferCommand {
+                    name,
+                    transfer_type,
+                    source_connection,
+                    source_path,
+                    destination_connection,
+                    destination_path,
+                },
             )
             .await
-            .map_err(AppError::BadRequest)?;
-
-        record_audit_log(
-            &state.db,
-            Some(&user.id),
-            "TRANSFER_CREATE",
-            Some(&source_connection_id),
-            Some(&source_path),
-            "SUCCESS",
-            None,
-            Some(&format!(
-                "Job ID: {}, To: {}:{}",
-                job_id, destination_connection_id, destination_path
-            )),
-        )
-        .await;
-
-        Ok(job_id)
     }
 
-    /// Checks if a user has visibility authorization to view a specific transfer job
     pub fn authorize_transfer_visibility(
         user: &AuthenticatedUser,
         job: &TransferJob,
         allowed_connections: &HashSet<String>,
     ) -> bool {
-        // 1. Admin always has full visibility
-        if user.is_admin {
-            return true;
-        }
-
-        // 2. Job Owner always has visibility to their own job
-        if job.user_id.as_deref() == Some(&user.id) {
-            return true;
-        }
-
-        // 3. For other jobs, user must have access to both source and destination connections
-        allowed_connections.contains(&job.source_connection_id)
-            && allowed_connections.contains(&job.destination_connection_id)
+        user.is_admin
+            || job.user_id.as_deref() == Some(&user.id)
+            || (allowed_connections.contains(&job.source_connection_id)
+                && allowed_connections.contains(&job.destination_connection_id))
     }
 
-    /// List active and undismissed transfer jobs (scoped by user ownership and connection permissions)
     pub async fn list_transfers(
         state: &AppState,
         user: &AuthenticatedUser,
     ) -> Result<Vec<TransferJobResponse>, AppError> {
-        let mut jobs = state
-            .transfer_manager
-            .list_jobs(Some(&user.id), user.is_admin, false)
-            .await;
-
-        if !user.is_admin {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT connection_id FROM permissions WHERE user_id = ? AND (can_read = 1 OR can_write = 1)",
-            )
-            .bind(&user.id)
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default();
-
-            let mut allowed: HashSet<String> = rows.into_iter().map(|r| r.0).collect();
-            allowed.insert("local".to_string());
-
-            jobs.retain(|j| Self::authorize_transfer_visibility(user, j, &allowed));
-        }
-
-        let responses = jobs.into_iter().map(|j| j.to_response()).collect();
-        Ok(responses)
+        state.transfers.use_cases.list(&Self::actor(user)).await
     }
 
-    /// Cancel an active transfer job (enforcing user ownership)
     pub async fn cancel_transfer(
         state: &AppState,
         user: &AuthenticatedUser,
         job_id: &str,
     ) -> Result<bool, AppError> {
-        match state
-            .transfer_manager
-            .cancel_job(job_id, Some(&user.id), user.is_admin)
-            .await
-        {
-            Ok(_) => {
-                record_audit_log(
-                    &state.db,
-                    Some(&user.id),
-                    "TRANSFER_CANCEL",
-                    None,
-                    None,
-                    "SUCCESS",
-                    None,
-                    Some(&format!("Cancelled transfer job {}", job_id)),
-                )
-                .await;
-                Ok(true)
-            }
-            Err(CancelTransferError::NotFound(id)) => Err(AppError::NotFound(format!(
-                "Transfer job '{}' not found",
-                id
-            ))),
-            Err(CancelTransferError::Unauthorized) => Err(AppError::Forbidden(
-                "Permission denied: cannot cancel another user's transfer".into(),
-            )),
-            Err(CancelTransferError::NotCancellable(id)) => Err(AppError::Conflict(format!(
-                "Transfer job '{}' cannot be cancelled in its current state",
-                id
-            ))),
-            Err(CancelTransferError::Internal(e)) => Err(AppError::Internal(anyhow::anyhow!(e))),
-        }
+        state
+            .transfers
+            .use_cases
+            .cancel(&Self::actor(user), job_id)
+            .await?;
+        Ok(true)
     }
 
-    /// Retry or resume an interrupted or failed transfer job
     pub async fn retry_transfer(
         state: &AppState,
         user: &AuthenticatedUser,
         job_id: &str,
     ) -> Result<bool, AppError> {
-        // 1. Fetch job to inspect and re-authorize
-        let job = state
-            .transfer_manager
-            .get_job(job_id)
-            .await
-            .ok_or_else(|| AppError::NotFound(format!("Transfer job '{}' not found", job_id)))?;
-
-        // 2. Ownership verification for non-admin and dismissed guard
-        if job.dismissed_at.is_some() {
-            return Err(AppError::BadRequest(format!(
-                "Transfer job '{}' has been dismissed and cannot be retried",
-                job_id
-            )));
-        }
-
-        if !user.is_admin {
-            match (&job.user_id, Some(&user.id)) {
-                (Some(owner), Some(uid)) if owner == uid => {}
-                _ => {
-                    return Err(AppError::Forbidden(
-                        "Permission denied: cannot retry another user's transfer".into(),
-                    ))
-                }
-            }
-        }
-
-        // 3. Re-verify permissions for source and destination connections
-        if !user.is_admin {
-            check_permission(
-                &state.db,
-                user,
-                &job.source_connection_id,
-                PermissionAction::Read,
-            )
+        state
+            .transfers
+            .use_cases
+            .retry(&Self::actor(user), job_id)
             .await?;
-
-            if job.transfer_type == TransferType::Move {
-                check_permission(
-                    &state.db,
-                    user,
-                    &job.source_connection_id,
-                    PermissionAction::Delete,
-                )
-                .await?;
-            }
-
-            check_permission(
-                &state.db,
-                user,
-                &job.destination_connection_id,
-                PermissionAction::Write,
-            )
-            .await?;
-            check_permission(
-                &state.db,
-                user,
-                &job.destination_connection_id,
-                PermissionAction::Create,
-            )
-            .await?;
-        }
-
-        // 4. Verify that both connections are enabled
-        verify_connection_enabled(&state.db, &job.source_connection_id).await?;
-        verify_connection_enabled(&state.db, &job.destination_connection_id).await?;
-
-        // 5. Delegate to transfer engine
-        match state
-            .transfer_manager
-            .retry_job(job_id, Some(&user.id), user.is_admin)
-            .await
-        {
-            Ok(_) => {
-                record_audit_log(
-                    &state.db,
-                    Some(&user.id),
-                    "TRANSFER_RETRY",
-                    None,
-                    None,
-                    "SUCCESS",
-                    None,
-                    Some(&format!("Retried transfer job {}", job_id)),
-                )
-                .await;
-                Ok(true)
-            }
-            Err(RetryTransferError::NotFound(id)) => Err(AppError::NotFound(format!(
-                "Transfer job '{}' not found",
-                id
-            ))),
-            Err(RetryTransferError::Unauthorized) => Err(AppError::Forbidden(
-                "Permission denied: cannot retry another user's transfer".into(),
-            )),
-            Err(RetryTransferError::InvalidStatus(id, msg)) => Err(AppError::BadRequest(format!(
-                "Cannot retry transfer '{}': {}",
-                id, msg
-            ))),
-            Err(RetryTransferError::SourceUnavailable(msg)) => Err(AppError::BadRequest(msg)),
-            Err(RetryTransferError::ProviderUnavailable(msg)) => Err(AppError::BadRequest(msg)),
-            Err(RetryTransferError::Dismissed(id)) => Err(AppError::BadRequest(format!(
-                "Cannot retry transfer '{}': transfer has been dismissed",
-                id
-            ))),
-            Err(RetryTransferError::Internal(e)) => Err(AppError::Internal(anyhow::anyhow!(e))),
-        }
+        Ok(true)
     }
 
-    /// Dismiss a single transfer job from history (persistent)
     pub async fn dismiss_transfer(
         state: &AppState,
         user: &AuthenticatedUser,
         job_id: &str,
     ) -> Result<bool, AppError> {
-        match state
-            .transfer_manager
-            .dismiss_job(job_id, Some(&user.id), user.is_admin)
-            .await
-        {
-            Ok(true) => Ok(true),
-            Ok(false) => Err(AppError::NotFound(format!(
-                "Transfer job '{}' not found",
-                job_id
-            ))),
-            Err(e) => Err(AppError::Forbidden(e)),
-        }
+        state
+            .transfers
+            .use_cases
+            .dismiss(&Self::actor(user), job_id)
+            .await?;
+        Ok(true)
     }
 
-    /// Dismiss all finished transfer jobs for the authenticated user (persistent Clear)
     pub async fn clear_finished_transfers(
         state: &AppState,
         user: &AuthenticatedUser,
     ) -> Result<usize, AppError> {
-        match state
-            .transfer_manager
-            .clear_finished_jobs(Some(&user.id), user.is_admin)
+        state
+            .transfers
+            .use_cases
+            .clear_finished(&Self::actor(user))
             .await
-        {
-            Ok(cleared) => Ok(cleared),
-            Err(e) => Err(AppError::Internal(anyhow::anyhow!(e))),
-        }
     }
 
-    /// Retrieve a specific transfer job by ID directly from DB (for CLI / admin inspection)
     pub async fn get_transfer(
         pool: &crate::db::DbPool,
         job_id: &str,
@@ -351,63 +138,9 @@ impl TransferService {
             None => return Ok(None),
         };
 
-        use chrono::DateTime;
-        use sqlx::Row;
-
-        let created_str: String = r.get("created_at");
-        let updated_str: String = r.get("updated_at");
-        let dismissed_str: Option<String> = r.get("dismissed_at");
-
-        let created_at = DateTime::parse_from_rfc3339(&created_str)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::Utc::now());
-        let updated_at = DateTime::parse_from_rfc3339(&updated_str)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::Utc::now());
-        let dismissed_at = dismissed_str.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .ok()
-        });
-
-        let job = TransferJob {
-            id: r.get("id"),
-            user_id: r.get("user_id"),
-            name: r.get("name"),
-            transfer_type: crate::transfer::TransferType::from_str(
-                &r.get::<String, _>("transfer_type"),
-            ),
-            source_connection_id: r.get("source_connection_id"),
-            source_path: r.get("source_path"),
-            destination_connection_id: r.get("destination_connection_id"),
-            destination_path: r.get("destination_path"),
-            status: crate::transfer::TransferStatus::from_str(&r.get::<String, _>("status")),
-            phase: crate::transfer::TransferPhase::from_str(&r.get::<String, _>("phase")),
-            execution_mode: r
-                .try_get::<String, _>("execution_mode")
-                .ok()
-                .map(|s| crate::transfer::TransferExecutionMode::from_str(&s))
-                .unwrap_or_default(),
-            staging: r
-                .try_get::<String, _>("staging")
-                .ok()
-                .map(|s| crate::transfer::TransferStaging::from_str(&s))
-                .unwrap_or_default(),
-            transferred_bytes: r.get::<i64, _>("transferred_bytes") as u64,
-            total_bytes: r.get::<i64, _>("total_bytes") as u64,
-            speed_bytes_per_sec: r.get::<i64, _>("speed_bytes_per_sec") as u64,
-            eta_seconds: r.get::<Option<i64>, _>("eta_seconds").map(|v| v as u64),
-            checksum: r.get("checksum"),
-            error_message: r.get("error_message"),
-            dismissed_at,
-            created_at,
-            updated_at,
-        };
-
-        Ok(Some(job))
+        Ok(Some(transfer_job_from_row(r)))
     }
 
-    /// List transfers with flexible filtering options for CLI administration
     pub async fn list_transfers_filtered(
         pool: &crate::db::DbPool,
         status: Option<&str>,
@@ -415,9 +148,6 @@ impl TransferService {
         user: Option<&str>,
         connection: Option<&str>,
     ) -> Result<Vec<TransferJob>, AppError> {
-        use chrono::DateTime;
-        use sqlx::Row;
-
         let mut query_str = "SELECT id, user_id, name, transfer_type, source_connection_id, source_path,
                                     destination_connection_id, destination_path, status, phase,
                                     transferred_bytes, total_bytes, speed_bytes_per_sec, eta_seconds,
@@ -438,85 +168,27 @@ impl TransferService {
         if let Some(u) = user {
             query_str.push_str(&format!(" AND (user_id = '{0}' OR user_id IN (SELECT id FROM users WHERE username = '{0}'))", u.replace('\'', "''")));
         }
-
         if let Some(conn) = connection {
             query_str.push_str(&format!(
                 " AND (source_connection_id = '{0}' OR destination_connection_id = '{0}')",
                 conn.replace('\'', "''")
             ));
         }
-
         query_str.push_str(&format!(" ORDER BY created_at DESC LIMIT {}", limit));
 
         let rows = sqlx::query(&query_str)
             .fetch_all(pool)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB query error: {}", e)))?;
-
-        let mut jobs = Vec::new();
-        for r in rows {
-            let created_str: String = r.get("created_at");
-            let updated_str: String = r.get("updated_at");
-            let dismissed_str: Option<String> = r.get("dismissed_at");
-
-            let created_at = DateTime::parse_from_rfc3339(&created_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-            let dismissed_at = dismissed_str.and_then(|s| {
-                DateTime::parse_from_rfc3339(&s)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .ok()
-            });
-
-            jobs.push(TransferJob {
-                id: r.get("id"),
-                user_id: r.get("user_id"),
-                name: r.get("name"),
-                transfer_type: crate::transfer::TransferType::from_str(
-                    &r.get::<String, _>("transfer_type"),
-                ),
-                source_connection_id: r.get("source_connection_id"),
-                source_path: r.get("source_path"),
-                destination_connection_id: r.get("destination_connection_id"),
-                destination_path: r.get("destination_path"),
-                status: crate::transfer::TransferStatus::from_str(&r.get::<String, _>("status")),
-                phase: crate::transfer::TransferPhase::from_str(&r.get::<String, _>("phase")),
-                execution_mode: r
-                    .try_get::<String, _>("execution_mode")
-                    .ok()
-                    .map(|s| crate::transfer::TransferExecutionMode::from_str(&s))
-                    .unwrap_or_default(),
-                staging: r
-                    .try_get::<String, _>("staging")
-                    .ok()
-                    .map(|s| crate::transfer::TransferStaging::from_str(&s))
-                    .unwrap_or_default(),
-                transferred_bytes: r.get::<i64, _>("transferred_bytes") as u64,
-                total_bytes: r.get::<i64, _>("total_bytes") as u64,
-                speed_bytes_per_sec: r.get::<i64, _>("speed_bytes_per_sec") as u64,
-                eta_seconds: r.get::<Option<i64>, _>("eta_seconds").map(|v| v as u64),
-                checksum: r.get("checksum"),
-                error_message: r.get("error_message"),
-                dismissed_at,
-                created_at,
-                updated_at,
-            });
-        }
-
-        Ok(jobs)
+        Ok(rows.into_iter().map(transfer_job_from_row).collect())
     }
 
-    /// Purge finished/dismissed transfers older than specified days with dry-run support
     pub async fn purge_transfers_older_than(
         pool: &crate::db::DbPool,
         days: u32,
         dry_run: bool,
     ) -> Result<usize, AppError> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
-
         if dry_run {
             let count: (i64,) = sqlx::query_as(
                 "SELECT COUNT(*) FROM transfer_jobs
@@ -527,7 +199,6 @@ impl TransferService {
             .fetch_one(pool)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB query error: {}", e)))?;
-
             Ok(count.0 as usize)
         } else {
             let res = sqlx::query(
@@ -539,12 +210,10 @@ impl TransferService {
             .execute(pool)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB query error: {}", e)))?;
-
             Ok(res.rows_affected() as usize)
         }
     }
 
-    /// Clean up stuck jobs (e.g. status='running' leftover from abrupt server termination)
     pub async fn repair_stuck_transfers(
         pool: &crate::db::DbPool,
         dry_run: bool,
@@ -556,7 +225,6 @@ impl TransferService {
             .fetch_one(pool)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB query error: {}", e)))?;
-
             Ok(count.0 as usize)
         } else {
             let now = chrono::Utc::now().to_rfc3339();
@@ -568,39 +236,59 @@ impl TransferService {
             .execute(pool)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB query error: {}", e)))?;
-
             Ok(res.rows_affected() as usize)
         }
     }
 }
 
-async fn verify_connection_enabled(
-    db: &crate::db::DbPool,
-    connection_id: &str,
-) -> Result<(), AppError> {
-    if connection_id == "local" {
-        return Ok(());
-    }
-    let conn_row: Option<(i64,)> = sqlx::query_as("SELECT enabled FROM connections WHERE id = ?")
-        .bind(connection_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| {
-            AppError::Internal(anyhow::anyhow!(
-                "Database error checking connection status: {}",
-                e
-            ))
-        })?;
+fn transfer_job_from_row(r: sqlx::sqlite::SqliteRow) -> TransferJob {
+    use chrono::DateTime;
+    use sqlx::Row;
 
-    match conn_row {
-        Some((enabled,)) if enabled != 0 => Ok(()),
-        Some(_) => Err(AppError::BadRequest(format!(
-            "Storage connection '{}' is disabled",
-            connection_id
-        ))),
-        None => Err(AppError::NotFound(format!(
-            "Storage connection '{}' not found",
-            connection_id
-        ))),
+    let created_str: String = r.get("created_at");
+    let updated_str: String = r.get("updated_at");
+    let dismissed_str: Option<String> = r.get("dismissed_at");
+    let created_at = DateTime::parse_from_rfc3339(&created_str)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    let dismissed_at = dismissed_str.and_then(|s| {
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .ok()
+    });
+
+    TransferJob {
+        id: r.get("id"),
+        user_id: r.get("user_id"),
+        name: r.get("name"),
+        transfer_type: crate::transfer::TransferType::from_str(&r.get::<String, _>("transfer_type")),
+        source_connection_id: r.get("source_connection_id"),
+        source_path: r.get("source_path"),
+        destination_connection_id: r.get("destination_connection_id"),
+        destination_path: r.get("destination_path"),
+        status: crate::transfer::TransferStatus::from_str(&r.get::<String, _>("status")),
+        phase: crate::transfer::TransferPhase::from_str(&r.get::<String, _>("phase")),
+        execution_mode: r
+            .try_get::<String, _>("execution_mode")
+            .ok()
+            .map(|s| crate::transfer::TransferExecutionMode::from_str(&s))
+            .unwrap_or_default(),
+        staging: r
+            .try_get::<String, _>("staging")
+            .ok()
+            .map(|s| crate::transfer::TransferStaging::from_str(&s))
+            .unwrap_or_default(),
+        transferred_bytes: r.get::<i64, _>("transferred_bytes") as u64,
+        total_bytes: r.get::<i64, _>("total_bytes") as u64,
+        speed_bytes_per_sec: r.get::<i64, _>("speed_bytes_per_sec") as u64,
+        eta_seconds: r.get::<Option<i64>, _>("eta_seconds").map(|v| v as u64),
+        checksum: r.get("checksum"),
+        error_message: r.get("error_message"),
+        dismissed_at,
+        created_at,
+        updated_at,
     }
 }

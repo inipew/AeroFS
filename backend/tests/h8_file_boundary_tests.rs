@@ -85,8 +85,7 @@ fn bootstrap_composes_file_api_boundary() {
     assert!(bootstrap.contains("FileApiState::new("));
     assert!(bootstrap.contains("FileApiService::new("));
     assert!(state.contains("pubstructFileApiState"));
-    assert!(state.contains("FromRef<AppState>forFileApiState"));
-    assert!(state.contains("state.file_api.clone()"));
+    assert!(state.contains("impl_from_ref!(FileApiState,file_api)"));
 }
 
 #[test]

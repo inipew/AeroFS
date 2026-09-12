@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::db::DbPool;
-use crate::domain::{Actor, ConnectionId, VfsPath};
+use crate::domain::operation::OperationIntentType;
+use crate::domain::{Actor, ConnectionId, FileMetadata, VfsPath};
 use crate::errors::AppError;
 use crate::filesystem::safepath::SafePath;
 use crate::ports::{
@@ -8,8 +9,9 @@ use crate::ports::{
     effects::{FileAccessEffects, FileMutationEffects},
     filesystem::FileSystemResolver,
 };
-use crate::services::SettingsService;
+use crate::services::{MetadataCache, SettingsService};
 use std::{path::PathBuf, sync::Arc};
+use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone)]
 pub struct RecursiveChmodResult {
@@ -38,9 +40,11 @@ pub struct FileApiService {
     access_effects: Arc<dyn FileAccessEffects>,
     mutation_effects: Arc<dyn FileMutationEffects>,
     settings: SettingsService,
+    metadata_cache: Arc<MetadataCache>,
 }
 
 impl FileApiService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: DbPool,
         config: Arc<AppConfig>,
@@ -49,6 +53,7 @@ impl FileApiService {
         access_effects: Arc<dyn FileAccessEffects>,
         mutation_effects: Arc<dyn FileMutationEffects>,
         settings: SettingsService,
+        metadata_cache: Arc<MetadataCache>,
     ) -> Self {
         Self {
             db,
@@ -58,7 +63,80 @@ impl FileApiService {
             access_effects,
             mutation_effects,
             settings,
+            metadata_cache,
         }
+    }
+
+    pub async fn cached_metadata(&self, connection_id: &str, path: &str) -> Option<FileMetadata> {
+        self.metadata_cache.get(connection_id, path).await
+    }
+
+    pub async fn cache_metadata(&self, connection_id: &str, path: &str, metadata: FileMetadata) {
+        self.metadata_cache.put(connection_id, path, metadata).await;
+    }
+
+    pub async fn read_text_for_editing(
+        &self,
+        connection: &ConnectionId,
+        path: &str,
+        size: u64,
+    ) -> Result<String, AppError> {
+        if size > self.config.limits.max_editable_size {
+            return Err(AppError::PayloadTooLarge(format!(
+                "File size ({} bytes) exceeds maximum editable size ({} bytes)",
+                size, self.config.limits.max_editable_size
+            )));
+        }
+        let provider = self.filesystem.resolve(connection).await?;
+        let vfs_path = VfsPath::new(connection.as_str(), path)?;
+        let mut stream = provider.read_stream(&vfs_path).await?;
+        let mut data = Vec::new();
+        stream
+            .read_to_end(&mut data)
+            .await
+            .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+        String::from_utf8(data)
+            .map_err(|_| AppError::BadRequest("File contains non-UTF8 binary data".into()))
+    }
+
+    pub async fn authorize_intent(
+        &self,
+        actor: &Actor,
+        intent: OperationIntentType,
+        source: &ConnectionId,
+        destination: Option<&ConnectionId>,
+    ) -> Result<(), AppError> {
+        match intent {
+            OperationIntentType::Copy => {
+                self.authorization.authorize(actor, source, FileAction::Read).await?;
+                if let Some(dest) = destination {
+                    self.authorization.authorize(actor, dest, FileAction::Create).await?;
+                    self.authorization.authorize(actor, dest, FileAction::Write).await?;
+                }
+            }
+            OperationIntentType::Move => {
+                self.authorization.authorize(actor, source, FileAction::Read).await?;
+                self.authorization.authorize(actor, source, FileAction::Delete).await?;
+                if let Some(dest) = destination {
+                    self.authorization.authorize(actor, dest, FileAction::Create).await?;
+                    self.authorization.authorize(actor, dest, FileAction::Write).await?;
+                }
+            }
+            OperationIntentType::Delete => {
+                self.authorization.authorize(actor, source, FileAction::Delete).await?;
+            }
+            OperationIntentType::Chmod => {
+                self.authorization.authorize(actor, source, FileAction::Write).await?;
+            }
+            OperationIntentType::Compress | OperationIntentType::Extract => {
+                self.authorization.authorize(actor, source, FileAction::Read).await?;
+                if let Some(dest) = destination {
+                    self.authorization.authorize(actor, dest, FileAction::Create).await?;
+                    self.authorization.authorize(actor, dest, FileAction::Write).await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn chmod_recursive(

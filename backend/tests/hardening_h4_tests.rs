@@ -10,7 +10,7 @@ fn source(path: &str) -> String {
 fn app_state_exposes_sync_substate() {
     let state = source("src/state.rs");
     assert!(state.contains("pub struct SyncState"));
-    assert!(state.contains("FromRef<AppState> for SyncState"));
+    assert!(state.contains("impl_from_ref!(SyncState, sync)"));
     assert!(state.contains("pub(crate) sync: SyncState"));
 }
 
@@ -66,8 +66,8 @@ fn sync_service_owns_authorization_and_manager_boundary() {
 fn bootstrap_composes_sync_capability_once() {
     let bootstrap = source("src/bootstrap.rs");
     assert!(bootstrap.contains("SyncState::new(SyncService::new("));
-    assert!(bootstrap.contains("sync_manager.clone()"));
-    assert!(bootstrap.contains("sync,"));
+    assert!(bootstrap.contains("sync_manager"));
+    assert!(bootstrap.contains("sync:"));
 }
 
 #[test]

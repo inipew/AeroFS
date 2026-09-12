@@ -1,7 +1,10 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
+use backend::domain::Actor;
 use backend::services::{EditorService, FileService, TransferService};
+use backend::state::TransferState;
 use backend::transfer::{TransferPhase, TransferStatus, TransferType};
 use backend::AppState;
 use std::time::Duration;
@@ -29,6 +32,35 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     (state, admin, temp)
 }
 
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
+}
+
+async fn wait_for_completed(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    job_id: &str,
+) -> backend::transfer::TransferJobResponse {
+    let transfers = TransferState::from_ref(state);
+    let actor = actor(user);
+
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let jobs = transfers.use_cases.list(&actor).await.unwrap();
+        if let Some(job) = jobs.into_iter().find(|job| job.id == job_id) {
+            if job.status == TransferStatus::Completed {
+                return job;
+            }
+        }
+    }
+
+    panic!("transfer job {job_id} did not complete in time");
+}
+
 #[test]
 fn test_transfer_phase_serialization_and_roundtrip() {
     let phases = vec![
@@ -50,7 +82,6 @@ fn test_transfer_phase_serialization_and_roundtrip() {
 async fn test_transfer_phase_transitions_and_completion() {
     let (state, admin, _temp) = setup_test_context().await;
 
-    // 1. Create source file (100 KB)
     let test_data = vec![b'A'; 100 * 1024];
     FileService::create_or_write_file(
         &state,
@@ -63,7 +94,6 @@ async fn test_transfer_phase_transitions_and_completion() {
     .await
     .unwrap();
 
-    // 2. Submit copy transfer
     let job_id = TransferService::create_transfer(
         &state,
         &admin,
@@ -77,29 +107,12 @@ async fn test_transfer_phase_transitions_and_completion() {
     .await
     .unwrap();
 
-    // 3. Wait for transfer engine to process
-    let mut completed = false;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let jobs = state
-            .transfer_manager
-            .list_jobs(Some(&admin.id), true, false)
-            .await;
-        if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
-            if j.status == TransferStatus::Completed {
-                assert_eq!(j.phase, TransferPhase::Completed);
-                assert_eq!(j.transferred_bytes, test_data.len() as u64);
-                assert_eq!(j.total_bytes, test_data.len() as u64);
-                assert!(j.checksum.is_some());
-                completed = true;
-                break;
-            }
-        }
-    }
+    let job = wait_for_completed(&state, &admin, &job_id).await;
+    assert_eq!(job.phase, TransferPhase::Completed);
+    assert_eq!(job.transferred_bytes, test_data.len() as u64);
+    assert_eq!(job.total_bytes, test_data.len() as u64);
+    assert!(job.checksum.is_some());
 
-    assert!(completed, "Transfer job did not complete in time");
-
-    // 4. Verify destination file exists and matches source
     let edit_res = EditorService::read_for_editing(&state, &admin, "local", "/dest_lifecycle.txt")
         .await
         .unwrap();
@@ -110,20 +123,18 @@ async fn test_transfer_phase_transitions_and_completion() {
 async fn test_move_cleanup_lifecycle() {
     let (state, admin, _temp) = setup_test_context().await;
 
-    // 1. Create source file
     let test_data = b"Transactional Move Lifecycle Test".to_vec();
     FileService::create_or_write_file(
         &state,
         &admin,
         "local",
         "/move_source.txt",
-        test_data.clone(),
+        test_data,
         None,
     )
     .await
     .unwrap();
 
-    // 2. Submit move transfer
     let job_id = TransferService::create_transfer(
         &state,
         &admin,
@@ -137,26 +148,9 @@ async fn test_move_cleanup_lifecycle() {
     .await
     .unwrap();
 
-    // 3. Wait for completion
-    let mut completed = false;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let jobs = state
-            .transfer_manager
-            .list_jobs(Some(&admin.id), true, false)
-            .await;
-        if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
-            if j.status == TransferStatus::Completed {
-                assert_eq!(j.phase, TransferPhase::Completed);
-                completed = true;
-                break;
-            }
-        }
-    }
+    let job = wait_for_completed(&state, &admin, &job_id).await;
+    assert_eq!(job.phase, TransferPhase::Completed);
 
-    assert!(completed, "Move transfer did not complete in time");
-
-    // 4. Verify destination exists & source is removed
     let dest_res = FileService::stat_file(&state, &admin, "local", "/move_dest.txt").await;
     assert!(dest_res.is_ok());
 
