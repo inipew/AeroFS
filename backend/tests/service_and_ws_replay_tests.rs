@@ -8,7 +8,7 @@ use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::filesystem::archive::ArchiveOverwriteMode;
 use backend::ports::transfer::TransferType;
 use backend::services::TransferService;
-use backend::state::{ArchiveState, RuntimeOwner, ShutdownReason};
+use backend::state::{ArchiveState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::AppState;
 use tempfile::tempdir;
 
@@ -66,8 +66,8 @@ async fn write_file(
     path: &str,
     content: Vec<u8>,
 ) -> backend::domain::FileMetadata {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .write_file
         .execute(
@@ -136,9 +136,9 @@ async fn test_file_application_full_crud_lifecycle() {
     let (state, user, _runtime) = setup_test_context().await;
     let actor = actor_from_user(&user);
     let connection = ConnectionId::local();
+    let file_api = FileApiState::from_ref(&state);
 
-    let dir_meta = state
-        .file_api
+    let dir_meta = file_api
         .files
         .create_directory
         .execute(
@@ -161,8 +161,7 @@ async fn test_file_application_full_crud_lifecycle() {
     .await;
     assert_eq!(file_meta.size, 13);
 
-    let stat = state
-        .file_api
+    let stat = file_api
         .files
         .stat_file
         .execute(
@@ -176,8 +175,7 @@ async fn test_file_application_full_crud_lifecycle() {
         .expect("Stat file failed");
     assert_eq!(stat.size, 13);
 
-    let listing = state
-        .file_api
+    let listing = file_api
         .files
         .list_directory
         .execute(
@@ -197,8 +195,7 @@ async fn test_file_application_full_crud_lifecycle() {
     assert_eq!(listing.entries.len(), 1);
     assert_eq!(listing.entries[0].name, "readme.md");
 
-    state
-        .file_api
+    file_api
         .files
         .rename_entry
         .execute(
@@ -212,8 +209,7 @@ async fn test_file_application_full_crud_lifecycle() {
         .await
         .expect("Rename entry failed");
 
-    let deleted = state
-        .file_api
+    let deleted = file_api
         .files
         .delete_entries
         .execute(
