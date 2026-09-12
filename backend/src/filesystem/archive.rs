@@ -131,6 +131,58 @@ pub enum ArchiveOverwriteMode {
     KeepBoth,
 }
 
+async fn path_exists(
+    provider: &Arc<dyn FileSystem>,
+    path: &VfsPath,
+) -> Result<bool, VfsError> {
+    match provider.stat(path).await {
+        Ok(_) => Ok(true),
+        Err(VfsError::NotFound(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+async fn ensure_directory(
+    provider: &Arc<dyn FileSystem>,
+    path: &VfsPath,
+) -> Result<(), VfsError> {
+    match provider.create_dir(path).await {
+        Ok(()) => Ok(()),
+        Err(create_error) => match provider.stat(path).await {
+            Ok(metadata) if metadata.kind == FileKind::Directory => Ok(()),
+            Ok(_) => Err(VfsError::IoError(format!(
+                "Destination '{}' exists but is not a directory",
+                path.path
+            ))),
+            Err(VfsError::NotFound(_)) => Err(create_error),
+            Err(stat_error) => Err(stat_error),
+        },
+    }
+}
+
+async fn apply_committed_permissions(
+    provider: &Arc<dyn FileSystem>,
+    path: &VfsPath,
+    permissions: Option<&str>,
+    mutation: &str,
+) -> Result<(), VfsError> {
+    if let Some(permissions) = permissions {
+        provider
+            .set_permissions(path, permissions)
+            .await
+            .map_err(|error| {
+                VfsError::IoError(format!(
+                    "Archive {} '{}' was committed, but applying inherited permissions '{}' failed: {}. Filesystem mutation committed; recovery required",
+                    mutation,
+                    path.path,
+                    permissions,
+                    error
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 /// Collect all files to be included in an archive, recursing through directories via list_stream
 async fn collect_archive_files(
     provider: &Arc<dyn FileSystem>,
@@ -361,19 +413,23 @@ pub async fn extract_zip(
         let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path)?;
 
         if item.is_dir {
-            let _ = provider.create_dir(&dest_vfs).await;
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
+            let dir_perms = crate::domain::resolve_destination_permissions_strict(
                 provider,
                 &dest_vfs,
                 true,
                 crate::domain::PermissionInheritanceMode::InheritParent,
             )
-            .await
-            {
-                let _ = provider.set_permissions(&dest_vfs, &perms).await;
-            }
+            .await?;
+            ensure_directory(provider, &dest_vfs).await?;
+            apply_committed_permissions(
+                provider,
+                &dest_vfs,
+                dir_perms.as_deref(),
+                "directory",
+            )
+            .await?;
         } else {
-            let exists = provider.stat(&dest_vfs).await.is_ok();
+            let exists = path_exists(provider, &dest_vfs).await?;
             let final_dest_vfs = if exists {
                 match overwrite_mode {
                     ArchiveOverwriteMode::Skip => {
@@ -392,7 +448,7 @@ pub async fn extract_zip(
                         while let Ok(cand_vfs) =
                             VfsPath::new(&archive_path.connection_id, &candidate)
                         {
-                            if provider.stat(&cand_vfs).await.is_err() {
+                            if !path_exists(provider, &cand_vfs).await? {
                                 break;
                             }
                             counter += 1;
@@ -405,8 +461,15 @@ pub async fn extract_zip(
                 dest_vfs
             };
 
+            let file_perms = crate::domain::resolve_destination_permissions_strict(
+                provider,
+                &final_dest_vfs,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await?;
             if let Some(parent) = final_dest_vfs.parent() {
-                let _ = provider.create_dir(&parent).await;
+                ensure_directory(provider, &parent).await?;
             }
             let disk_file = staging_root.join(&item.rel_path);
             let async_reader = tokio::fs::File::open(&disk_file)
@@ -416,16 +479,13 @@ pub async fn extract_zip(
                 .write_stream(&final_dest_vfs, Box::new(async_reader))
                 .await?;
 
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
+            apply_committed_permissions(
                 provider,
                 &final_dest_vfs,
-                false,
-                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+                file_perms.as_deref(),
+                "file",
             )
-            .await
-            {
-                let _ = provider.set_permissions(&final_dest_vfs, &perms).await;
-            }
+            .await?;
 
             extracted_count += 1;
         }
@@ -640,19 +700,23 @@ pub async fn extract_targz(
         let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path)?;
 
         if item.is_dir {
-            let _ = provider.create_dir(&dest_vfs).await;
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
+            let dir_perms = crate::domain::resolve_destination_permissions_strict(
                 provider,
                 &dest_vfs,
                 true,
                 crate::domain::PermissionInheritanceMode::InheritParent,
             )
-            .await
-            {
-                let _ = provider.set_permissions(&dest_vfs, &perms).await;
-            }
+            .await?;
+            ensure_directory(provider, &dest_vfs).await?;
+            apply_committed_permissions(
+                provider,
+                &dest_vfs,
+                dir_perms.as_deref(),
+                "directory",
+            )
+            .await?;
         } else {
-            let exists = provider.stat(&dest_vfs).await.is_ok();
+            let exists = path_exists(provider, &dest_vfs).await?;
             let final_dest_vfs = if exists {
                 match overwrite_mode {
                     ArchiveOverwriteMode::Skip => {
@@ -671,7 +735,7 @@ pub async fn extract_targz(
                         while let Ok(cand_vfs) =
                             VfsPath::new(&archive_path.connection_id, &candidate)
                         {
-                            if provider.stat(&cand_vfs).await.is_err() {
+                            if !path_exists(provider, &cand_vfs).await? {
                                 break;
                             }
                             counter += 1;
@@ -684,8 +748,15 @@ pub async fn extract_targz(
                 dest_vfs
             };
 
+            let file_perms = crate::domain::resolve_destination_permissions_strict(
+                provider,
+                &final_dest_vfs,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await?;
             if let Some(parent) = final_dest_vfs.parent() {
-                let _ = provider.create_dir(&parent).await;
+                ensure_directory(provider, &parent).await?;
             }
 
             let disk_file = staging_root.join(&item.rel_path);
@@ -696,16 +767,13 @@ pub async fn extract_targz(
                 .write_stream(&final_dest_vfs, Box::new(async_reader))
                 .await?;
 
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
+            apply_committed_permissions(
                 provider,
                 &final_dest_vfs,
-                false,
-                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+                file_perms.as_deref(),
+                "file",
             )
-            .await
-            {
-                let _ = provider.set_permissions(&final_dest_vfs, &perms).await;
-            }
+            .await?;
 
             extracted_count += 1;
         }
@@ -1224,19 +1292,23 @@ pub async fn extract_selected_archive_entries(
         let dest_vfs = VfsPath::new(&archive_path.connection_id, &full_dest_path)?;
 
         if entry.is_dir {
-            let _ = provider.create_dir(&dest_vfs).await;
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
+            let dir_perms = crate::domain::resolve_destination_permissions_strict(
                 provider,
                 &dest_vfs,
                 true,
                 crate::domain::PermissionInheritanceMode::InheritParent,
             )
-            .await
-            {
-                let _ = provider.set_permissions(&dest_vfs, &perms).await;
-            }
+            .await?;
+            ensure_directory(provider, &dest_vfs).await?;
+            apply_committed_permissions(
+                provider,
+                &dest_vfs,
+                dir_perms.as_deref(),
+                "directory",
+            )
+            .await?;
         } else {
-            let exists = provider.stat(&dest_vfs).await.is_ok();
+            let exists = path_exists(provider, &dest_vfs).await?;
             let final_dest_vfs = if exists {
                 match overwrite_mode {
                     ArchiveOverwriteMode::Skip => {
@@ -1255,7 +1327,7 @@ pub async fn extract_selected_archive_entries(
                         while let Ok(cand_vfs) =
                             VfsPath::new(&archive_path.connection_id, &candidate)
                         {
-                            if provider.stat(&cand_vfs).await.is_err() {
+                            if !path_exists(provider, &cand_vfs).await? {
                                 break;
                             }
                             counter += 1;
@@ -1268,8 +1340,15 @@ pub async fn extract_selected_archive_entries(
                 dest_vfs
             };
 
+            let file_perms = crate::domain::resolve_destination_permissions_strict(
+                provider,
+                &final_dest_vfs,
+                false,
+                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await?;
             if let Some(parent) = final_dest_vfs.parent() {
-                let _ = provider.create_dir(&parent).await;
+                ensure_directory(provider, &parent).await?;
             }
 
             let disk_file = staging_root.join(&entry.safe_name);
@@ -1280,16 +1359,13 @@ pub async fn extract_selected_archive_entries(
                 .write_stream(&final_dest_vfs, Box::new(async_reader))
                 .await?;
 
-            if let Some(perms) = crate::domain::resolve_destination_permissions(
+            apply_committed_permissions(
                 provider,
                 &final_dest_vfs,
-                false,
-                crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
+                file_perms.as_deref(),
+                "file",
             )
-            .await
-            {
-                let _ = provider.set_permissions(&final_dest_vfs, &perms).await;
-            }
+            .await?;
 
             extracted_count += 1;
         }

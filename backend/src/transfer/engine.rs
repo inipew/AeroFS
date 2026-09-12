@@ -1962,17 +1962,23 @@ impl TransferManager {
         // Single File Transfer with In-Flight Checksum Calculation
         let total_bytes = job.total_bytes;
 
-        // 1. Resolve destination permissions according to inheritance policy
-        if let Some(perms) = crate::domain::resolve_destination_permissions(
+        // Resolve destination permissions once before mutation. This snapshot is then
+        // applied to the staging artifact before promotion, or to the final destination
+        // for direct-write providers.
+        let target_perms = crate::domain::resolve_destination_permissions_strict(
             &dst_fs,
             &dst_vfs,
             false,
             crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
         )
         .await
-        {
-            let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
-        }
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "Destination permission lookup failed for '{}': {}",
+                dst_vfs.path,
+                error
+            )
+        })?;
 
         // 2. Determine staging via TransferPlan / job.staging (single source of truth).
         // Engine must NOT re-decide via capabilities; job.staging comes from TransferPlanner::plan_upload.
@@ -2288,8 +2294,21 @@ impl TransferManager {
             return Err(anyhow::anyhow!("Destination write failed: {}", e));
         }
 
-        // Atomically promote part file to destination path ONLY if staging was used
+        // Staged transfers apply inherited permissions before final promotion so the
+        // destination never becomes visible with the wrong security metadata.
         if use_staging {
+            if let Some(perms) = target_perms.as_deref() {
+                if let Err(error) = dst_fs.set_permissions(&write_target_vfs, perms).await {
+                    let _ = dst_fs.delete(&write_target_vfs).await;
+                    return Err(anyhow::anyhow!(
+                        "Failed to apply inherited permissions '{}' to staging file '{}': {}",
+                        perms,
+                        write_target_vfs.path,
+                        error
+                    ));
+                }
+            }
+
             if let Err(e) = dst_fs.rename(&write_target_vfs, &dst_vfs).await {
                 let _ = dst_fs.delete(&write_target_vfs).await;
                 return Err(anyhow::anyhow!(
@@ -2298,17 +2317,15 @@ impl TransferManager {
                     e
                 ));
             }
-        }
-
-        if let Some(perms) = crate::domain::resolve_destination_permissions(
-            &dst_fs,
-            &dst_vfs,
-            false,
-            crate::domain::PermissionInheritanceMode::InheritExistingOrParent,
-        )
-        .await
-        {
-            let _ = dst_fs.set_permissions(&dst_vfs, &perms).await;
+        } else if let Some(perms) = target_perms.as_deref() {
+            if let Err(error) = dst_fs.set_permissions(&dst_vfs, perms).await {
+                return Err(anyhow::anyhow!(
+                    "Transfer content for '{}' was written, but applying inherited permissions '{}' failed: {}. Filesystem mutation committed; recovery required",
+                    dst_vfs.path,
+                    perms,
+                    error
+                ));
+            }
         }
 
         job.transferred_bytes = transferred_bytes;
