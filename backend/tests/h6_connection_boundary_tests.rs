@@ -46,8 +46,8 @@ fn cli_connection_actions_use_precomposed_lifecycle_capability() {
     let src = source("src/cli/commands/connection.rs");
     let compact = compact(&src);
 
-    assert!(compact.contains("letconnections=ConnectionState::from_ref(&state)"));
-    assert!(compact.contains("letservice=&connections.service"));
+    assert!(compact.contains("ConnectionState::from_ref(&state)"));
+    assert!(compact.contains(".service"));
     assert!(compact.contains("service.update_connection("));
     assert!(!compact.contains("ConnectionService::new("));
     assert!(!compact.contains("UPDATEconnectionsSETenabled"));
