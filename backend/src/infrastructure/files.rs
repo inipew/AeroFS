@@ -5,7 +5,7 @@ use crate::errors::{AppError, VfsError};
 use crate::events::EventJournal;
 use crate::ports::{
     authorization::{Authorization, FileAction},
-    effects::FileMutationEffects,
+    effects::{FileAccessEffects, FileMutationEffects},
     filesystem::FileSystemResolver,
     settings::FileSettings,
 };
@@ -130,10 +130,32 @@ impl SqliteFileMutationEffects {
 }
 
 #[async_trait]
+impl FileAccessEffects for SqliteFileMutationEffects {
+    async fn accessed(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        path: &str,
+        audit_action: &'static str,
+        details: Option<String>,
+    ) {
+        crate::auth::audit::record_audit_log(
+            &self.db,
+            Some(&actor.id),
+            audit_action,
+            Some(connection.as_str()),
+            Some(path),
+            "SUCCESS",
+            None,
+            details.as_deref(),
+        )
+        .await;
+    }
+}
+
+#[async_trait]
 impl FileMutationEffects for SqliteFileMutationEffects {
     async fn invalidate(&self, connection: &ConnectionId, path: &str) {
-        // Immediate invalidation remains on the synchronous correctness path.
-        // Event-derived invalidation provides recovery/convergence after lag/restart.
         self.cache.invalidate(connection.as_str(), path).await;
     }
 
@@ -165,22 +187,12 @@ impl FileMutationEffects for SqliteFileMutationEffects {
         if let Err(error) = self
             .event_journal
             .append(
-                crate::events::DomainEvent::file_change(
-                    connection.as_str(),
-                    path,
-                    event_action,
-                ),
+                crate::events::DomainEvent::file_change(connection.as_str(), path, event_action),
                 None,
             )
             .await
         {
-            tracing::error!(
-                %error,
-                connection_id = %connection.as_str(),
-                path,
-                event_action,
-                "file mutation event persistence failed"
-            );
+            tracing::error!(%error, connection_id = %connection.as_str(), path, event_action, "file mutation event persistence failed");
         }
     }
 
@@ -205,19 +217,38 @@ impl FileMutationEffects for SqliteFileMutationEffects {
 
         if let Err(error) = self
             .event_journal
-            .append(
-                crate::events::DomainEvent::file_rename(connection.as_str(), from, to),
-                None,
-            )
+            .append(crate::events::DomainEvent::file_rename(connection.as_str(), from, to), None)
             .await
         {
-            tracing::error!(
-                %error,
-                connection_id = %connection.as_str(),
-                from,
-                to,
-                "file rename event persistence failed"
-            );
+            tracing::error!(%error, connection_id = %connection.as_str(), from, to, "file rename event persistence failed");
+        }
+    }
+
+    async fn file_copied(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        from: &str,
+        to: &str,
+    ) {
+        crate::auth::audit::record_audit_log(
+            &self.db,
+            Some(&actor.id),
+            "FILE_COPY",
+            Some(connection.as_str()),
+            Some(from),
+            "SUCCESS",
+            None,
+            Some(&format!("Copied {} -> {}", from, to)),
+        )
+        .await;
+
+        if let Err(error) = self
+            .event_journal
+            .append(crate::events::DomainEvent::file_change(connection.as_str(), to, "copy"), None)
+            .await
+        {
+            tracing::error!(%error, connection_id = %connection.as_str(), from, to, "file copy event persistence failed");
         }
     }
 }
