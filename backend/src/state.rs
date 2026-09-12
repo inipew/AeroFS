@@ -15,7 +15,7 @@ use crate::{
     },
     infrastructure::{
         files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings},
-        transfers::{SqliteTransferEffects, TransferEngineQueue},
+        transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
     },
 };
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -215,8 +215,6 @@ impl AppState {
             registry.providers_map(),
         ));
 
-        // EventJournal is the only completion signal consumed by Sync. The
-        // TransferManager completion broadcast remains solely for compatibility.
         SyncEventSubscriber::spawn(
             &runtime.supervisor,
             event_journal.clone(),
@@ -254,14 +252,19 @@ impl AppState {
             ),
         };
 
-        let transfers = TransferUseCases {
-            create_transfer: CreateTransfer::new(
+        let transfers = TransferUseCases::new(
+            CreateTransfer::new(
                 Arc::new(SqliteAuthorization::new(db.clone())),
                 Arc::new(RegistryFileSystemResolver::new(registry.clone())),
                 Arc::new(TransferEngineQueue::new(transfer_engine.clone())),
                 Arc::new(SqliteTransferEffects::new(db.clone())),
             ),
-        };
+            Arc::new(SqliteTransferControl::new(
+                db.clone(),
+                transfer_manager.clone(),
+                upload_locks.clone(),
+            )),
+        );
 
         let state = Self {
             config,
