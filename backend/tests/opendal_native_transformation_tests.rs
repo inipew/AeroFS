@@ -1,9 +1,10 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::{AppConfig, ProviderStorageConfig};
 use backend::db::init_db;
 use backend::domain::{Actor, ChecksumCapabilities, ConnectionId, SortField, SortOrder, VfsPath};
-use backend::state::{AppState, RuntimeOwner, ShutdownReason};
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::transfer::{
     TransferJob, TransferPhase, TransferPlanner, TransferStatus, TransferStrategy, TransferType,
 };
@@ -63,8 +64,8 @@ fn actor(user: &AuthenticatedUser) -> Actor {
 }
 
 async fn write_file(state: &AppState, user: &AuthenticatedUser, path: &str, content: Vec<u8>) {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .write_file
         .execute(
@@ -86,8 +87,8 @@ async fn list_page(
     user: &AuthenticatedUser,
     cursor: Option<String>,
 ) -> backend::application::files::DirectoryListing {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .list_directory
         .execute(
