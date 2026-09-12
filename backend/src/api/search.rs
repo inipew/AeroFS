@@ -46,8 +46,8 @@ pub async fn search_files(
     let connection = ConnectionId::new(connection_id)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let actor = Actor {
-        id: user.id,
-        username: user.username,
+        id: user.id.clone(),
+        username: user.username.clone(),
         is_admin: user.is_admin,
     };
     let output = state
