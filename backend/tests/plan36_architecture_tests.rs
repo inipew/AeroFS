@@ -1,5 +1,6 @@
 use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::conflict::{ConflictPolicy, ConflictResolver};
@@ -78,9 +79,10 @@ async fn setup_test_app() -> (AppState, tempfile::TempDir) {
         .execute(&db)
         .await;
 
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
+    built.runtime.set_phase(RuntimePhase::Running);
 
-    (state, temp)
+    (built.state, temp)
 }
 
 #[tokio::test]
@@ -335,14 +337,11 @@ async fn test_plan36_specialized_services() {
     let (state, _temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
 
-    // 1. Health now uses a narrow capability instead of AppState.
-    state.runtime.set_phase(RuntimePhase::Running);
     let health_state = HealthState::from_ref(&state);
     let health = health_state.service.readiness().await.unwrap();
     assert!(health.active_providers >= 1);
     assert_eq!(health.phase, "running");
 
-    // 2. EditorService
     let edit_path = "/code.rs";
     EditorService::save_from_editing(
         &state,
@@ -360,13 +359,11 @@ async fn test_plan36_specialized_services() {
         .unwrap();
     assert_eq!(content, "fn main() { println!(\"hello\"); }");
 
-    // 3. PreviewService
     let preview_meta = PreviewService::get_preview_info(&state, &admin, "local", edit_path)
         .await
         .unwrap();
     assert_eq!(preview_meta.name, "code.rs");
 
-    // 4. Search now uses SearchState and typed application identity/path inputs.
     let search_state = SearchState::from_ref(&state);
     let actor = Actor {
         id: admin.id.clone(),
@@ -389,7 +386,6 @@ async fn test_plan36_specialized_services() {
         .unwrap();
     assert!(!search_out.results.is_empty());
 
-    // 5. TrashService
     let moved_items = TrashService::move_to_trash(
         &state,
         &admin,
@@ -409,7 +405,6 @@ async fn test_plan36_specialized_services() {
         .await
         .unwrap();
 
-    // 6. ShareService
     let share = ShareService::create_share(
         &state,
         &admin,
@@ -433,7 +428,6 @@ async fn test_plan36_specialized_services() {
         .await
         .unwrap();
 
-    // 7. AuditService
     AuditService::record(
         &state.db,
         Some(&admin.id),
