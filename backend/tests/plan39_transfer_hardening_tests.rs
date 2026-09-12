@@ -1,10 +1,11 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ProviderKind};
-use backend::services::{
-    ConnectionService, CreateConnectionRequest, EditorService, FileService, TransferService,
-};
+use backend::events::DomainEvent;
+use backend::services::{CreateConnectionRequest, EditorService, FileService, TransferService};
+use backend::state::{ConnectionState, RealtimeState, TransferState};
 use backend::transfer::{TransferPhase, TransferStatus, TransferType};
 use backend::AppState;
 use std::time::Duration;
@@ -32,17 +33,6 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     (state, admin, temp)
 }
 
-fn connection_service(state: &AppState) -> ConnectionService {
-    ConnectionService::new(
-        state.db.clone(),
-        state.config.clone(),
-        state.registry.clone(),
-        state.credentials.clone(),
-        state.metadata_cache.clone(),
-        state.transfer_manager.clone(),
-    )
-}
-
 fn actor(user: &AuthenticatedUser) -> Actor {
     Actor {
         id: user.id().to_string(),
@@ -51,19 +41,40 @@ fn actor(user: &AuthenticatedUser) -> Actor {
     }
 }
 
+async fn wait_for_status(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    job_id: &str,
+    accepted: &[TransferStatus],
+) -> Option<backend::transfer::TransferJobResponse> {
+    let transfers = TransferState::from_ref(state);
+    let actor = actor(user);
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let jobs = transfers.use_cases.list(&actor).await.ok()?;
+        if let Some(job) = jobs.into_iter().find(|job| job.id == job_id) {
+            if accepted.contains(&job.status) {
+                return Some(job);
+            }
+        }
+    }
+    None
+}
+
 #[tokio::test]
 async fn test_realtime_cancellation_with_token() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, temp) = setup_test_context().await;
 
-    // 1. Create source file (32 MB) on disk to ensure in-flight cancellation window
     let test_data = vec![b'X'; 32 * 1024 * 1024];
     std::fs::write(
-        _temp.path().join("storage").join("source_cancel_test.dat"),
+        temp.path().join("storage").join("source_cancel_test.dat"),
         &test_data,
     )
     .unwrap();
 
-    // 2. Submit transfer
+    let realtime = RealtimeState::from_ref(&state);
+    let mut events = realtime.service.subscribe();
+
     let job_id = TransferService::create_transfer(
         &state,
         &admin,
@@ -77,34 +88,26 @@ async fn test_realtime_cancellation_with_token() {
     .await
     .unwrap();
 
-    // 3. Immediately request cancellation
-    let cancel_res = TransferService::cancel_transfer(&state, &admin, &job_id).await;
-    assert!(cancel_res.is_ok());
+    TransferService::cancel_transfer(&state, &admin, &job_id)
+        .await
+        .unwrap();
 
-    // Realtime lifecycle assertions must observe the manager's authoritative live
-    // state. `list_jobs(..., include_dismissed=true)` intentionally reloads history
-    // from SQLite and can lag the in-memory state while a worker is finalizing cancel.
-    let mut cancelled = false;
-    let mut last_status = None;
-    for _ in 0..150 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Some(job) = state.transfer_manager.get_job(&job_id).await {
-            last_status = Some(job.status);
-            if job.status == TransferStatus::Cancelled {
-                cancelled = true;
-                break;
+    let cancelled = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let envelope = events.recv().await.expect("realtime event stream should stay open");
+            if let DomainEvent::TransferCancelled(value) = envelope.event {
+                if value.get("id").and_then(|id| id.as_str()) == Some(job_id.as_str()) {
+                    break true;
+                }
             }
         }
-    }
+    })
+    .await
+    .unwrap_or(false);
 
-    assert!(
-        cancelled,
-        "Transfer job should transition to Cancelled, last status: {:?}",
-        last_status
-    );
+    assert!(cancelled, "transfer job should emit durable cancellation event");
 
-    // 5. Verify staging hidden .aerofs-part file is cleaned up
-    let part_path = format!("/.dest_cancel_test.dat.aerofs-part-{}", job_id);
+    let part_path = format!("/.dest_cancel_test.dat.aerofs-part-{job_id}");
     let part_stat = FileService::stat_file(&state, &admin, "local", &part_path).await;
     assert!(
         part_stat.is_err(),
@@ -116,7 +119,6 @@ async fn test_realtime_cancellation_with_token() {
 async fn test_directory_transfer_bounded_limits_and_creation() {
     let (state, admin, _temp) = setup_test_context().await;
 
-    // 1. Create directory tree with files
     FileService::create_directory(&state, &admin, "local", "/dir_source")
         .await
         .unwrap();
@@ -144,7 +146,6 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
     .await
     .unwrap();
 
-    // 2. Submit directory copy transfer
     let job_id = TransferService::create_transfer(
         &state,
         &admin,
@@ -158,26 +159,11 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
     .await
     .unwrap();
 
-    // 3. Wait for completion
-    let mut completed = false;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let jobs = state
-            .transfer_manager
-            .list_jobs(Some(&admin.id), true, false)
-            .await;
-        if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
-            if j.status == TransferStatus::Completed {
-                assert_eq!(j.phase, TransferPhase::Completed);
-                completed = true;
-                break;
-            }
-        }
-    }
+    let job = wait_for_status(&state, &admin, &job_id, &[TransferStatus::Completed])
+        .await
+        .expect("directory transfer did not complete in time");
+    assert_eq!(job.phase, TransferPhase::Completed);
 
-    assert!(completed, "Directory transfer did not complete in time");
-
-    // 4. Verify destination directory and files exist
     let f1 = EditorService::read_for_editing(&state, &admin, "local", "/dir_dest/file1.txt")
         .await
         .unwrap();
@@ -192,14 +178,14 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
 #[tokio::test]
 async fn test_connection_deletion_drains_active_transfers() {
     let (state, admin, temp) = setup_test_context().await;
-    let service = connection_service(&state);
+    let connections = ConnectionState::from_ref(&state);
     let admin_actor = actor(&admin);
 
-    // 1. Create a dummy secondary local connection
     let remote_dir = temp.path().join("dummy_remote");
     std::fs::create_dir_all(&remote_dir).unwrap();
 
-    let conn_id = service
+    let conn_id = connections
+        .service
         .create_connection(
             &admin_actor,
             CreateConnectionRequest {
@@ -216,7 +202,6 @@ async fn test_connection_deletion_drains_active_transfers() {
         .await
         .unwrap();
 
-    // 2. Create large file in local
     let test_data = vec![b'Z'; 5 * 1024 * 1024];
     FileService::create_or_write_file(
         &state,
@@ -229,7 +214,6 @@ async fn test_connection_deletion_drains_active_transfers() {
     .await
     .unwrap();
 
-    // 3. Submit transfer to dummy_remote
     let job_id = TransferService::create_transfer(
         &state,
         &admin,
@@ -243,36 +227,29 @@ async fn test_connection_deletion_drains_active_transfers() {
     .await
     .unwrap();
 
-    // 4. Delete the connection (should cancel all queued/active transfers for this connection)
-    service
+    connections
+        .service
         .delete_connection(&admin_actor, &conn_id)
         .await
         .unwrap();
 
-    // 5. Verify the transfer job was cancelled or aborted
-    let mut settled = false;
-    let mut last_status = None;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let jobs = state
-            .transfer_manager
-            .list_jobs(Some(&admin.id), true, true)
-            .await;
-        if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
-            last_status = Some(j.status);
-            if j.status == TransferStatus::Cancelled
-                || j.status == TransferStatus::Failed
-                || j.status == TransferStatus::CancellationRequested
-            {
-                settled = true;
-                break;
-            }
-        }
-    }
+    let job = wait_for_status(
+        &state,
+        &admin,
+        &job_id,
+        &[
+            TransferStatus::Cancelled,
+            TransferStatus::Failed,
+            TransferStatus::CancellationRequested,
+        ],
+    )
+    .await
+    .expect("transfer should settle after connection deletion");
 
-    assert!(
-        settled,
-        "Transfer should be cancelled or aborted upon connection deletion, actual status: {:?}",
-        last_status
-    );
+    assert!(matches!(
+        job.status,
+        TransferStatus::Cancelled
+            | TransferStatus::Failed
+            | TransferStatus::CancellationRequested
+    ));
 }
