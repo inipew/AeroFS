@@ -2,12 +2,29 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
-use backend::{config::AppConfig, create_router, db::init_db, AppState};
+use backend::{
+    bootstrap::build_application,
+    config::AppConfig,
+    create_router,
+    db::init_db,
+    state::{RuntimeOwner, ShutdownReason},
+};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-async fn setup_app() -> (axum::Router, String, tempfile::TempDir) {
+struct TestRuntime {
+    _temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_app() -> (axum::Router, String, TestRuntime) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("conn_test.db");
     let storage_dir = temp.path().join("storage");
@@ -18,10 +35,9 @@ async fn setup_app() -> (axum::Router, String, tempfile::TempDir) {
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
-    let app = create_router(state);
+    let built = build_application(config, db).await;
+    let app = create_router(built.state);
 
-    // Login as admin to get session cookie
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -32,23 +48,23 @@ async fn setup_app() -> (axum::Router, String, tempfile::TempDir) {
         .unwrap();
 
     let resp = app.clone().oneshot(login_req).await.unwrap();
-    let cookie_header = resp
-        .headers()
-        .get(header::SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
+    let cookie_header = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
     let cookie = cookie_header.split(';').next().unwrap().to_string();
 
-    (app, cookie, temp)
+    (
+        app,
+        cookie,
+        TestRuntime {
+            _temp: temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 #[tokio::test]
 async fn test_remote_connections_crud_and_test() {
-    let (app, cookie, _temp) = setup_app().await;
+    let (app, cookie, _runtime) = setup_app().await;
 
-    // 1. Create a remote SFTP connection with private key authentication
     let create_sftp_req = Request::builder()
         .uri("/api/v1/connections")
         .method("POST")
@@ -79,17 +95,14 @@ async fn test_remote_connections_crud_and_test() {
     let created_val: Value = serde_json::from_slice(&body).unwrap();
     let sftp_id = created_val["id"].as_str().unwrap().to_string();
 
-    // 2. List connections -> must contain local and the new SFTP connection
     let list_req = Request::builder()
         .uri("/api/v1/connections")
         .method("GET")
         .header(header::COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
-
     let resp = app.clone().oneshot(list_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let list_val: Value = serde_json::from_slice(&body).unwrap();
     let conns = list_val.as_array().unwrap();
@@ -97,50 +110,41 @@ async fn test_remote_connections_crud_and_test() {
     assert!(conns.iter().any(|c| c["id"] == "local"));
     assert!(conns.iter().any(|c| c["id"] == sftp_id));
 
-    // 3. Get SFTP connection details and capabilities
     let get_req = Request::builder()
         .uri(format!("/api/v1/connections/{}", sftp_id))
         .method("GET")
         .header(header::COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
-
     let resp = app.clone().oneshot(get_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let detail_val: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail_val["connection"]["provider"], "sftp");
     assert_eq!(detail_val["capabilities"]["read"], true);
 
-    // 4. Test Local connection status -> 200
     let test_req = Request::builder()
         .uri("/api/v1/connections/local/test")
         .method("POST")
         .header(header::COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
-
     let resp = app.clone().oneshot(test_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 5. Delete SFTP connection as admin -> 200
     let del_req = Request::builder()
         .uri(format!("/api/v1/connections/{}", sftp_id))
         .method("DELETE")
         .header(header::COOKIE, &cookie)
         .body(Body::empty())
         .unwrap();
-
     let resp = app.clone().oneshot(del_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_nonadmin_connection_creation_forbidden() {
-    let (app, _cookie, _temp) = setup_app().await;
-
-    // Login as non-admin (Create connection without admin rights should return 401/403)
+    let (app, _cookie, _runtime) = setup_app().await;
     let create_req = Request::builder()
         .uri("/api/v1/connections")
         .method("POST")
@@ -154,15 +158,13 @@ async fn test_nonadmin_connection_creation_forbidden() {
             .to_string(),
         ))
         .unwrap();
-
     let resp = app.clone().oneshot(create_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
 async fn test_s3_connection_creation() {
-    let (app, cookie, _temp) = setup_app().await;
-
+    let (app, cookie, _runtime) = setup_app().await;
     let create_s3_req = Request::builder()
         .uri("/api/v1/connections")
         .method("POST")
@@ -180,10 +182,8 @@ async fn test_s3_connection_creation() {
             .to_string(),
         ))
         .unwrap();
-
     let resp = app.clone().oneshot(create_s3_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let val: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(val["success"], true);
