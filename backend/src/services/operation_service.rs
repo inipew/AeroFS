@@ -7,7 +7,6 @@ use crate::domain::policy::PermissionInheritanceMode;
 use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
 use crate::filesystem::archive::ArchiveOverwriteMode;
-use crate::services::file_service::FileService;
 use crate::state::AppState;
 use uuid::Uuid;
 
@@ -67,19 +66,41 @@ impl OperationService {
         for path in &plan.source_paths {
             let res = match plan.intent_type {
                 OperationIntentType::Delete => {
-                    FileService::delete_entry(state, user, &plan.source_connection_id, &path.path)
-                        .await
+                    let delete_result = state
+                        .file_api
+                        .files
+                        .delete_entries
+                        .execute(
+                            &actor,
+                            crate::application::files::DeleteEntriesCommand {
+                                connection: source.clone(),
+                                paths: vec![path.path.clone()],
+                            },
+                        )
+                        .await?;
+                    if let Some((_, error)) = delete_result.failed.first() {
+                        Err(AppError::Internal(anyhow::anyhow!(error.clone())))
+                    } else if delete_result.succeeded.is_empty() {
+                        Err(AppError::NotFound(format!("{} not found", path.path)))
+                    } else {
+                        Ok(())
+                    }
                 }
                 OperationIntentType::Move => {
                     if let Some(dest_p) = &plan.destination_path {
-                        FileService::rename_entry(
-                            state,
-                            user,
-                            &plan.source_connection_id,
-                            &path.path,
-                            &dest_p.path,
-                        )
-                        .await
+                        state
+                            .file_api
+                            .files
+                            .rename_entry
+                            .execute(
+                                &actor,
+                                crate::application::files::RenameEntryCommand {
+                                    connection: source.clone(),
+                                    from: path.path.clone(),
+                                    to: dest_p.path.clone(),
+                                },
+                            )
+                            .await
                     } else {
                         Err(AppError::BadRequest(
                             "Destination path required for move".into(),
@@ -87,7 +108,18 @@ impl OperationService {
                     }
                 }
                 OperationIntentType::Chmod => {
-                    FileService::chmod(state, user, &plan.source_connection_id, &path.path, 0o644)
+                    state
+                        .file_api
+                        .files
+                        .chmod_entry
+                        .execute(
+                            &actor,
+                            crate::application::files::ChmodEntryCommand {
+                                connection: source.clone(),
+                                path: path.path.clone(),
+                                mode: 0o644,
+                            },
+                        )
                         .await
                 }
                 _ => Ok(()),
