@@ -46,17 +46,29 @@ impl CreateDirectory {
             .await?;
         let provider = self.filesystem.resolve(&command.connection).await?;
         let path = VfsPath::new(command.connection.as_str(), command.path.clone())?;
-        let permissions = resolve_destination_permissions(
-            &provider,
-            &path,
-            true,
-            PermissionInheritanceMode::InheritParent,
-        )
-        .await;
+        let capabilities = provider.capabilities();
+        let permissions = if capabilities.permissions {
+            resolve_destination_permissions(
+                &provider,
+                &path,
+                true,
+                PermissionInheritanceMode::InheritParent,
+            )
+            .await?
+        } else {
+            None
+        };
 
         provider.create_dir(&path).await?;
         if let Some(permissions) = permissions {
-            let _ = provider.set_permissions(&path, &permissions).await;
+            if let Err(error) = provider.set_permissions(&path, &permissions).await {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "Directory '{}' was created, but applying inherited permissions '{}' failed: {}. Filesystem mutation committed; recovery required",
+                    path.path,
+                    permissions,
+                    error
+                )));
+            }
         }
         let metadata = provider.stat(&path).await?;
 
