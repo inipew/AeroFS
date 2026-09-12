@@ -322,6 +322,7 @@ async fn test_plan36_conflict_resolver() {
 async fn test_plan36_operation_service_lifecycle() {
     let app = setup_test_app().await;
     let admin = get_seeded_admin(&app.db).await;
+    let file_api = FileApiState::from_ref(&app.state);
     let path = "/test_op.txt";
     write_file(
         &app.state,
@@ -341,7 +342,7 @@ async fn test_plan36_operation_service_lifecycle() {
         PermissionInheritanceMode::InheritParent,
         None,
     );
-    let exec_res = OperationService::execute_plan(&app.state, &admin, &plan)
+    let exec_res = OperationService::execute_plan(&file_api, &admin, &plan)
         .await
         .unwrap();
     assert_eq!(exec_res.status, OperationStatus::Completed);
@@ -375,6 +376,7 @@ async fn test_plan36_auth_service_lifecycle() {
 async fn test_plan36_specialized_services() {
     let app = setup_test_app().await;
     let admin = get_seeded_admin(&app.db).await;
+    let file_api = FileApiState::from_ref(&app.state);
 
     app.runtime.set_phase(RuntimePhase::Running);
     let health = HealthState::from_ref(&app.state)
@@ -387,7 +389,7 @@ async fn test_plan36_specialized_services() {
 
     let edit_path = "/code.rs";
     EditorService::save_from_editing(
-        &app.state,
+        &file_api,
         &admin,
         "local",
         edit_path,
@@ -396,12 +398,11 @@ async fn test_plan36_specialized_services() {
     )
     .await
     .unwrap();
-    let (content, _etag) =
-        EditorService::read_for_editing(&app.state, &admin, "local", edit_path)
-            .await
-            .unwrap();
+    let (content, _etag) = EditorService::read_for_editing(&file_api, &admin, "local", edit_path)
+        .await
+        .unwrap();
     assert_eq!(content, "fn main() { println!(\"hello\"); }");
-    let preview_meta = PreviewService::get_preview_info(&app.state, &admin, "local", edit_path)
+    let preview_meta = PreviewService::get_preview_info(&file_api, &admin, "local", edit_path)
         .await
         .unwrap();
     assert_eq!(preview_meta.name, "code.rs");
