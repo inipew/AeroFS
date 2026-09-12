@@ -5,7 +5,7 @@ use crate::infrastructure::CredentialStore;
 use crate::runtime::{ResourceBudget, TaskSupervisor};
 use crate::services::connection_service::ConnectionService;
 use crate::sync::SyncManager;
-use crate::transfer::TransferManager;
+use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
     },
     infrastructure::{
         files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings},
-        transfers::{SqliteTransferEffects, TransferManagerQueue},
+        transfers::{SqliteTransferEffects, TransferEngineQueue},
     },
 };
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -24,7 +24,6 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-/// Lifecycle phase of the runtime
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RuntimePhase {
@@ -58,7 +57,6 @@ impl RuntimePhase {
     }
 }
 
-/// The reason why shutdown was initiated
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ShutdownReason {
@@ -89,7 +87,6 @@ impl ShutdownReason {
     }
 }
 
-/// Application-wide runtime context managing lifecycle phase, cancellation, and background task tracking
 #[derive(Clone)]
 pub struct AppRuntime {
     pub shutdown_token: CancellationToken,
@@ -162,6 +159,7 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub credentials: Arc<CredentialStore>,
     pub transfer_manager: TransferManager,
+    pub transfer_engine: TransferEngine,
     pub metadata_cache: Arc<crate::services::MetadataCache>,
     pub upload_locks: Arc<crate::services::UploadLockManager>,
     pub global_io_semaphore: Arc<Semaphore>,
@@ -196,7 +194,6 @@ impl AppState {
                 .await
                 .expect("Failed to initialize durable event journal"),
         );
-
         let resource_budget = Arc::new(ResourceBudget::default());
 
         let transfer_manager = TransferManager::new(
@@ -208,6 +205,7 @@ impl AppState {
             &runtime.task_tracker,
         )
         .await;
+        let transfer_engine = TransferEngine::new(transfer_manager.clone());
 
         let sync_manager = Arc::new(SyncManager::new(
             db.clone(),
@@ -217,8 +215,6 @@ impl AppState {
             registry.providers_map(),
         ));
 
-        // Transitional dual completion path; removed in Phase 7 after the
-        // transfer event stream becomes the single canonical sync trigger.
         let mut completion_rx = transfer_manager.completion_receiver();
         let sync_manager_clone = sync_manager.clone();
         let shutdown_token_cl = runtime.shutdown_token.clone();
@@ -274,7 +270,6 @@ impl AppState {
 
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());
-
         let cfg_limits_global = config.limits.global_io_concurrency;
         let cfg_limits_archive = config.limits.archive_concurrency;
         let cfg_limits_search = config.limits.search_concurrency;
@@ -300,7 +295,7 @@ impl AppState {
             create_transfer: CreateTransfer::new(
                 Arc::new(SqliteAuthorization::new(db.clone())),
                 Arc::new(RegistryFileSystemResolver::new(registry.clone())),
-                Arc::new(TransferManagerQueue::new(transfer_manager.clone())),
+                Arc::new(TransferEngineQueue::new(transfer_engine.clone())),
                 Arc::new(SqliteTransferEffects::new(db.clone())),
             ),
         };
@@ -311,6 +306,7 @@ impl AppState {
             registry,
             credentials,
             transfer_manager,
+            transfer_engine,
             metadata_cache,
             upload_locks,
             global_io_semaphore: Arc::new(Semaphore::new(cfg_limits_global)),

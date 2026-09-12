@@ -3,34 +3,35 @@ use crate::db::DbPool;
 use crate::domain::Actor;
 use crate::errors::AppError;
 use crate::ports::transfer::{TransferEffects, TransferQueue, TransferSubmission};
-use crate::transfer::TransferManager;
+use crate::transfer::{TransferCommand, TransferEngine};
 use async_trait::async_trait;
 
 #[derive(Clone)]
-pub struct TransferManagerQueue {
-    manager: TransferManager,
+pub struct TransferEngineQueue {
+    engine: TransferEngine,
 }
 
-impl TransferManagerQueue {
-    pub fn new(manager: TransferManager) -> Self {
-        Self { manager }
+impl TransferEngineQueue {
+    pub fn new(engine: TransferEngine) -> Self {
+        Self { engine }
     }
 }
 
 #[async_trait]
-impl TransferQueue for TransferManagerQueue {
+impl TransferQueue for TransferEngineQueue {
     async fn submit(&self, submission: TransferSubmission) -> Result<String, AppError> {
-        self.manager
-            .submit_job(
-                submission.user_id,
-                submission.name,
-                submission.transfer_type,
-                submission.source_connection.to_string(),
-                submission.source_path,
-                submission.destination_connection.to_string(),
-                submission.destination_path,
-            )
+        self.engine
+            .submit(TransferCommand {
+                user_id: submission.user_id,
+                name: submission.name,
+                transfer_type: submission.transfer_type,
+                source_connection_id: submission.source_connection.to_string(),
+                source_path: submission.source_path,
+                destination_connection_id: submission.destination_connection.to_string(),
+                destination_path: submission.destination_path,
+            })
             .await
+            .map(|admission| admission.job_id)
             .map_err(AppError::BadRequest)
     }
 }
