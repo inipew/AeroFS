@@ -201,7 +201,7 @@ impl CompletePresigned {
                 "upload",
                 Some(format!("size={}, etag={:?}", metadata.size, metadata.etag)),
             )
-            .await;
+            .await?;
         Ok(metadata)
     }
 }
