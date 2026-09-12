@@ -160,9 +160,13 @@ impl FileService {
         connection_id: &str,
         raw_path: &str,
     ) -> Result<FileMetadata, AppError> {
+        if let Some(metadata) = state.metadata_cache.get(connection_id, raw_path).await {
+            return Ok(metadata);
+        }
+
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
-        state
+        let metadata = state
             .files
             .stat_file
             .execute(
@@ -172,7 +176,12 @@ impl FileService {
                     path: raw_path.to_string(),
                 },
             )
-            .await
+            .await?;
+        state
+            .metadata_cache
+            .put(connection_id, raw_path, metadata.clone())
+            .await;
+        Ok(metadata)
     }
 
     pub async fn create_or_write_file(

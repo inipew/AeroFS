@@ -920,7 +920,7 @@ pub async fn upload_file(
     let mut dest_dir = "/".to_string();
     let mut uploaded_files = Vec::new();
 
-    while let Some(mut field) = multipart
+    while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("Multipart parse error: {}", e)))?
