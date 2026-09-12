@@ -1,10 +1,10 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::{AppConfig, ProviderStorageConfig};
 use backend::db::init_db;
-use backend::domain::{ChecksumCapabilities, VfsPath};
-use backend::services::FileService;
-use backend::state::{AppState, RuntimeOwner, ShutdownReason};
+use backend::domain::{Actor, ChecksumCapabilities, ConnectionId, SortField, SortOrder, VfsPath};
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::transfer::{
     TransferJob, TransferPhase, TransferPlanner, TransferStatus, TransferStrategy, TransferType,
 };
@@ -55,6 +55,58 @@ async fn setup_test_state() -> (AppState, AuthenticatedUser, TestRuntime) {
     )
 }
 
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
+async fn write_file(state: &AppState, user: &AuthenticatedUser, path: &str, content: Vec<u8>) {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+async fn list_page(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    cursor: Option<String>,
+) -> backend::domain::DirectoryListing {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .list_directory
+        .execute(
+            &actor(user),
+            backend::application::files::ListDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: Some("/".to_string()),
+                show_hidden: Some(false),
+                sort: Some(SortField::Name),
+                order: Some(SortOrder::Asc),
+                cursor,
+                limit: Some(10),
+            },
+        )
+        .await
+        .unwrap()
+}
+
 fn create_test_job(
     id: &str,
     t_type: TransferType,
@@ -95,33 +147,19 @@ async fn test_opendal_streaming_lister_and_cursor_pagination() {
     for i in 0..25 {
         let path = format!("/page_item_{:02}.txt", i);
         let content = format!("Content {}", i).into_bytes();
-        FileService::create_or_write_file(&state, &admin, "local", &path, content, None)
-            .await
-            .unwrap();
+        write_file(&state, &admin, &path, content).await;
     }
 
-    let page1 = FileService::list_directory_paged(
-        &state, &admin, "local", Some("/".to_string()), Some(false), Some("name"), Some("asc"), None, Some(10),
-    )
-    .await
-    .unwrap();
+    let page1 = list_page(&state, &admin, None).await;
     assert_eq!(page1.entries.len(), 10);
     assert!(page1.next_cursor.is_some());
 
-    let page2 = FileService::list_directory_paged(
-        &state, &admin, "local", Some("/".to_string()), Some(false), Some("name"), Some("asc"), page1.next_cursor.as_deref(), Some(10),
-    )
-    .await
-    .unwrap();
+    let page2 = list_page(&state, &admin, page1.next_cursor.clone()).await;
     assert_eq!(page2.entries.len(), 10);
     assert!(page2.next_cursor.is_some());
     assert_ne!(page1.entries[0].name, page2.entries[0].name);
 
-    let page3 = FileService::list_directory_paged(
-        &state, &admin, "local", Some("/".to_string()), Some(false), Some("name"), Some("asc"), page2.next_cursor.as_deref(), Some(10),
-    )
-    .await
-    .unwrap();
+    let page3 = list_page(&state, &admin, page2.next_cursor.clone()).await;
     assert_eq!(page3.entries.len(), 5);
     assert!(page3.next_cursor.is_none());
 }

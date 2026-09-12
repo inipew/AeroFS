@@ -3,12 +3,12 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::Actor;
+use backend::domain::{Actor, ConnectionId};
 use backend::ports::transfer::{
     TransferJobResponse, TransferPhase, TransferStatus, TransferType,
 };
-use backend::services::{EditorService, FileService, TransferService};
-use backend::state::{AppState, RuntimeOwner, ShutdownReason, TransferState};
+use backend::services::{EditorService, TransferService};
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::TransferPhase as EngineTransferPhase;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -61,6 +61,49 @@ fn actor(user: &AuthenticatedUser) -> Actor {
     }
 }
 
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+async fn stat_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+) -> Result<backend::domain::FileMetadata, backend::errors::AppError> {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .stat_file
+        .execute(
+            &actor(user),
+            backend::application::files::StatFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+            },
+        )
+        .await
+}
+
 async fn wait_for_completed(
     state: &AppState,
     user: &AuthenticatedUser,
@@ -104,16 +147,13 @@ async fn test_transfer_phase_transitions_and_completion() {
     let (state, admin, _runtime) = setup_test_context().await;
 
     let test_data = vec![b'A'; 100 * 1024];
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/source_lifecycle.txt",
         test_data.clone(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let job_id = TransferService::create_transfer(
         &state,
@@ -145,16 +185,7 @@ async fn test_move_cleanup_lifecycle() {
     let (state, admin, _runtime) = setup_test_context().await;
 
     let test_data = b"Transactional Move Lifecycle Test".to_vec();
-    FileService::create_or_write_file(
-        &state,
-        &admin,
-        "local",
-        "/move_source.txt",
-        test_data,
-        None,
-    )
-    .await
-    .unwrap();
+    write_file(&state, &admin, "/move_source.txt", test_data).await;
 
     let job_id = TransferService::create_transfer(
         &state,
@@ -172,9 +203,9 @@ async fn test_move_cleanup_lifecycle() {
     let job = wait_for_completed(&state, &admin, &job_id).await;
     assert_eq!(job.phase, TransferPhase::Completed);
 
-    let dest_res = FileService::stat_file(&state, &admin, "local", "/move_dest.txt").await;
+    let dest_res = stat_file(&state, &admin, "/move_dest.txt").await;
     assert!(dest_res.is_ok());
 
-    let src_res = FileService::stat_file(&state, &admin, "local", "/move_source.txt").await;
+    let src_res = stat_file(&state, &admin, "/move_source.txt").await;
     assert!(src_res.is_err(), "Source file should be deleted on move");
 }

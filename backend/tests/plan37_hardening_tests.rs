@@ -1,11 +1,12 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::{parse_single_byte_range, Capabilities, RangeError};
+use backend::domain::{parse_single_byte_range, Actor, Capabilities, ConnectionId, RangeError};
 use backend::errors::AppError;
-use backend::services::{FileService, TransferService};
-use backend::state::{AppState, RuntimeOwner, ShutdownReason};
+use backend::services::TransferService;
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::transfer::{TransferJob, TransferPhase, TransferStatus, TransferType};
 use chrono::Utc;
 use std::collections::HashSet;
@@ -20,6 +21,38 @@ impl Drop for TestRuntime {
     fn drop(&mut self) {
         self.runtime.request_shutdown(ShutdownReason::Manual);
     }
+}
+
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+    expected_etag: Option<&str>,
+) -> Result<backend::domain::FileMetadata, AppError> {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::new("local").unwrap(),
+                path: path.to_string(),
+                content,
+                expected_etag: expected_etag.map(str::to_string),
+                create_only: false,
+            },
+        )
+        .await
 }
 
 async fn setup_test_context() -> (
@@ -68,19 +101,16 @@ async fn test_if_match_strict_preconditions() {
     let (state, admin, _regular, _runtime) = setup_test_context().await;
 
     let initial_content = b"Initial content for ETag test".to_vec();
-    let meta1 = FileService::create_or_write_file(
-        &state, &admin, "local", "/test_etag.txt", initial_content, None,
-    )
-    .await
-    .expect("Initial write should succeed");
+    let meta1 = write_file(&state, &admin, "/test_etag.txt", initial_content, None)
+        .await
+        .expect("Initial write should succeed");
 
     assert!(!meta1.etag.is_empty());
 
     let updated_content = b"Updated content with valid ETag".to_vec();
-    let meta2 = FileService::create_or_write_file(
+    let meta2 = write_file(
         &state,
         &admin,
-        "local",
         "/test_etag.txt",
         updated_content,
         Some(&meta1.etag),
@@ -90,10 +120,9 @@ async fn test_if_match_strict_preconditions() {
 
     assert_ne!(meta1.etag, meta2.etag);
 
-    let stale_write = FileService::create_or_write_file(
+    let stale_write = write_file(
         &state,
         &admin,
-        "local",
         "/test_etag.txt",
         b"Conflicting write".to_vec(),
         Some(&meta1.etag),
@@ -106,10 +135,9 @@ async fn test_if_match_strict_preconditions() {
         stale_write
     );
 
-    let non_existent_write = FileService::create_or_write_file(
+    let non_existent_write = write_file(
         &state,
         &admin,
-        "local",
         "/does_not_exist.txt",
         b"New file with expected etag".to_vec(),
         Some("\"some-etag\""),
@@ -159,24 +187,33 @@ fn test_rfc_range_parser_comprehensive() {
 #[tokio::test]
 async fn test_batch_delete_deduplication_and_nesting() {
     let (state, admin, _regular, _runtime) = setup_test_context().await;
+    let connection = ConnectionId::new("local").unwrap();
+    let file_api = FileApiState::from_ref(&state);
 
-    FileService::create_directory(&state, &admin, "local", "/batch_test/nested")
+    file_api
+        .files
+        .create_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::CreateDirectoryCommand {
+                connection: connection.clone(),
+                path: "/batch_test/nested".to_string(),
+            },
+        )
         .await
         .unwrap();
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/batch_test/nested/file1.txt",
         b"1".to_vec(),
         None,
     )
     .await
     .unwrap();
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/batch_test/file2.txt",
         b"2".to_vec(),
         None,
@@ -193,12 +230,25 @@ async fn test_batch_delete_deduplication_and_nesting() {
         "/batch_test".to_string(),
     ];
 
-    let (succeeded, failed) = FileService::delete_files(&state, &admin, "local", paths_to_delete)
+    let result = file_api
+        .files
+        .delete_entries
+        .execute(
+            &actor(&admin),
+            backend::application::files::DeleteEntriesCommand {
+                connection,
+                paths: paths_to_delete,
+            },
+        )
         .await
         .expect("Batch delete should execute");
 
-    assert!(failed.is_empty(), "Expected zero failures, got: {:?}", failed);
-    assert!(!succeeded.is_empty());
+    assert!(
+        result.failed.is_empty(),
+        "Expected zero failures, got: {:?}",
+        result.failed
+    );
+    assert!(!result.succeeded.is_empty());
 }
 
 #[tokio::test]
