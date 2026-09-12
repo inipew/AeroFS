@@ -1,18 +1,15 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
+use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::filesystem::archive::ArchiveOverwriteMode;
-use backend::infrastructure::{
-    archive::SqliteArchiveEffects,
-    files::{RegistryFileSystemResolver, SqliteAuthorization},
-};
-use backend::services::{ArchiveService, FileService, TransferService};
-use backend::transfer::{TransferType, WsEvent};
+use backend::services::{FileService, TransferService};
+use backend::state::ArchiveState;
+use backend::transfer::TransferType;
 use backend::AppState;
-use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::sync::Semaphore;
 
 async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
     let temp = tempdir().unwrap();
@@ -36,18 +33,6 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     (state, user, temp)
 }
 
-fn archive_service(state: &AppState) -> ArchiveService {
-    ArchiveService::new(
-        Arc::new(SqliteAuthorization::new(state.db.clone())),
-        Arc::new(RegistryFileSystemResolver::new(state.registry.clone())),
-        Arc::new(SqliteArchiveEffects::new(
-            state.db.clone(),
-            state.transfer_manager.clone(),
-        )),
-        Arc::new(Semaphore::new(state.config.limits.archive_concurrency)),
-    )
-}
-
 fn actor_from_user(user: &AuthenticatedUser) -> Actor {
     Actor {
         id: user.id().to_string(),
@@ -58,35 +43,44 @@ fn actor_from_user(user: &AuthenticatedUser) -> Actor {
 
 #[tokio::test]
 async fn test_ws_event_sequence_and_durable_replay() {
-    let (state, _, _temp) = setup_test_context().await;
+    let temp = tempdir().unwrap();
+    let db_path = temp.path().join("journal_replay.db");
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db = init_db(&database_url).await.unwrap();
+    let journal = EventJournal::init(db).await.unwrap();
 
-    // 1. Broadcast multiple events
-    state
-        .transfer_manager
-        .broadcast_event(WsEvent::file_change("local", "/file1.txt", "create"))
-        .await;
-    state
-        .transfer_manager
-        .broadcast_event(WsEvent::file_change("local", "/file2.txt", "write"))
-        .await;
-    state
-        .transfer_manager
-        .broadcast_event(WsEvent::file_change("local", "/file3.txt", "delete"))
-        .await;
+    journal
+        .append(DomainEvent::file_change("local", "/file1.txt", "create"), None)
+        .await
+        .unwrap();
+    journal
+        .append(DomainEvent::file_change("local", "/file2.txt", "write"), None)
+        .await
+        .unwrap();
+    journal
+        .append(DomainEvent::file_change("local", "/file3.txt", "delete"), None)
+        .await
+        .unwrap();
 
-    // 2. Fetch missed events since sequence 1
-    let missed = match state.transfer_manager.get_events_since(1).await {
-        backend::transfer::ReplayResult::Events(e) => e,
-        _ => panic!("Expected Events"),
+    let missed = match journal
+        .get_since(Some(journal.epoch()), 1, 100)
+        .await
+        .unwrap()
+    {
+        ReplayOutcome::Events(events) => events,
+        other => panic!("expected replay events, got {other:?}"),
     };
     assert_eq!(missed.len(), 2, "Expected 2 events with sequence > 1");
     assert_eq!(missed[0].sequence, 2);
     assert_eq!(missed[1].sequence, 3);
 
-    // 3. Fetch all events since 0
-    let all = match state.transfer_manager.get_events_since(0).await {
-        backend::transfer::ReplayResult::Events(e) => e,
-        _ => panic!("Expected Events"),
+    let all = match journal
+        .get_since(Some(journal.epoch()), 0, 100)
+        .await
+        .unwrap()
+    {
+        ReplayOutcome::Events(events) => events,
+        other => panic!("expected replay events, got {other:?}"),
     };
     assert_eq!(all.len(), 3);
     assert_eq!(all[0].sequence, 1);
@@ -98,13 +92,11 @@ async fn test_ws_event_sequence_and_durable_replay() {
 async fn test_file_service_full_crud_lifecycle() {
     let (state, user, _temp) = setup_test_context().await;
 
-    // 1. Create directory
     let dir_meta = FileService::create_directory(&state, &user, "local", "/docs")
         .await
         .expect("Directory creation failed");
     assert_eq!(dir_meta.path, "/docs");
 
-    // 2. Create and write file
     let file_meta = FileService::create_or_write_file(
         &state,
         &user,
@@ -117,13 +109,11 @@ async fn test_file_service_full_crud_lifecycle() {
     .expect("File creation failed");
     assert_eq!(file_meta.size, 13);
 
-    // 3. Stat file
     let stat = FileService::stat_file(&state, &user, "local", "/docs/readme.md")
         .await
         .expect("Stat file failed");
     assert_eq!(stat.size, 13);
 
-    // 4. List directory
     let listing = FileService::list_directory(
         &state,
         &user,
@@ -138,7 +128,6 @@ async fn test_file_service_full_crud_lifecycle() {
     assert_eq!(listing.entries.len(), 1);
     assert_eq!(listing.entries[0].name, "readme.md");
 
-    // 5. Rename entry
     FileService::rename_entry(
         &state,
         &user,
@@ -149,7 +138,6 @@ async fn test_file_service_full_crud_lifecycle() {
     .await
     .expect("Rename entry failed");
 
-    // 6. Delete entry
     FileService::delete_entry(&state, &user, "local", "/docs/README_RENAMED.md")
         .await
         .expect("Delete entry failed");
@@ -158,11 +146,10 @@ async fn test_file_service_full_crud_lifecycle() {
 #[tokio::test]
 async fn test_archive_service_lifecycle() {
     let (state, user, _temp) = setup_test_context().await;
-    let archive = archive_service(&state);
+    let archive = ArchiveState::from_ref(&state);
     let actor = actor_from_user(&user);
     let connection = ConnectionId::local();
 
-    // Create source files
     FileService::create_or_write_file(
         &state,
         &user,
@@ -185,8 +172,8 @@ async fn test_archive_service_lifecycle() {
     .await
     .unwrap();
 
-    // 1. Compress into ZIP
     let compress_res = archive
+        .service
         .compress(
             &actor,
             &connection,
@@ -199,23 +186,23 @@ async fn test_archive_service_lifecycle() {
         .expect("Compression failed");
     assert!(compress_res.success);
 
-    // 2. List virtual archive contents
     let virtual_entries = archive
+        .service
         .list_virtual(&actor, &connection, "/bundle.zip", "")
         .await
         .expect("List virtual archive failed");
     assert!(virtual_entries.iter().any(|e| e.name == "src1.txt"));
 
-    // 3. Read virtual archive entry
     let (filename, bytes) = archive
+        .service
         .read_virtual_entry(&actor, &connection, "/bundle.zip", "src1.txt")
         .await
         .expect("Read virtual archive entry failed");
     assert_eq!(filename, "src1.txt");
     assert_eq!(bytes, b"Source file 1 content");
 
-    // 4. Extract archive
     let extract_res = archive
+        .service
         .extract(
             &actor,
             &connection,
@@ -244,7 +231,6 @@ async fn test_transfer_service_operations() {
     .await
     .unwrap();
 
-    // 1. Create transfer
     let job_id = TransferService::create_transfer(
         &state,
         &user,
@@ -259,16 +245,13 @@ async fn test_transfer_service_operations() {
     .expect("Create transfer failed");
     assert!(!job_id.is_empty());
 
-    // 2. List transfers
     let jobs = TransferService::list_transfers(&state, &user)
         .await
         .expect("List transfers failed");
     assert!(jobs.iter().any(|j| j.id == job_id));
 
-    // Wait a brief moment for transfer to finish or process
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // 3. Dismiss finished transfer
     let _ = TransferService::dismiss_transfer(&state, &user, &job_id).await;
     let _ = TransferService::clear_finished_transfers(&state, &user).await;
 }
