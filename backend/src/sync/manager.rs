@@ -287,32 +287,71 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Applies a transfer lifecycle result to its sync operation exactly once.
+    ///
+    /// EventJournal subscribers are intentionally at-least-once. The operation state
+    /// transition and synced counter update therefore share one SQLite transaction and
+    /// are guarded by the operation's non-terminal status. Replaying the same durable
+    /// completion after a crash becomes a no-op instead of double-counting the job.
     pub async fn notify_transfer_completed(
         &self,
         transfer_job_id: &str,
         success: bool,
     ) -> anyhow::Result<()> {
-        let op = sqlx::query("SELECT id, job_id FROM sync_operations WHERE transfer_job_id = ?")
-            .bind(transfer_job_id)
-            .fetch_optional(&self.db)
+        let mut tx = self.db.begin().await?;
+        let op = sqlx::query(
+            "SELECT id, job_id, status FROM sync_operations WHERE transfer_job_id = ?",
+        )
+        .bind(transfer_job_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(row) = op else {
+            tx.commit().await?;
+            return Ok(());
+        };
+
+        let op_id: String = row.get("id");
+        let job_id: String = row.get("job_id");
+        let current_status: String = row.get("status");
+
+        if matches!(current_status.as_str(), "completed" | "failed") {
+            tx.commit().await?;
+            return Ok(());
+        }
+
+        let (status, error_message) = if success {
+            ("completed", None)
+        } else {
+            ("failed", Some("Transfer failed"))
+        };
+        let now = Utc::now().to_rfc3339();
+
+        let updated = sqlx::query(
+            "UPDATE sync_operations\n             SET status = ?, transfer_job_id = ?, error_message = ?, updated_at = ?\n             WHERE id = ? AND status NOT IN ('completed', 'failed')",
+        )
+        .bind(status)
+        .bind(transfer_job_id)
+        .bind(error_message)
+        .bind(&now)
+        .bind(&op_id)
+        .execute(&mut *tx)
+        .await?;
+
+        if updated.rows_affected() == 1 && success {
+            sqlx::query(
+                "UPDATE sync_jobs SET synced_files = synced_files + 1, updated_at = ? WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(&job_id)
+            .execute(&mut *tx)
             .await?;
+        }
 
-        if let Some(row) = op {
-            let op_id: String = row.get("id");
-            let job_id: String = row.get("job_id");
+        tx.commit().await?;
 
-            let (status, err) = if success {
-                ("completed", None)
-            } else {
-                ("failed", Some("Transfer failed".to_string()))
-            };
-
-            self.update_operation_status(&op_id, status, Some(transfer_job_id), err.as_deref())
-                .await?;
-            if success {
-                self.increment_synced(&job_id).await?;
-            }
-
+        if updated.rows_affected() == 1 {
+            self.refresh_job(&job_id).await?;
             self.check_job_completion(&job_id).await?;
         }
         Ok(())
@@ -438,14 +477,7 @@ impl SyncManager {
                         if let Some(tj) = transfer_jobs.iter().find(|t| &t.id == tid) {
                             match tj.status {
                                 crate::transfer::engine::TransferStatus::Completed => {
-                                    self.update_operation_status(
-                                        &op.id,
-                                        "completed",
-                                        Some(tid),
-                                        None,
-                                    )
-                                    .await?;
-                                    self.increment_synced(&id).await?;
+                                    self.notify_transfer_completed(tid, true).await?;
                                 }
                                 crate::transfer::engine::TransferStatus::Failed
                                 | crate::transfer::engine::TransferStatus::Interrupted => {
