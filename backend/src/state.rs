@@ -1,4 +1,8 @@
-use crate::application::{files::FileUseCases, transfers::TransferUseCases};
+use crate::application::{
+    files::FileUseCases,
+    transfers::TransferUseCases,
+    UploadApplicationService,
+};
 use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::events::EventJournal;
@@ -141,7 +145,6 @@ impl AppRuntime {
 }
 
 /// Runtime container handed to adapters.
-///
 /// Concrete dependency construction belongs in `crate::bootstrap`.
 #[derive(Clone)]
 pub struct AppState {
@@ -162,6 +165,7 @@ pub struct AppState {
     pub runtime: AppRuntime,
     pub files: FileUseCases,
     pub transfers: TransferUseCases,
+    pub uploads: UploadApplicationService,
 }
 
 impl AppState {
