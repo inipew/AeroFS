@@ -137,6 +137,68 @@ impl RenameEntry {
 }
 
 #[derive(Debug, Clone)]
+pub struct CopyEntryCommand {
+    pub connection: ConnectionId,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone)]
+pub struct CopyEntry {
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    effects: Arc<dyn FileMutationEffects>,
+}
+
+impl CopyEntry {
+    pub fn new(
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        effects: Arc<dyn FileMutationEffects>,
+    ) -> Self {
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
+    }
+
+    pub async fn execute(&self, actor: &Actor, command: CopyEntryCommand) -> Result<String, AppError> {
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Read)
+            .await?;
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Create)
+            .await?;
+
+        let provider = self.filesystem.resolve(&command.connection).await?;
+        let from = VfsPath::new(command.connection.as_str(), command.from)?;
+        let to = VfsPath::new(command.connection.as_str(), command.to)?;
+        if from.path == to.path {
+            return Err(AppError::BadRequest(
+                "Source and destination must be different".into(),
+            ));
+        }
+
+        provider.copy(&from, &to).await?;
+        self.effects
+            .invalidate_prefix(&command.connection, &to.path)
+            .await;
+        self.effects
+            .file_changed(
+                actor,
+                &command.connection,
+                &to.path,
+                "FILE_COPY",
+                "copy",
+                Some(format!("Copied {} -> {}", from.path, to.path)),
+            )
+            .await;
+        Ok(to.path)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct DeleteEntriesCommand {
     pub connection: ConnectionId,
     pub paths: Vec<String>,
