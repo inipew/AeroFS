@@ -5,9 +5,9 @@ use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::filesystem::archive::ArchiveOverwriteMode;
+use backend::ports::transfer::TransferType;
 use backend::services::{FileService, TransferService};
 use backend::state::ArchiveState;
-use backend::transfer::TransferType;
 use backend::AppState;
 use tempfile::tempdir;
 
