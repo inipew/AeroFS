@@ -1,5 +1,3 @@
-use super::FileApplicationService;
-use crate::auth::UserInfo;
 use crate::domain::{Actor, ConnectionId, FileMetadata, PermissionInheritanceMode, VfsPath};
 use crate::errors::{AppError, VfsError};
 use crate::ports::{
@@ -157,9 +155,7 @@ impl WriteFile {
         }
 
         let metadata = provider.stat(&path).await?;
-        self.effects
-            .invalidate(&command.connection, &command.path)
-            .await;
+        self.effects.invalidate(&command.connection, &command.path).await;
         self.effects
             .file_changed(
                 actor,
@@ -171,69 +167,5 @@ impl WriteFile {
             )
             .await;
         Ok(metadata)
-    }
-}
-
-fn actor_from_user(user: &UserInfo) -> Actor {
-    Actor {
-        id: user.id.clone(),
-        username: user.username.clone(),
-        is_admin: user.is_admin,
-    }
-}
-
-impl FileApplicationService {
-    pub async fn create_file_typed(
-        &self,
-        user: &UserInfo,
-        connection: &ConnectionId,
-        raw_path: String,
-    ) -> Result<FileMetadata, AppError> {
-        self.write_file
-            .execute(
-                &actor_from_user(user),
-                WriteFileCommand {
-                    connection: connection.clone(),
-                    path: raw_path,
-                    content: Vec::new(),
-                    expected_etag: None,
-                    create_only: true,
-                },
-            )
-            .await
-    }
-
-    pub async fn create_or_write_typed(
-        &self,
-        user: &UserInfo,
-        connection: &ConnectionId,
-        raw_path: String,
-        content: Vec<u8>,
-        expected_etag: Option<String>,
-    ) -> Result<FileMetadata, AppError> {
-        self.write_file
-            .execute(
-                &actor_from_user(user),
-                WriteFileCommand {
-                    connection: connection.clone(),
-                    path: raw_path,
-                    content,
-                    expected_etag,
-                    create_only: false,
-                },
-            )
-            .await
-    }
-
-    pub async fn write_typed(
-        &self,
-        user: &UserInfo,
-        connection: &ConnectionId,
-        path: String,
-        content: Vec<u8>,
-    ) -> Result<(), AppError> {
-        self.create_or_write_typed(user, connection, path, content, None)
-            .await
-            .map(|_| ())
     }
 }
