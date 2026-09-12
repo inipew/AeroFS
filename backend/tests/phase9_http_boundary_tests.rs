@@ -9,7 +9,9 @@ fn source(path: &str) -> String {
 #[test]
 fn transfer_handlers_only_use_application_transfer_boundary() {
     let api = source("src/api/transfers.rs");
-    assert!(api.contains("state.transfers"));
+    assert!(api.contains("State<TransferState>"));
+    assert!(api.contains("state.use_cases"));
+    assert!(!api.contains("State<AppState>"));
     assert!(!api.contains("TransferService"));
     assert!(!api.contains("state.transfer_manager"));
     assert!(!api.contains("check_permission("));
