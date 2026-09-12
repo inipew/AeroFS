@@ -1,8 +1,10 @@
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::{AppConfig, ProviderStorageConfig};
 use backend::db::init_db;
 use backend::domain::{ChecksumCapabilities, VfsPath};
 use backend::services::FileService;
+use backend::state::{AppState, RuntimeOwner, ShutdownReason};
 use backend::transfer::{
     TransferJob, TransferPhase, TransferPlanner, TransferStatus, TransferStrategy, TransferType,
 };
@@ -10,11 +12,21 @@ use backend::vfs::opendal::{
     build_fs_operator, build_fs_operator_with_config, build_s3_operator, OpenDalFileSystem,
 };
 use backend::vfs::traits::FileSystem;
-use backend::AppState;
 use std::sync::Arc;
 use tempfile::tempdir;
 
-async fn setup_test_state() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
+struct TestRuntime {
+    _temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_state() -> (AppState, AuthenticatedUser, TestRuntime) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("opendal_native_test.db");
     let storage_dir = temp.path().join("storage");
@@ -25,7 +37,7 @@ async fn setup_test_state() -> (AppState, AuthenticatedUser, tempfile::TempDir) 
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
 
     let admin = AuthenticatedUser(UserInfo {
         id: "admin-user".to_string(),
@@ -33,7 +45,14 @@ async fn setup_test_state() -> (AppState, AuthenticatedUser, tempfile::TempDir) 
         is_admin: true,
     });
 
-    (state, admin, temp)
+    (
+        built.state,
+        admin,
+        TestRuntime {
+            _temp: temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 fn create_test_job(
@@ -71,9 +90,8 @@ fn create_test_job(
 
 #[tokio::test]
 async fn test_opendal_streaming_lister_and_cursor_pagination() {
-    let (state, admin, _temp) = setup_test_state().await;
+    let (state, admin, _runtime) = setup_test_state().await;
 
-    // 1. Populate directory with 25 files
     for i in 0..25 {
         let path = format!("/page_item_{:02}.txt", i);
         let content = format!("Content {}", i).into_bytes();
@@ -82,60 +100,28 @@ async fn test_opendal_streaming_lister_and_cursor_pagination() {
             .unwrap();
     }
 
-    // 2. Query Page 1 with limit = 10
     let page1 = FileService::list_directory_paged(
-        &state,
-        &admin,
-        "local",
-        Some("/".to_string()),
-        Some(false),
-        Some("name"),
-        Some("asc"),
-        None,
-        Some(10),
+        &state, &admin, "local", Some("/".to_string()), Some(false), Some("name"), Some("asc"), None, Some(10),
     )
     .await
     .unwrap();
-
     assert_eq!(page1.entries.len(), 10);
     assert!(page1.next_cursor.is_some());
 
-    // 3. Query Page 2 using next_cursor
     let page2 = FileService::list_directory_paged(
-        &state,
-        &admin,
-        "local",
-        Some("/".to_string()),
-        Some(false),
-        Some("name"),
-        Some("asc"),
-        page1.next_cursor.as_deref(),
-        Some(10),
+        &state, &admin, "local", Some("/".to_string()), Some(false), Some("name"), Some("asc"), page1.next_cursor.as_deref(), Some(10),
     )
     .await
     .unwrap();
-
     assert_eq!(page2.entries.len(), 10);
     assert!(page2.next_cursor.is_some());
-
-    // Verify disjoint pages
     assert_ne!(page1.entries[0].name, page2.entries[0].name);
 
-    // 4. Query Page 3 using second next_cursor
     let page3 = FileService::list_directory_paged(
-        &state,
-        &admin,
-        "local",
-        Some("/".to_string()),
-        Some(false),
-        Some("name"),
-        Some("asc"),
-        page2.next_cursor.as_deref(),
-        Some(10),
+        &state, &admin, "local", Some("/".to_string()), Some(false), Some("name"), Some("asc"), page2.next_cursor.as_deref(), Some(10),
     )
     .await
     .unwrap();
-
     assert_eq!(page3.entries.len(), 5);
     assert!(page3.next_cursor.is_none());
 }
@@ -153,45 +139,18 @@ async fn test_opendal_transfer_planner_strategy_selection() {
     let src_vfs = VfsPath::new("local_conn", "/file_a.txt").unwrap();
     let dst_vfs = VfsPath::new("local_conn", "/file_b.txt").unwrap();
 
-    // 1. Same-connection Move on local filesystem -> NativeRename
-    let move_job = create_test_job(
-        "job-1",
-        TransferType::Move,
-        "local_conn",
-        "/file_a.txt",
-        "local_conn",
-        "/file_b.txt",
-    );
-    let strategy_move =
-        TransferPlanner::plan_transfer(&move_job, &local_fs, &local_fs, &src_vfs, &dst_vfs);
+    let move_job = create_test_job("job-1", TransferType::Move, "local_conn", "/file_a.txt", "local_conn", "/file_b.txt");
+    let strategy_move = TransferPlanner::plan_transfer(&move_job, &local_fs, &local_fs, &src_vfs, &dst_vfs);
     assert_eq!(strategy_move, TransferStrategy::NativeRename);
 
-    // 2. Cross-connection Copy -> Streaming
-    let cross_job = create_test_job(
-        "job-2",
-        TransferType::Copy,
-        "local_conn",
-        "/file_a.txt",
-        "s3_conn",
-        "/file_b.txt",
-    );
+    let cross_job = create_test_job("job-2", TransferType::Copy, "local_conn", "/file_a.txt", "s3_conn", "/file_b.txt");
     let cross_dst = VfsPath::new("s3_conn", "/file_b.txt").unwrap();
-    let strategy_cross =
-        TransferPlanner::plan_transfer(&cross_job, &local_fs, &s3_fs, &src_vfs, &cross_dst);
+    let strategy_cross = TransferPlanner::plan_transfer(&cross_job, &local_fs, &s3_fs, &src_vfs, &cross_dst);
     assert_eq!(strategy_cross, TransferStrategy::Streaming);
 
-    // 3. Same-connection S3 Copy -> ServerSideCopy (zero egress)
-    let s3_copy_job = create_test_job(
-        "job-3",
-        TransferType::Copy,
-        "s3_conn",
-        "/file_a.txt",
-        "s3_conn",
-        "/file_b.txt",
-    );
+    let s3_copy_job = create_test_job("job-3", TransferType::Copy, "s3_conn", "/file_a.txt", "s3_conn", "/file_b.txt");
     let s3_src = VfsPath::new("s3_conn", "/file_a.txt").unwrap();
-    let strategy_s3_copy =
-        TransferPlanner::plan_transfer(&s3_copy_job, &s3_fs, &s3_fs, &s3_src, &cross_dst);
+    let strategy_s3_copy = TransferPlanner::plan_transfer(&s3_copy_job, &s3_fs, &s3_fs, &s3_src, &cross_dst);
     assert_eq!(strategy_s3_copy, TransferStrategy::ServerSideCopy);
 }
 
@@ -201,29 +160,15 @@ async fn test_opendal_presign_support_trait_and_rejection_policy() {
     let root_str = temp.path().to_string_lossy().to_string();
     let op = build_fs_operator(&root_str).unwrap();
     let local_fs = OpenDalFileSystem::new("local_conn", op);
-
-    // Local filesystem does NOT implement PresignSupport
     assert!(local_fs.as_presign().is_none());
 
-    let s3_op = build_s3_operator(
-        "bucket-test",
-        Some("us-east-1"),
-        None,
-        Some("ak"),
-        Some("sk"),
-        None,
-    )
-    .unwrap();
+    let s3_op = build_s3_operator("bucket-test", Some("us-east-1"), None, Some("ak"), Some("sk"), None).unwrap();
     let s3_fs = OpenDalFileSystem::new("s3_conn", s3_op);
-
-    // S3 DOES implement PresignSupport
     assert!(s3_fs.as_presign().is_some());
     let presign = s3_fs.as_presign().unwrap();
 
     let s3_vfs = VfsPath::new("s3_conn", "/data.bin").unwrap();
-    let presign_read_res = presign
-        .presign_read_url(&s3_vfs, std::time::Duration::from_secs(300))
-        .await;
+    let presign_read_res = presign.presign_read_url(&s3_vfs, std::time::Duration::from_secs(300)).await;
     assert!(presign_read_res.is_ok());
     let url = presign_read_res.unwrap();
     assert!(url.contains("bucket-test") || url.contains("data.bin") || url.contains("X-Amz"));

@@ -19,13 +19,14 @@ fn app_state_is_not_the_composition_root() {
         "SqliteTransferEffects",
         "SyncEventSubscriber::spawn",
         "MetadataCacheEventSubscriber::spawn",
+        "crate::bootstrap::build_app_state",
+        "new_with_db",
     ] {
         assert!(
             !state.contains(forbidden),
-            "state.rs must not compose concrete dependency: {forbidden}"
+            "state.rs must not compose concrete dependency or compatibility bootstrap: {forbidden}"
         );
     }
-    assert!(state.contains("crate::bootstrap::build_app_state"));
 }
 
 #[test]

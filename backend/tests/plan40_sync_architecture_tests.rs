@@ -4,6 +4,7 @@ use axum::{
     http::{header, Request, StatusCode},
 };
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::create_router;
 use backend::db::init_db;
@@ -11,14 +12,24 @@ use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::middleware::REQUEST_ID_HEADER;
 use backend::ports::transfer::TransferType;
 use backend::services::{FileService, TransferService};
-use backend::state::RealtimeState;
-use backend::AppState;
+use backend::state::{AppState, RealtimeState, RuntimeOwner, ShutdownReason};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-async fn setup_test_app() -> (axum::Router, AppState, String, tempfile::TempDir) {
+struct TestRuntime {
+    temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_app() -> (axum::Router, AppState, String, TestRuntime) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("plan40_test.db");
     let storage_dir = temp.path().join("storage");
@@ -29,7 +40,8 @@ async fn setup_test_app() -> (axum::Router, AppState, String, tempfile::TempDir)
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
+    let state = built.state;
     let app = create_router(state.clone());
 
     let login_req = Request::builder()
@@ -51,7 +63,15 @@ async fn setup_test_app() -> (axum::Router, AppState, String, tempfile::TempDir)
         .to_string();
     let cookie = cookie_header.split(';').next().unwrap().to_string();
 
-    (app, state, cookie, temp)
+    (
+        app,
+        state,
+        cookie,
+        TestRuntime {
+            temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 fn admin_user() -> AuthenticatedUser {
@@ -64,14 +84,13 @@ fn admin_user() -> AuthenticatedUser {
 
 #[tokio::test]
 async fn test_request_id_middleware_propagation() {
-    let (app, _state, _cookie, _temp) = setup_test_app().await;
+    let (app, _state, _cookie, _runtime) = setup_test_app().await;
 
     let req1 = Request::builder()
         .uri("/api/v1/health/live")
         .method("GET")
         .body(Body::empty())
         .unwrap();
-
     let resp1 = app.clone().oneshot(req1).await.unwrap();
     assert_eq!(resp1.status(), StatusCode::OK);
     let req_id1 = resp1.headers().get(REQUEST_ID_HEADER);
@@ -85,34 +104,20 @@ async fn test_request_id_middleware_propagation() {
         .header(REQUEST_ID_HEADER, custom_id)
         .body(Body::empty())
         .unwrap();
-
     let resp2 = app.oneshot(req2).await.unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
-    let req_id2 = resp2
-        .headers()
-        .get(REQUEST_ID_HEADER)
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let req_id2 = resp2.headers().get(REQUEST_ID_HEADER).unwrap().to_str().unwrap();
     assert_eq!(req_id2, custom_id);
 }
 
 #[tokio::test]
 async fn test_part_file_filtered_from_directory_listing() {
-    let (_app, state, _cookie, _temp) = setup_test_app().await;
+    let (_app, state, _cookie, _runtime) = setup_test_app().await;
     let admin = admin_user();
 
-    FileService::create_or_write_file(
-        &state,
-        &admin,
-        "local",
-        "/visible_file.txt",
-        b"Visible".to_vec(),
-        None,
-    )
-    .await
-    .unwrap();
-
+    FileService::create_or_write_file(&state, &admin, "local", "/visible_file.txt", b"Visible".to_vec(), None)
+        .await
+        .unwrap();
     FileService::create_or_write_file(
         &state,
         &admin,
@@ -123,7 +128,6 @@ async fn test_part_file_filtered_from_directory_listing() {
     )
     .await
     .unwrap();
-
     FileService::create_or_write_file(
         &state,
         &admin,
@@ -180,28 +184,20 @@ async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
 
     let replay_result = journal.get_since(Some(journal.epoch()), 1, 1000).await.unwrap();
     match replay_result {
-        ReplayOutcome::Expired { latest_sequence } => {
-            assert!(latest_sequence >= 550);
-        }
+        ReplayOutcome::Expired { latest_sequence } => assert!(latest_sequence >= 550),
         other => panic!("Expected Expired result for sequence 1, got {other:?}"),
     }
 
-    let recent_result = journal
-        .get_since(Some(journal.epoch()), 540, 1000)
-        .await
-        .unwrap();
+    let recent_result = journal.get_since(Some(journal.epoch()), 540, 1000).await.unwrap();
     match recent_result {
-        ReplayOutcome::Events(events) => {
-            assert!(!events.is_empty(), "Should replay recent retained events");
-        }
+        ReplayOutcome::Events(events) => assert!(!events.is_empty(), "Should replay recent retained events"),
         other => panic!("Expected Events result for sequence 540, got {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn test_transfer_idempotency_key_deduplication() {
-    let (app, _state, cookie, _temp) = setup_test_app().await;
-
+    let (app, _state, cookie, _runtime) = setup_test_app().await;
     let req_body = serde_json::json!({
         "name": "idempotent_test",
         "transfer_type": "copy",
@@ -226,9 +222,7 @@ async fn test_transfer_idempotency_key_deduplication() {
         .await
         .unwrap();
     assert_eq!(response1.status(), StatusCode::ACCEPTED);
-    let body1: Value =
-        serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap())
-            .unwrap();
+    let body1: Value = serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap()).unwrap();
     let job_id1 = body1["job_id"].as_str().unwrap().to_string();
 
     let response2 = app
@@ -246,23 +240,18 @@ async fn test_transfer_idempotency_key_deduplication() {
         .await
         .unwrap();
     assert_eq!(response2.status(), StatusCode::ACCEPTED);
-    let body2: Value =
-        serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap())
-            .unwrap();
+    let body2: Value = serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap()).unwrap();
     let job_id2 = body2["job_id"].as_str().unwrap().to_string();
 
-    assert_eq!(
-        job_id1, job_id2,
-        "Submitting with same idempotency key must return existing job ID"
-    );
+    assert_eq!(job_id1, job_id2, "Submitting with same idempotency key must return existing job ID");
 }
 
 #[tokio::test]
 async fn test_transfer_event_ordering_and_causality() {
-    let (_app, state, _cookie, temp) = setup_test_app().await;
+    let (_app, state, _cookie, runtime) = setup_test_app().await;
     let admin = admin_user();
 
-    let src_file = temp.path().join("storage").join("order_src.txt");
+    let src_file = runtime.temp.path().join("storage").join("order_src.txt");
     std::fs::write(&src_file, b"ordering test").unwrap();
 
     let realtime = RealtimeState::from_ref(&state);
@@ -283,11 +272,8 @@ async fn test_transfer_event_ordering_and_causality() {
 
     let mut file_change_seq = None;
     let mut completed_seq = None;
-
     for _ in 0..50 {
-        if let Ok(Ok(env)) =
-            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
-        {
+        if let Ok(Ok(env)) = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
             match env.event {
                 DomainEvent::FileChange { path, action, .. }
                     if path == "/order_dst.txt" && action == "create" =>
@@ -295,8 +281,7 @@ async fn test_transfer_event_ordering_and_causality() {
                     file_change_seq = Some(env.sequence);
                 }
                 DomainEvent::TransferCompleted(job)
-                    if job.get("destination_path").and_then(|v| v.as_str())
-                        == Some("/order_dst.txt") =>
+                    if job.get("destination_path").and_then(|v| v.as_str()) == Some("/order_dst.txt") =>
                 {
                     completed_seq = Some(env.sequence);
                     break;
@@ -306,14 +291,8 @@ async fn test_transfer_event_ordering_and_causality() {
         }
     }
 
-    assert!(
-        file_change_seq.is_some(),
-        "FileChange event must be emitted for destination"
-    );
-    assert!(
-        completed_seq.is_some(),
-        "TransferCompleted event must be emitted"
-    );
+    assert!(file_change_seq.is_some(), "FileChange event must be emitted for destination");
+    assert!(completed_seq.is_some(), "TransferCompleted event must be emitted");
     assert!(
         file_change_seq.unwrap() < completed_seq.unwrap(),
         "FileChange must have a lower sequence number than TransferCompleted"

@@ -4,12 +4,13 @@ use axum::{
     http::{header, Request, StatusCode},
 };
 use backend::{
+    bootstrap::build_application,
     config::AppConfig,
     create_router,
     db::{init_db, DbPool},
     domain::Actor,
     services::settings_service::UpdateSettingsRequest,
-    state::SettingsState,
+    state::{RuntimeOwner, ShutdownReason, SettingsState},
     transfer::{TransferJob, TransferStatus},
     AppState,
 };
@@ -23,6 +24,13 @@ struct TestApp {
     temp: tempfile::TempDir,
     state: AppState,
     db: DbPool,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestApp {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
 }
 
 async fn setup_app() -> TestApp {
@@ -41,7 +49,8 @@ async fn setup_app() -> TestApp {
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db.clone()).await;
+    let built = build_application(config, db.clone()).await;
+    let state = built.state;
     let app = create_router(state.clone());
 
     let login_req = Request::builder()
@@ -67,6 +76,7 @@ async fn setup_app() -> TestApp {
         temp,
         state,
         db,
+        runtime: built.runtime,
     }
 }
 
