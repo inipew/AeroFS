@@ -1,4 +1,4 @@
-use crate::domain::{ConnectionId, VfsPath};
+use crate::domain::ConnectionId;
 use crate::errors::AppError;
 use crate::ports::mutation::{MutationCoordinator, MutationLease};
 use crate::ports::upload::{UploadClaim, UploadReservationStore, UploadSession};
@@ -43,6 +43,14 @@ impl Drop for ClaimedUpload {
 pub struct UploadGuard {
     key: String,
     manager: UploadLockManager,
+}
+
+impl std::fmt::Debug for UploadGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UploadGuard")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for UploadGuard {
@@ -211,7 +219,7 @@ impl UploadReservationStore for UploadLockManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::CommitSemantics;
+    use crate::domain::{CommitSemantics, VfsPath};
     use crate::ports::upload::{UploadPlan, UploadStaging};
 
     fn session(job_id: &str, user_id: &str) -> UploadSession {
