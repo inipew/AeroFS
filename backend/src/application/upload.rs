@@ -98,8 +98,6 @@ impl UploadApplicationService {
         .await;
         self.ensure_local_capacity(connection)?;
 
-        // Acquire destination ownership before creating the transfer job so a
-        // conflicting mutation cannot leave an orphaned job behind.
         let lease = self
             .mutations
             .try_acquire(connection, &target.path)
@@ -146,8 +144,6 @@ impl UploadApplicationService {
     where
         S: Stream<Item = Result<Bytes, AppError>> + Send,
     {
-        // `claimed` is an opaque RAII ownership token. Any early return or
-        // cancellation of this future drops it and releases the reservation.
         let claimed = self.reservations.claim(job_id, &actor.id).await?;
         let session = claimed.session().clone();
 
@@ -179,8 +175,6 @@ impl UploadApplicationService {
             )
             .await;
 
-        // Preserve the existing commit boundary: the destination reservation is
-        // released once provider I/O is terminal, before cache/audit effects.
         drop(claimed);
         self.finish_upload(actor, &session_connection, &session.target, job_id, result)
             .await
@@ -261,7 +255,8 @@ impl UploadApplicationService {
         match result {
             Ok(_) => {
                 self.effects.invalidate(connection, &target.path).await;
-                self.effects
+                if let Err(error) = self
+                    .effects
                     .file_changed(
                         actor,
                         connection,
@@ -270,7 +265,19 @@ impl UploadApplicationService {
                         "upload",
                         Some(format!("Uploaded: {} via Transfer {}", target.path, job_id)),
                     )
-                    .await;
+                    .await
+                {
+                    self.execution
+                        .fail_inline_job(
+                            job_id,
+                            format!(
+                                "upload content committed but durable post-commit effects failed: {}",
+                                error
+                            ),
+                        )
+                        .await;
+                    return Err(error);
+                }
                 self.execution.complete_inline_job(job_id).await;
                 Ok(target.path.clone())
             }
