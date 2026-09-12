@@ -1,11 +1,16 @@
-use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::events::{DomainEvent, EventJournal};
-use backend::AppState;
+use backend::runtime::TaskSupervisor;
+use backend::sync::SyncManager;
+use backend::transfer::TransferManager;
+use backend::vfs::ProviderRegistry;
 use chrono::Utc;
 use sqlx::Row;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 #[tokio::test]
 async fn durable_consumer_cursor_protects_unprocessed_journal_rows_from_vacuum() {
@@ -26,14 +31,11 @@ async fn durable_consumer_cursor_protects_unprocessed_journal_rows_from_vacuum()
     let first_id = first.journal_id.expect("first event must be durable");
     let second_id = second.journal_id.expect("second event must be durable");
 
-    // Make both rows old enough to be vacuum candidates independent of wall clock.
     sqlx::query("UPDATE event_journal SET created_at = '2000-01-01T00:00:00Z'")
         .execute(&db)
         .await
         .unwrap();
 
-    // Loading a cursor also registers the consumer at zero. No unprocessed row may
-    // be removed while this projection is known but has not advanced yet.
     assert_eq!(journal.consumer_cursor("phase8-test").await.unwrap(), 0);
     assert_eq!(journal.vacuum(Duration::ZERO).await.unwrap(), 0);
 
@@ -54,17 +56,30 @@ async fn durable_consumer_cursor_protects_unprocessed_journal_rows_from_vacuum()
 async fn sync_transfer_completion_projection_is_idempotent() {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("phase8_sync.db");
-    let storage_dir = temp.path().join("storage");
-    std::fs::create_dir_all(&storage_dir).unwrap();
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db = init_db(&database_url).await.unwrap();
 
-    let mut config = AppConfig::default();
-    config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    config.filesystem.default_local_root = storage_dir;
+    let registry = Arc::new(ProviderRegistry::new());
+    let event_journal = Arc::new(EventJournal::init(db.clone()).await.unwrap());
+    let tracker = TaskTracker::new();
+    let transfer_manager = TransferManager::new(
+        registry.providers_map(),
+        db.clone(),
+        4,
+        event_journal.clone(),
+        CancellationToken::new(),
+        &tracker,
+    )
+    .await;
+    let sync_manager = SyncManager::new(
+        db.clone(),
+        transfer_manager,
+        TaskSupervisor::new(),
+        event_journal,
+        registry.providers_map(),
+    );
 
-    let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db.clone()).await;
     let now = Utc::now().to_rfc3339();
-
     sqlx::query(
         "INSERT INTO sync_jobs (id, user_id, source_connection_id, source_path, destination_connection_id, destination_path, status, strategy, total_files, synced_files, conflict_files, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -102,14 +117,11 @@ async fn sync_transfer_completion_projection_is_idempotent() {
     .await
     .unwrap();
 
-    // Simulate at-least-once delivery: the same durable completion arrives twice.
-    state
-        .sync_manager
+    sync_manager
         .notify_transfer_completed("transfer-phase8", true)
         .await
         .unwrap();
-    state
-        .sync_manager
+    sync_manager
         .notify_transfer_completed("transfer-phase8", true)
         .await
         .unwrap();
