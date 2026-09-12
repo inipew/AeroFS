@@ -1,7 +1,7 @@
 use crate::auth::AuthenticatedUser;
 use crate::domain::{Actor, ConnectionId, FileMetadata};
 use crate::errors::AppError;
-use crate::state::AppState;
+use crate::state::FileApiState;
 
 fn actor(user: &AuthenticatedUser) -> Actor {
     Actor {
@@ -15,24 +15,18 @@ pub struct PreviewService;
 
 impl PreviewService {
     pub async fn get_preview_info(
-        state: &AppState,
+        state: &FileApiState,
         user: &AuthenticatedUser,
         connection_id: &str,
         path: &str,
     ) -> Result<FileMetadata, AppError> {
-        if let Some(metadata) = state
-            .file_api
-            .service
-            .cached_metadata(connection_id, path)
-            .await
-        {
+        if let Some(metadata) = state.service.cached_metadata(connection_id, path).await {
             return Ok(metadata);
         }
 
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         let metadata = state
-            .file_api
             .files
             .stat_file
             .execute(
@@ -44,7 +38,6 @@ impl PreviewService {
             )
             .await?;
         state
-            .file_api
             .service
             .cache_metadata(connection_id, path, metadata.clone())
             .await;
