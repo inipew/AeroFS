@@ -145,19 +145,14 @@ pub async fn list_files(
     Path(connection_id): Path<crate::domain::ConnectionId>,
     Query(query): Query<ListFilesQuery>,
 ) -> Result<Json<crate::domain::DirectoryListing>, AppError> {
-    // New typed application boundary (§85) — handler becomes HTTP→DTO→service
-    let app_svc = crate::application::FileApplicationService::from_state(&state);
-    let opts = crate::application::files::ListOptions {
-        path: query.path,
-        show_hidden: query.show_hidden,
-        sort: query.sort,
-        order: query.order,
-        cursor: query.cursor,
-        limit: query.limit,
+    let actor = crate::domain::Actor {
+        id: user.0.id.clone(), username: user.0.username.clone(), is_admin: user.0.is_admin,
     };
-    let listing = app_svc
-        .list_paged_typed(&state, &user.0, &connection_id, opts)
-        .await?;
+    let command = crate::application::files::ListDirectoryCommand {
+        connection: connection_id, path: query.path, show_hidden: query.show_hidden,
+        sort: query.sort, order: query.order, cursor: query.cursor, limit: query.limit,
+    };
+    let listing = state.files.list_directory.execute(&actor, command).await?;
     Ok(Json(listing))
 }
 

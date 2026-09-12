@@ -1,12 +1,14 @@
 //! File application service — typed boundary (§3-4, §85).
 //! Replaces universal `&AppState` DI with explicit ports.
 
+mod list_directory;
 mod listing;
 mod mutation;
 mod presign;
 mod read;
 mod write;
 
+pub use list_directory::{ListDirectory, ListDirectoryCommand};
 pub use listing::ListOptions;
 pub use read::ReadOptions;
 
@@ -16,6 +18,13 @@ use crate::state::AppState;
 use crate::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+
+/// File use-cases exposed to HTTP/CLI adapters. Concrete dependencies are
+/// assembled once in the composition root, never reconstructed per request.
+#[derive(Clone)]
+pub struct FileUseCases {
+    pub list_directory: ListDirectory,
+}
 
 /// Explicit dependencies — no god context.
 #[derive(Clone)]

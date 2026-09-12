@@ -1,3 +1,4 @@
+pub mod actor;
 pub mod capabilities;
 pub mod conflict;
 pub mod connection;
@@ -12,6 +13,7 @@ pub mod retry;
 pub mod settings;
 pub mod write_strategy;
 
+pub use actor::Actor;
 pub use capabilities::{Capabilities, ChecksumCapabilities};
 pub use conflict::{ConflictPolicy, ConflictResolver};
 pub use connection::{Connection, ConnectionStatus, ProviderConfig, ProviderKind, SftpAuth};

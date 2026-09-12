@@ -14,20 +14,6 @@ pub struct ListOptions {
 }
 
 impl FileApplicationService {
-    /// Typed listing — new API boundary (§61, §129).
-    /// Wraps legacy stringly service while exposing typed options to handlers.
-    /// Incremental: still delegates to FileService via AppState shim; next step removes &AppState.
-    pub async fn list_paged_typed(
-        &self,
-        _state: &crate::state::AppState,
-        user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
-        opts: ListOptions,
-    ) -> Result<DirectoryListing, AppError> {
-        // Prefer owned path (explicit ports) — state shim kept for backward compat
-        self.list_paged_owned(user, connection, opts).await
-    }
-
     /// Owned listing — no AppState god object, explicit ports only (Phase 3.1).
     pub async fn list_paged_owned(
         &self,

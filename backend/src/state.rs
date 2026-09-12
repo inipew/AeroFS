@@ -8,6 +8,7 @@ use crate::sync::SyncManager;
 use crate::transfer::TransferManager;
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
+use crate::{application::files::{FileUseCases, ListDirectory}, infrastructure::files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings}};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -162,6 +163,7 @@ pub struct AppState {
     pub event_journal: Arc<EventJournal>,
     pub sync_manager: Arc<SyncManager>,
     pub runtime: AppRuntime,
+    pub files: FileUseCases,
 }
 
 impl AppState {
@@ -272,8 +274,16 @@ impl AppState {
         let cfg_limits_global = config.limits.global_io_concurrency;
         let cfg_limits_archive = config.limits.archive_concurrency;
         let cfg_limits_search = config.limits.search_concurrency;
+        let config = Arc::new(config);
+        let files = FileUseCases {
+            list_directory: ListDirectory::new(
+                Arc::new(SqliteAuthorization::new(db.clone())),
+                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
+                Arc::new(SqliteFileSettings::new(db.clone(), config.clone())),
+            ),
+        };
         let state = Self {
-            config: Arc::new(config),
+            config,
             db,
             registry,
             credentials,
@@ -287,6 +297,7 @@ impl AppState {
             event_journal,
             sync_manager,
             runtime,
+            files,
         };
 
         // Initialize and register all connections from DB via ConnectionService
