@@ -306,10 +306,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     BuiltApplication { state, runtime }
 }
 
-pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
-    build_application(config, db).await.state
-}
-
 fn spawn_runtime_tasks(
     runtime: &RuntimeOwner,
     local_root: std::path::PathBuf,
