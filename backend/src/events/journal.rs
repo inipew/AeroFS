@@ -290,14 +290,25 @@ impl EventJournal {
         Ok(events)
     }
 
+    /// Loads and durably registers an internal consumer at cursor zero when first seen.
+    /// Registration is important because vacuum must not delete backlog that a known
+    /// projection has not processed yet.
     pub async fn consumer_cursor(&self, consumer: &str) -> anyhow::Result<i64> {
-        let value: Option<i64> = sqlx::query_scalar(
+        sqlx::query(
+            "INSERT INTO event_consumer_cursors (consumer, last_event_id, updated_at)\n             VALUES (?, 0, ?) ON CONFLICT(consumer) DO NOTHING",
+        )
+        .bind(consumer)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.db)
+        .await?;
+
+        let value: i64 = sqlx::query_scalar(
             "SELECT last_event_id FROM event_consumer_cursors WHERE consumer = ?",
         )
         .bind(consumer)
-        .fetch_optional(&self.db)
+        .fetch_one(&self.db)
         .await?;
-        Ok(value.unwrap_or(0))
+        Ok(value)
     }
 
     pub async fn store_consumer_cursor(
@@ -403,15 +414,29 @@ impl EventJournal {
         Ok(ReplayOutcome::Events(events))
     }
 
-    /// Vacuum old events beyond the retention period (default: 24 hours).
+    /// Vacuum events older than the retention period without crossing the slowest
+    /// durable consumer. Rows at or below a consumer cursor have already been applied;
+    /// rows above the minimum cursor are retained even when their age exceeds retention.
     pub async fn vacuum(&self, retain: Duration) -> anyhow::Result<u64> {
         let cutoff = Utc::now() - chrono::Duration::from_std(retain)?;
         let cutoff_str = cutoff.to_rfc3339();
+        let min_cursor: Option<i64> =
+            sqlx::query_scalar("SELECT MIN(last_event_id) FROM event_consumer_cursors")
+                .fetch_one(&self.db)
+                .await?;
 
-        let res = sqlx::query("DELETE FROM event_journal WHERE created_at < ?")
-            .bind(&cutoff_str)
-            .execute(&self.db)
-            .await?;
+        let res = if let Some(min_cursor) = min_cursor {
+            sqlx::query("DELETE FROM event_journal WHERE created_at < ? AND id <= ?")
+                .bind(&cutoff_str)
+                .bind(min_cursor)
+                .execute(&self.db)
+                .await?
+        } else {
+            sqlx::query("DELETE FROM event_journal WHERE created_at < ?")
+                .bind(&cutoff_str)
+                .execute(&self.db)
+                .await?
+        };
 
         Ok(res.rows_affected())
     }
