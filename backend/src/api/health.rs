@@ -1,5 +1,5 @@
 use crate::errors::{AppError, ErrorResponse};
-use crate::state::{AppState, RuntimePhase};
+use crate::state::HealthState;
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -52,48 +52,16 @@ pub async fn health_live() -> impl IntoResponse {
     ),
     tag = "health"
 )]
-pub async fn health_ready(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
-    let phase = state.runtime.phase();
-
-    // Return 503 immediately if not in Running phase
-    if phase != RuntimePhase::Running {
-        return Err(AppError::ServiceUnavailable(format!(
-            "Runtime phase is '{}'",
-            phase.as_str()
-        )));
-    }
-
-    // 1. Check Database connection
-    let db_ok = sqlx::query("SELECT 1").fetch_one(&state.db).await.is_ok();
-
-    // 2. Check Storage root
-    let storage_ok = state.config.filesystem.default_local_root.exists();
-
-    // 3. Check active providers
-    let providers_count = state.registry.list_ids().await.len();
-
-    if db_ok && storage_ok {
-        Ok(Json(ReadinessResponse {
-            status: "ready".to_string(),
-            database: "connected".to_string(),
-            storage_root: "accessible".to_string(),
-            active_providers: providers_count,
-            phase: phase.as_str().to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        }))
-    } else {
-        let mut reasons = Vec::new();
-        if !db_ok {
-            reasons.push("Database query failed");
-        }
-        if !storage_ok {
-            reasons.push("Storage root inaccessible");
-        }
-        Err(AppError::ServiceUnavailable(format!(
-            "Readiness checks failed: {}",
-            reasons.join(", ")
-        )))
-    }
+pub async fn health_ready(State(state): State<HealthState>) -> Result<impl IntoResponse, AppError> {
+    let status = state.service.readiness().await?;
+    Ok(Json(ReadinessResponse {
+        status: "ready".to_string(),
+        database: "connected".to_string(),
+        storage_root: "accessible".to_string(),
+        active_providers: status.active_providers,
+        phase: status.phase.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    }))
 }
 
 /// Legacy / backward compatible health endpoint
