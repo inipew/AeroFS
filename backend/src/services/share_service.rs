@@ -1,10 +1,16 @@
 use crate::auth::password::{hash_password, verify_password};
-use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
+use crate::db::DbPool;
+use crate::domain::{Actor, ConnectionId, VfsPath};
 use crate::errors::AppError;
-use crate::state::AppState;
+use crate::ports::{
+    authorization::{Authorization, FileAction},
+    filesystem::FileSystemResolver,
+};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -28,6 +34,11 @@ pub struct CreateShareRequest {
     pub expires_in_hours: Option<i64>,
 }
 
+pub struct PublicShareContent {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
 type ShareDbRow = (
     String,
     String,
@@ -38,11 +49,28 @@ type ShareDbRow = (
     String,
 );
 
-pub struct ShareService;
+#[derive(Clone)]
+pub struct ShareService {
+    db: DbPool,
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+}
 
 impl ShareService {
+    pub fn new(
+        db: DbPool,
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+    ) -> Self {
+        Self {
+            db,
+            authorization,
+            filesystem,
+        }
+    }
+
     pub async fn list_shares(
-        state: &AppState,
+        &self,
         user: &AuthenticatedUser,
     ) -> Result<Vec<ShareItem>, AppError> {
         let rows: Vec<ShareDbRow> = if user.is_admin {
@@ -51,7 +79,7 @@ impl ShareService {
                  FROM shares
                  ORDER BY created_at DESC",
             )
-            .fetch_all(&state.db)
+            .fetch_all(&self.db)
             .await
             .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
         } else {
@@ -62,45 +90,45 @@ impl ShareService {
                  ORDER BY created_at DESC",
             )
             .bind(&user.username)
-            .fetch_all(&state.db)
+            .fetch_all(&self.db)
             .await
             .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
         };
 
-        let shares = rows
+        Ok(rows
             .into_iter()
             .map(
                 |(id, connection_id, path, share_token, pass_hash, expires_at, created_at)| {
-                    let share_url = format!("/api/v1/shares/public/{}", share_token);
                     ShareItem {
                         id,
                         connection_id,
                         path,
+                        share_url: format!("/api/v1/shares/public/{}", share_token),
                         share_token,
                         has_password: pass_hash.is_some(),
                         expires_at,
                         created_at,
-                        share_url,
                     }
                 },
             )
-            .collect();
-
-        Ok(shares)
+            .collect())
     }
 
     pub async fn create_share(
-        state: &AppState,
+        &self,
         user: &AuthenticatedUser,
         payload: CreateShareRequest,
     ) -> Result<ShareItem, AppError> {
-        check_permission(
-            &state.db,
-            user,
-            &payload.connection_id,
-            PermissionAction::Read,
-        )
-        .await?;
+        let connection = ConnectionId::new(payload.connection_id.clone())
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        let actor = Actor {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+        };
+        self.authorization
+            .authorize(&actor, &connection, FileAction::Read)
+            .await?;
 
         let id = Uuid::new_v4().to_string();
         let share_token = format!(
@@ -110,24 +138,17 @@ impl ShareService {
         );
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-
         let expires_at_str = payload
             .expires_in_hours
             .map(|h| (now + Duration::hours(h)).to_rfc3339());
-
-        let password_hash = if let Some(ref pwd) = payload.password {
-            if !pwd.trim().is_empty() {
-                Some(hash_password(pwd)?)
-            } else {
-                None
-            }
-        } else {
-            None
+        let password_hash = match payload.password.as_ref().filter(|pwd| !pwd.trim().is_empty()) {
+            Some(pwd) => Some(hash_password(pwd)?),
+            None => None,
         };
 
         sqlx::query(
             "INSERT INTO shares (id, connection_id, path, share_token, password_hash, expires_at, created_at, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&payload.connection_id)
@@ -137,38 +158,37 @@ impl ShareService {
         .bind(&expires_at_str)
         .bind(&now_str)
         .bind(&user.username)
-        .execute(&state.db)
+        .execute(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
-        let share_url = format!("/api/v1/shares/public/{}", share_token);
         Ok(ShareItem {
             id,
             connection_id: payload.connection_id,
             path: payload.path,
+            share_url: format!("/api/v1/shares/public/{}", share_token),
             share_token,
             has_password: password_hash.is_some(),
             expires_at: expires_at_str,
             created_at: now_str,
-            share_url,
         })
     }
 
     pub async fn delete_share(
-        state: &AppState,
+        &self,
         user: &AuthenticatedUser,
         share_id: &str,
     ) -> Result<(), AppError> {
         let res = if user.is_admin {
             sqlx::query("DELETE FROM shares WHERE id = ?")
                 .bind(share_id)
-                .execute(&state.db)
+                .execute(&self.db)
                 .await
         } else {
             sqlx::query("DELETE FROM shares WHERE id = ? AND created_by = ?")
                 .bind(share_id)
                 .bind(&user.username)
-                .execute(&state.db)
+                .execute(&self.db)
                 .await
         }
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
@@ -176,20 +196,19 @@ impl ShareService {
         if res.rows_affected() == 0 {
             return Err(AppError::NotFound("Share not found".into()));
         }
-
         Ok(())
     }
 
-    pub async fn verify_and_get_public_share(
-        state: &AppState,
+    async fn verify_share(
+        &self,
         token: &str,
         password: Option<&str>,
     ) -> Result<(String, String), AppError> {
         let row: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, path, password_hash, expires_at FROM shares WHERE share_token = ?"
+            "SELECT connection_id, path, password_hash, expires_at FROM shares WHERE share_token = ?",
         )
         .bind(token)
-        .fetch_optional(&state.db)
+        .fetch_optional(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
@@ -205,8 +224,7 @@ impl ShareService {
         }
 
         if let Some(hash) = password_hash {
-            let pwd = password.unwrap_or("");
-            if !verify_password(pwd, &hash) {
+            if !verify_password(password.unwrap_or(""), &hash) {
                 return Err(AppError::Unauthorized(
                     "Password required or incorrect".into(),
                 ));
@@ -214,13 +232,48 @@ impl ShareService {
         }
 
         let _ = sqlx::query(
-            "UPDATE shares SET download_count = download_count + 1, last_accessed_at = ? WHERE share_token = ?"
+            "UPDATE shares SET download_count = download_count + 1, last_accessed_at = ? WHERE share_token = ?",
         )
         .bind(Utc::now().to_rfc3339())
         .bind(token)
-        .execute(&state.db)
+        .execute(&self.db)
         .await;
 
         Ok((connection_id, path))
+    }
+
+    pub async fn verify_and_get_public_share(
+        &self,
+        token: &str,
+        password: Option<&str>,
+    ) -> Result<(String, String), AppError> {
+        self.verify_share(token, password).await
+    }
+
+    pub async fn read_public_share(
+        &self,
+        token: &str,
+        password: Option<&str>,
+    ) -> Result<PublicShareContent, AppError> {
+        let (connection_id, path) = self.verify_share(token, password).await?;
+        let connection = ConnectionId::new(connection_id.clone())
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        let provider = self
+            .filesystem
+            .resolve(&connection)
+            .await
+            .map_err(|_| AppError::NotFound("Storage connection not available".into()))?;
+        let vfs_path = VfsPath::new(&connection_id, &path)?;
+        let metadata = provider.stat(&vfs_path).await?;
+        let mut stream = provider.read_stream(&vfs_path).await?;
+        let mut data = Vec::new();
+        stream
+            .read_to_end(&mut data)
+            .await
+            .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+        Ok(PublicShareContent {
+            name: metadata.name,
+            data,
+        })
     }
 }
