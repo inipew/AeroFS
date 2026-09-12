@@ -5,8 +5,8 @@ use crate::ports::{
     effects::FileMutationEffects,
     filesystem::FileSystemResolver,
 };
+use futures::{stream, StreamExt};
 use std::sync::Arc;
-use tokio::task::JoinSet;
 
 #[derive(Debug, Clone)]
 pub struct CreateDirectoryCommand {
@@ -234,36 +234,35 @@ impl DeleteEntries {
             .authorize(actor, &command.connection, FileAction::Delete)
             .await?;
         let provider = self.filesystem.resolve(&command.connection).await?;
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
-        let mut tasks = JoinSet::new();
+        let connection = command.connection.clone();
 
-        for raw_path in command.paths {
+        // Bound both active I/O and in-memory future creation. `buffer_unordered`
+        // polls at most eight delete futures concurrently instead of spawning one
+        // Tokio task per requested path.
+        let mut deletes = stream::iter(command.paths.into_iter().map(|raw_path| {
             let provider = provider.clone();
-            let connection = command.connection.clone();
-            let semaphore = semaphore.clone();
-            tasks.spawn(async move {
-                let _permit = semaphore
-                    .acquire()
-                    .await
-                    .map_err(|_| VfsError::IoError("Semaphore closed".into()))?;
-                let path = VfsPath::new(connection.as_str(), &raw_path)?;
+            let connection = connection.clone();
+            async move {
+                let path = match VfsPath::new(connection.as_str(), &raw_path) {
+                    Ok(path) => path,
+                    Err(error) => return (raw_path, Err(error)),
+                };
                 let result = provider.delete(&path).await;
-                Ok::<_, VfsError>((raw_path, result))
-            });
-        }
+                (raw_path, result)
+            }
+        }))
+        .buffer_unordered(8);
 
         let mut succeeded = Vec::new();
         let mut failed = Vec::new();
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok(Ok((path, Ok(())))) => {
-                    self.effects
-                        .invalidate_prefix(&command.connection, &path)
-                        .await;
+        while let Some((path, result)) = deletes.next().await {
+            match result {
+                Ok(()) => {
+                    self.effects.invalidate_prefix(&connection, &path).await;
                     self.effects
                         .file_changed(
                             actor,
-                            &command.connection,
+                            &connection,
                             &path,
                             "FILE_DELETE",
                             "delete",
@@ -272,9 +271,7 @@ impl DeleteEntries {
                         .await;
                     succeeded.push(path);
                 }
-                Ok(Ok((path, Err(error)))) => failed.push((path, error.to_string())),
-                Ok(Err(error)) => failed.push(("<invalid-path>".into(), error.to_string())),
-                Err(error) => failed.push(("<task>".into(), error.to_string())),
+                Err(error) => failed.push((path, error.to_string())),
             }
         }
 

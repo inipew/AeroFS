@@ -3,7 +3,7 @@
 //! admission, locking, transfer lifecycle and post-commit effects.
 
 use crate::domain::{Actor, ConnectionId, PermissionInheritanceMode, VfsPath};
-use crate::errors::AppError;
+use crate::errors::{AppError, VfsError};
 use crate::ports::{
     authorization::{Authorization, FileAction},
     effects::FileMutationEffects,
@@ -58,6 +58,17 @@ impl UploadApplicationService {
         Ok(VfsPath::new(connection.as_str(), dest_path)?)
     }
 
+    async fn target_exists(
+        provider: &Arc<dyn crate::vfs::FileSystem>,
+        target: &VfsPath,
+    ) -> Result<bool, AppError> {
+        match provider.stat(target).await {
+            Ok(_) => Ok(true),
+            Err(VfsError::NotFound(_)) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub async fn create_session(
         &self,
         actor: &Actor,
@@ -70,7 +81,7 @@ impl UploadApplicationService {
             .authorize(actor, connection, FileAction::Upload)
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
-        let target_exists = provider.stat(&target).await.is_ok();
+        let target_exists = Self::target_exists(&provider, &target).await?;
         let plan = TransferPlanner::plan_upload(
             &provider.capabilities(),
             UploadConstraints::inline(total_bytes),
@@ -197,7 +208,7 @@ impl UploadApplicationService {
             .authorize(actor, connection, FileAction::Upload)
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
-        let target_exists = provider.stat(&target).await.is_ok();
+        let target_exists = Self::target_exists(&provider, &target).await?;
         let plan = TransferPlanner::plan_upload(
             &provider.capabilities(),
             UploadConstraints::inline(total_hint),
