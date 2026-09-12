@@ -7,7 +7,7 @@ use backend::domain::{Actor, ConnectionId};
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::filesystem::archive::ArchiveOverwriteMode;
 use backend::ports::transfer::TransferType;
-use backend::services::{FileService, TransferService};
+use backend::services::TransferService;
 use backend::state::{ArchiveState, RuntimeOwner, ShutdownReason};
 use backend::AppState;
 use tempfile::tempdir;
@@ -60,6 +60,30 @@ fn actor_from_user(user: &AuthenticatedUser) -> Actor {
     }
 }
 
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) -> backend::domain::FileMetadata {
+    state
+        .file_api
+        .files
+        .write_file
+        .execute(
+            &actor_from_user(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn test_ws_event_sequence_and_durable_replay() {
     let temp = tempdir().unwrap();
@@ -108,58 +132,101 @@ async fn test_ws_event_sequence_and_durable_replay() {
 }
 
 #[tokio::test]
-async fn test_file_service_full_crud_lifecycle() {
+async fn test_file_application_full_crud_lifecycle() {
     let (state, user, _runtime) = setup_test_context().await;
+    let actor = actor_from_user(&user);
+    let connection = ConnectionId::local();
 
-    let dir_meta = FileService::create_directory(&state, &user, "local", "/docs")
+    let dir_meta = state
+        .file_api
+        .files
+        .create_directory
+        .execute(
+            &actor,
+            backend::application::files::CreateDirectoryCommand {
+                connection: connection.clone(),
+                path: "/docs".to_string(),
+            },
+        )
         .await
         .expect("Directory creation failed");
     assert_eq!(dir_meta.path, "/docs");
 
-    let file_meta = FileService::create_or_write_file(
+    let file_meta = write_file(
         &state,
         &user,
-        "local",
         "/docs/readme.md",
         b"# Hello World".to_vec(),
-        None,
     )
-    .await
-    .expect("File creation failed");
+    .await;
     assert_eq!(file_meta.size, 13);
 
-    let stat = FileService::stat_file(&state, &user, "local", "/docs/readme.md")
+    let stat = state
+        .file_api
+        .files
+        .stat_file
+        .execute(
+            &actor,
+            backend::application::files::StatFileCommand {
+                connection: connection.clone(),
+                path: "/docs/readme.md".to_string(),
+            },
+        )
         .await
         .expect("Stat file failed");
     assert_eq!(stat.size, 13);
 
-    let listing = FileService::list_directory(
-        &state,
-        &user,
-        "local",
-        Some("/docs".to_string()),
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("List directory failed");
+    let listing = state
+        .file_api
+        .files
+        .list_directory
+        .execute(
+            &actor,
+            backend::application::files::ListDirectoryCommand {
+                connection: connection.clone(),
+                path: Some("/docs".to_string()),
+                show_hidden: None,
+                sort: None,
+                order: None,
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("List directory failed");
     assert_eq!(listing.entries.len(), 1);
     assert_eq!(listing.entries[0].name, "readme.md");
 
-    FileService::rename_entry(
-        &state,
-        &user,
-        "local",
-        "/docs/readme.md",
-        "/docs/README_RENAMED.md",
-    )
-    .await
-    .expect("Rename entry failed");
+    state
+        .file_api
+        .files
+        .rename_entry
+        .execute(
+            &actor,
+            backend::application::files::RenameEntryCommand {
+                connection: connection.clone(),
+                from: "/docs/readme.md".to_string(),
+                to: "/docs/README_RENAMED.md".to_string(),
+            },
+        )
+        .await
+        .expect("Rename entry failed");
 
-    FileService::delete_entry(&state, &user, "local", "/docs/README_RENAMED.md")
+    let deleted = state
+        .file_api
+        .files
+        .delete_entries
+        .execute(
+            &actor,
+            backend::application::files::DeleteEntriesCommand {
+                connection,
+                paths: vec!["/docs/README_RENAMED.md".to_string()],
+            },
+        )
         .await
         .expect("Delete entry failed");
+    assert!(deleted.failed.is_empty());
+    assert_eq!(deleted.succeeded.len(), 1);
 }
 
 #[tokio::test]
@@ -169,27 +236,21 @@ async fn test_archive_service_lifecycle() {
     let actor = actor_from_user(&user);
     let connection = ConnectionId::local();
 
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &user,
-        "local",
         "/src1.txt",
         b"Source file 1 content".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &user,
-        "local",
         "/src2.txt",
         b"Source file 2 content".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let compress_res = archive
         .service
@@ -239,16 +300,13 @@ async fn test_archive_service_lifecycle() {
 async fn test_transfer_service_operations() {
     let (state, user, _runtime) = setup_test_context().await;
 
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &user,
-        "local",
         "/transfer_source.txt",
         b"Transfer payload data".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let job_id = TransferService::create_transfer(
         &state,
