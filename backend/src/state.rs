@@ -11,8 +11,9 @@ use crate::vfs::FileSystem;
 use crate::{
     application::{
         files::{
-            CopyEntry, CreateDirectory, DeleteEntries, FileUseCases, ListDirectory, ReadFile,
-            RenameEntry, StatFile, WriteFile,
+            CompletePresigned, CopyEntry, CreateDirectory, DeleteEntries, FileUseCases,
+            ListDirectory, PresignDownload, PresignUpload, ReadFile, RenameEntry, StatFile,
+            WriteFile,
         },
         transfers::{CreateTransfer, TransferUseCases},
     },
@@ -281,6 +282,21 @@ impl AppState {
                 file_effects.clone(),
             ),
             delete_entries: DeleteEntries::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            presign_download: PresignDownload::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            presign_upload: PresignUpload::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            complete_presigned: CompletePresigned::new(
                 file_authorization,
                 file_filesystem,
                 file_effects,
