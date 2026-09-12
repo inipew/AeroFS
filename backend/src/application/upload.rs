@@ -89,13 +89,13 @@ impl UploadApplicationService {
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
         let target_exists = Self::target_exists(&provider, &target).await?;
-        let target_perms = crate::domain::resolve_destination_permissions(
+        let target_perms = crate::domain::resolve_destination_permissions_strict(
             &provider,
             &target,
             false,
             PermissionInheritanceMode::InheritExistingOrParent,
         )
-        .await;
+        .await?;
         self.ensure_local_capacity(connection)?;
 
         let lease = self
@@ -197,13 +197,13 @@ impl UploadApplicationService {
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
         let target_exists = Self::target_exists(&provider, &target).await?;
-        let target_perms = crate::domain::resolve_destination_permissions(
+        let target_perms = crate::domain::resolve_destination_permissions_strict(
             &provider,
             &target,
             false,
             PermissionInheritanceMode::InheritExistingOrParent,
         )
-        .await;
+        .await?;
         self.ensure_local_capacity(connection)?;
 
         let _lease = self
