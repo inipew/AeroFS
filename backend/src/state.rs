@@ -185,6 +185,10 @@ impl RuntimeState {
     pub fn new(view: RuntimeView) -> Self {
         Self { view }
     }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.view.is_shutting_down()
+    }
 }
 
 #[derive(Clone)]
