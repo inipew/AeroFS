@@ -35,7 +35,13 @@ impl SyncEventSubscriber {
                 }
             };
 
-            if let Err(error) = replay_backlog(&event_journal, &sync_manager, &mut cursor).await {
+            if let Err(error) = replay_backlog(
+                &event_journal,
+                &sync_manager,
+                &mut cursor,
+            )
+            .await
+            {
                 tracing::error!(%error, "failed to replay sync event backlog");
             }
 
@@ -139,7 +145,7 @@ async fn process_envelope(
 
     if let Some((job_id, success)) = completion {
         sync_manager
-            .apply_transfer_completion_event(&job_id, success)
+            .notify_transfer_completed(&job_id, success)
             .await?;
     }
 

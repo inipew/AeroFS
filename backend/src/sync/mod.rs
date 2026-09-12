@@ -2,7 +2,6 @@ pub mod conflict;
 pub mod diff;
 pub mod manager;
 pub mod models;
-pub mod projection;
 pub mod scanner;
 pub mod subscriber;
 
