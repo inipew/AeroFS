@@ -288,7 +288,7 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     return Ok(());
                 }
 
-                let count = TransferService::repair_stuck_transfers(&pool, days_placeholder(), false)
+                let count = TransferService::repair_stuck_transfers(&pool, false)
                     .await
                     .map_err(|e| CliError::database(format!("Repair error: {}", e)))?;
 
@@ -303,8 +303,4 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             }
         }
     }
-}
-
-fn days_placeholder() -> bool {
-    false
 }
