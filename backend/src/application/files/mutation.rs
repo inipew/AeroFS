@@ -29,11 +29,7 @@ impl CreateDirectory {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self {
-            authorization,
-            filesystem,
-            effects,
-        }
+        Self { authorization, filesystem, effects }
     }
 
     pub async fn execute(
@@ -62,9 +58,7 @@ impl CreateDirectory {
         }
         let metadata = provider.stat(&path).await?;
 
-        self.effects
-            .invalidate(&command.connection, &command.path)
-            .await;
+        self.effects.invalidate(&command.connection, &command.path).await;
         self.effects
             .file_changed(
                 actor,
@@ -99,11 +93,7 @@ impl RenameEntry {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self {
-            authorization,
-            filesystem,
-            effects,
-        }
+        Self { authorization, filesystem, effects }
     }
 
     pub async fn execute(
@@ -123,12 +113,8 @@ impl RenameEntry {
         let to = VfsPath::new(command.connection.as_str(), command.to.clone())?;
         provider.rename(&from, &to).await?;
 
-        self.effects
-            .invalidate_prefix(&command.connection, &command.from)
-            .await;
-        self.effects
-            .invalidate_prefix(&command.connection, &command.to)
-            .await;
+        self.effects.invalidate_prefix(&command.connection, &command.from).await;
+        self.effects.invalidate_prefix(&command.connection, &command.to).await;
         self.effects
             .file_renamed(actor, &command.connection, &from.path, &to.path)
             .await;
@@ -156,14 +142,14 @@ impl CopyEntry {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self {
-            authorization,
-            filesystem,
-            effects,
-        }
+        Self { authorization, filesystem, effects }
     }
 
-    pub async fn execute(&self, actor: &Actor, command: CopyEntryCommand) -> Result<String, AppError> {
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        command: CopyEntryCommand,
+    ) -> Result<String, AppError> {
         self.authorization
             .authorize(actor, &command.connection, FileAction::Read)
             .await?;
@@ -181,18 +167,9 @@ impl CopyEntry {
         }
 
         provider.copy(&from, &to).await?;
+        self.effects.invalidate_prefix(&command.connection, &to.path).await;
         self.effects
-            .invalidate_prefix(&command.connection, &to.path)
-            .await;
-        self.effects
-            .file_changed(
-                actor,
-                &command.connection,
-                &to.path,
-                "FILE_COPY",
-                "copy",
-                Some(format!("Copied {} -> {}", from.path, to.path)),
-            )
+            .file_copied(actor, &command.connection, &from.path, &to.path)
             .await;
         Ok(to.path)
     }
@@ -223,11 +200,7 @@ impl DeleteEntries {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self {
-            authorization,
-            filesystem,
-            effects,
-        }
+        Self { authorization, filesystem, effects }
     }
 
     pub async fn execute(
@@ -262,9 +235,7 @@ impl DeleteEntries {
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok(Ok((path, Ok(())))) => {
-                    self.effects
-                        .invalidate_prefix(&command.connection, &path)
-                        .await;
+                    self.effects.invalidate_prefix(&command.connection, &path).await;
                     self.effects
                         .file_changed(
                             actor,
@@ -373,19 +344,13 @@ impl FileApplicationService {
     ) -> Result<(), AppError> {
         use crate::auth::permissions::{check_permission, PermissionAction};
         check_permission(&self.db, user, connection.as_str(), PermissionAction::Write).await?;
-        let provider = self
-            .registry
-            .get(connection.as_str())
-            .await
-            .ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-            })?;
+        let provider = self.registry.get(connection.as_str()).await.ok_or_else(|| {
+            VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
+        })?;
         let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
         let mode_str = format!("{:04o}", mode);
         provider.set_permissions(&vfs_path, &mode_str).await?;
-        self.metadata_cache
-            .invalidate(connection.as_str(), &raw_path)
-            .await;
+        self.metadata_cache.invalidate(connection.as_str(), &raw_path).await;
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&user.id),
