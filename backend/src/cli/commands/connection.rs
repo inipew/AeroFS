@@ -1,9 +1,8 @@
-use crate::auth::session::UserInfo;
-use crate::auth::AuthenticatedUser;
 use crate::cli::args::{ConnectionAction, ConnectionCommand};
 use crate::cli::context::CliContext;
 use crate::cli::error::CliError;
-use crate::services::connection_service::ConnectionService;
+use crate::domain::Actor;
+use crate::services::connection_service::{ConnectionService, UpdateConnectionRequest};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -15,16 +14,24 @@ struct ConnectionActionOutput {
 
 pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliError> {
     let state = ctx.state().await?;
-
-    let admin_user = AuthenticatedUser(UserInfo {
+    let service = ConnectionService::new(
+        state.db.clone(),
+        state.config.clone(),
+        state.registry.clone(),
+        state.credentials.clone(),
+        state.metadata_cache.clone(),
+        state.transfer_manager.clone(),
+    );
+    let admin = Actor {
         id: "cli_admin".to_string(),
         username: "admin".to_string(),
         is_admin: true,
-    });
+    };
 
     match cmd.action {
         ConnectionAction::List => {
-            let connections = ConnectionService::list_connections(&state, &admin_user)
+            let connections = service
+                .list_connections(&admin)
                 .await
                 .map_err(|e| CliError::database(format!("Failed to list connections: {}", e)))?;
 
@@ -56,14 +63,12 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
             Ok(())
         }
         ConnectionAction::Show { id } => {
-            let detail = ConnectionService::get_connection(&state, &admin_user, &id)
-                .await
-                .map_err(|e| match e {
-                    crate::errors::AppError::NotFound(_) | crate::errors::AppError::Vfs(_) => {
-                        CliError::not_found(format!("Connection '{}' not found", id))
-                    }
-                    _ => CliError::database(format!("Failed to get connection: {}", e)),
-                })?;
+            let detail = service.get_connection(&admin, &id).await.map_err(|e| match e {
+                crate::errors::AppError::NotFound(_) | crate::errors::AppError::Vfs(_) => {
+                    CliError::not_found(format!("Connection '{}' not found", id))
+                }
+                _ => CliError::database(format!("Failed to get connection: {}", e)),
+            })?;
 
             ctx.output.print_success("connection.show", &detail, || {
                 println!("Connection Details:");
@@ -86,74 +91,43 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
                 println!("  • Base Path:           {}", detail.connection.base_path);
                 println!(
                     "  • Read-Only:           {}",
-                    if detail.connection.read_only {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.connection.read_only { "Yes" } else { "No" }
                 );
                 println!(
                     "  • Enabled:             {}",
-                    if detail.connection.enabled {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.connection.enabled { "Yes" } else { "No" }
                 );
                 println!("Capabilities:");
                 println!(
                     "  • Read / Download:     {}",
-                    if detail.capabilities.read {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.capabilities.read { "Yes" } else { "No" }
                 );
                 println!(
                     "  • Write / Upload:      {}",
-                    if detail.capabilities.write {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.capabilities.write { "Yes" } else { "No" }
                 );
                 println!(
                     "  • Atomic Write:        {}",
-                    if detail.capabilities.atomic_write {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.capabilities.atomic_write { "Yes" } else { "No" }
                 );
                 println!(
                     "  • Server-Side Copy:    {}",
-                    if detail.capabilities.server_side_copy {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.capabilities.server_side_copy { "Yes" } else { "No" }
                 );
                 println!(
                     "  • Checksum & Integrity:{}",
-                    if detail.capabilities.checksum {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.capabilities.checksum { "Yes" } else { "No" }
                 );
                 println!(
                     "  • Symlink Resolution:  {}",
-                    if detail.capabilities.symlink {
-                        "Yes"
-                    } else {
-                        "No"
-                    }
+                    if detail.capabilities.symlink { "Yes" } else { "No" }
                 );
             });
             Ok(())
         }
         ConnectionAction::Test { id } => {
-            let res = ConnectionService::test_connection(&state, &admin_user, &id)
+            let res = service
+                .test_connection(&admin, &id)
                 .await
                 .map_err(|e| CliError::health(format!("Connection test failed: {}", e)))?;
 
@@ -168,8 +142,7 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
             };
 
             if res.success {
-                ctx.output
-                    .print_success("connection.test", &res, human_test);
+                ctx.output.print_success("connection.test", &res, human_test);
                 Ok(())
             } else {
                 let err = CliError::health(format!(
@@ -182,64 +155,58 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
             }
         }
         ConnectionAction::Enable { id } => {
-            let pool = ctx.db().await?;
-            let now = chrono::Utc::now().to_rfc3339();
-            let res =
-                sqlx::query("UPDATE connections SET enabled = 1, updated_at = ? WHERE id = ?")
-                    .bind(&now)
-                    .bind(&id)
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| CliError::database(format!("DB error: {}", e)))?;
-
-            if res.rows_affected() == 0 {
-                return Err(CliError::not_found(format!(
-                    "Connection '{}' not found",
-                    id
-                )));
-            }
+            service
+                .update_connection(
+                    &admin,
+                    &id,
+                    UpdateConnectionRequest {
+                        name: None,
+                        host: None,
+                        port: None,
+                        username: None,
+                        secret: None,
+                        base_path: None,
+                        read_only: None,
+                        enabled: Some(true),
+                    },
+                )
+                .await
+                .map_err(|e| CliError::database(format!("Failed to enable connection: {}", e)))?;
 
             let out = ConnectionActionOutput {
                 id: id.clone(),
                 status: "enabled",
                 message: format!("Connection '{}' enabled successfully", id),
             };
-
             ctx.output.print_success("connection.enable", &out, || {
                 println!("✓ Storage connection '{}' enabled.", id);
             });
             Ok(())
         }
         ConnectionAction::Disable { id } => {
-            if id == "local" {
-                return Err(CliError::forbidden(
-                    "Default Local connection cannot be disabled",
-                ));
-            }
-
-            let pool = ctx.db().await?;
-            let now = chrono::Utc::now().to_rfc3339();
-            let res =
-                sqlx::query("UPDATE connections SET enabled = 0, updated_at = ? WHERE id = ?")
-                    .bind(&now)
-                    .bind(&id)
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| CliError::database(format!("DB error: {}", e)))?;
-
-            if res.rows_affected() == 0 {
-                return Err(CliError::not_found(format!(
-                    "Connection '{}' not found",
-                    id
-                )));
-            }
+            service
+                .update_connection(
+                    &admin,
+                    &id,
+                    UpdateConnectionRequest {
+                        name: None,
+                        host: None,
+                        port: None,
+                        username: None,
+                        secret: None,
+                        base_path: None,
+                        read_only: None,
+                        enabled: Some(false),
+                    },
+                )
+                .await
+                .map_err(|e| CliError::database(format!("Failed to disable connection: {}", e)))?;
 
             let out = ConnectionActionOutput {
                 id: id.clone(),
                 status: "disabled",
                 message: format!("Connection '{}' disabled successfully", id),
             };
-
             ctx.output.print_success("connection.disable", &out, || {
                 println!("✓ Storage connection '{}' disabled.", id);
             });
