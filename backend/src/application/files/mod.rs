@@ -1,6 +1,7 @@
 //! File application service — typed boundary (§3-4, §85).
 //! Replaces universal `&AppState` DI with explicit ports.
 
+mod chmod;
 mod list_directory;
 mod listing;
 mod mutation;
@@ -10,6 +11,7 @@ mod read_file;
 mod stat;
 mod write;
 
+pub use chmod::{ChmodEntry, ChmodEntryCommand};
 pub use list_directory::{ListDirectory, ListDirectoryCommand};
 pub use listing::ListOptions;
 pub use mutation::{
@@ -51,6 +53,7 @@ pub struct FileUseCases {
     pub presign_download: PresignDownload,
     pub presign_upload: PresignUpload,
     pub complete_presigned: CompletePresigned,
+    pub chmod_entry: ChmodEntry,
 }
 
 /// Transitional compatibility facade retained for non-HTTP callers. Phase 9
