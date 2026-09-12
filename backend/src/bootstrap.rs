@@ -285,6 +285,7 @@ fn spawn_runtime_tasks(state: &AppState) {
     let housekeeping_token = state.runtime.shutdown_token.clone();
     state.runtime.supervisor.spawn("housekeeping", async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await;
         loop {
             tokio::select! {
                 _ = housekeeping_token.cancelled() => break,
