@@ -3,9 +3,12 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::Actor;
+use backend::ports::transfer::{
+    TransferJobResponse, TransferPhase, TransferStatus, TransferType,
+};
 use backend::services::{EditorService, FileService, TransferService};
 use backend::state::TransferState;
-use backend::transfer::{TransferPhase, TransferStatus, TransferType};
+use backend::transfer::TransferPhase as EngineTransferPhase;
 use backend::AppState;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -44,7 +47,7 @@ async fn wait_for_completed(
     state: &AppState,
     user: &AuthenticatedUser,
     job_id: &str,
-) -> backend::transfer::TransferJobResponse {
+) -> TransferJobResponse {
     let transfers = TransferState::from_ref(state);
     let actor = actor(user);
 
@@ -64,17 +67,17 @@ async fn wait_for_completed(
 #[test]
 fn test_transfer_phase_serialization_and_roundtrip() {
     let phases = vec![
-        (TransferPhase::Preparing, "preparing"),
-        (TransferPhase::Transferring, "transferring"),
-        (TransferPhase::Finalizing, "finalizing"),
-        (TransferPhase::Verifying, "verifying"),
-        (TransferPhase::CleaningUp, "cleaning_up"),
-        (TransferPhase::Completed, "completed"),
+        (EngineTransferPhase::Preparing, "preparing"),
+        (EngineTransferPhase::Transferring, "transferring"),
+        (EngineTransferPhase::Finalizing, "finalizing"),
+        (EngineTransferPhase::Verifying, "verifying"),
+        (EngineTransferPhase::CleaningUp, "cleaning_up"),
+        (EngineTransferPhase::Completed, "completed"),
     ];
 
     for (phase, str_val) in phases {
         assert_eq!(phase.as_str(), str_val);
-        assert_eq!(TransferPhase::from_str(str_val), phase);
+        assert_eq!(EngineTransferPhase::from_str(str_val), phase);
     }
 }
 
