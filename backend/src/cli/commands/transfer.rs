@@ -2,7 +2,10 @@ use crate::cli::args::{TransferAction, TransferCommand};
 use crate::cli::context::CliContext;
 use crate::cli::error::CliError;
 use crate::cli::output::prompt_confirm;
+use crate::domain::Actor;
 use crate::services::TransferService;
+use crate::state::TransferState;
+use axum::extract::FromRef;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -126,61 +129,64 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             }
         }
         TransferAction::Cancel { id } => {
-            // Attempt cancellation via AppState & TransferManager
             let state = ctx.state().await?;
-            let cancelled = state
-                .transfer_manager
-                .cancel_job(&id, None, true)
+            let transfers = TransferState::from_ref(&state);
+            let admin = Actor {
+                id: "cli_admin".to_string(),
+                username: "admin".to_string(),
+                is_admin: true,
+            };
+            transfers
+                .use_cases
+                .cancel(&admin, &id)
                 .await
-                .unwrap_or(false);
+                .map_err(|e| CliError::general(format!("Failed to cancel transfer: {}", e)))?;
 
-            if cancelled {
-                let out = TransferActionOutput {
-                    id: id.clone(),
-                    status: "cancelled",
-                    message: format!("Transfer job '{}' successfully cancelled", id),
-                };
-                ctx.output.print_success("transfer.cancel", &out, || {
-                    println!("✓ Transfer job '{}' cancelled.", id);
-                });
-                Ok(())
-            } else {
-                Err(CliError::not_found(format!(
-                    "Transfer job '{}' is not running or does not exist",
-                    id
-                )))
-            }
+            let out = TransferActionOutput {
+                id: id.clone(),
+                status: "cancelled",
+                message: format!("Transfer job '{}' successfully cancelled", id),
+            };
+            ctx.output.print_success("transfer.cancel", &out, || {
+                println!("✓ Transfer job '{}' cancelled.", id);
+            });
+            Ok(())
         }
         TransferAction::Dismiss { id } => {
             let state = ctx.state().await?;
-            let dismissed = state
-                .transfer_manager
-                .dismiss_job(&id, None, true)
+            let transfers = TransferState::from_ref(&state);
+            let admin = Actor {
+                id: "cli_admin".to_string(),
+                username: "admin".to_string(),
+                is_admin: true,
+            };
+            transfers
+                .use_cases
+                .dismiss(&admin, &id)
                 .await
-                .unwrap_or(false);
+                .map_err(|e| CliError::general(format!("Failed to dismiss transfer: {}", e)))?;
 
-            if dismissed {
-                let out = TransferActionOutput {
-                    id: id.clone(),
-                    status: "dismissed",
-                    message: format!("Transfer job '{}' dismissed from history", id),
-                };
-                ctx.output.print_success("transfer.dismiss", &out, || {
-                    println!("✓ Transfer job '{}' dismissed.", id);
-                });
-                Ok(())
-            } else {
-                Err(CliError::not_found(format!(
-                    "Transfer job '{}' not found",
-                    id
-                )))
-            }
+            let out = TransferActionOutput {
+                id: id.clone(),
+                status: "dismissed",
+                message: format!("Transfer job '{}' dismissed from history", id),
+            };
+            ctx.output.print_success("transfer.dismiss", &out, || {
+                println!("✓ Transfer job '{}' dismissed.", id);
+            });
+            Ok(())
         }
         TransferAction::Clear => {
             let state = ctx.state().await?;
-            let cleared = state
-                .transfer_manager
-                .clear_finished_jobs(None, true)
+            let transfers = TransferState::from_ref(&state);
+            let admin = Actor {
+                id: "cli_admin".to_string(),
+                username: "admin".to_string(),
+                is_admin: true,
+            };
+            let cleared = transfers
+                .use_cases
+                .clear_finished(&admin)
                 .await
                 .map_err(|e| {
                     CliError::general(format!("Failed to clear finished transfers: {}", e))
@@ -282,7 +288,7 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     return Ok(());
                 }
 
-                let count = TransferService::repair_stuck_transfers(&pool, false)
+                let count = TransferService::repair_stuck_transfers(&pool, days_placeholder(), false)
                     .await
                     .map_err(|e| CliError::database(format!("Repair error: {}", e)))?;
 
@@ -297,4 +303,8 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             }
         }
     }
+}
+
+fn days_placeholder() -> bool {
+    false
 }
