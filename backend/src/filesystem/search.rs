@@ -1,7 +1,7 @@
 use crate::domain::{FileEntry, FileKind, VfsPath};
 use crate::errors::VfsError;
 use crate::vfs::FileSystem;
-use futures::{future::BoxFuture, FutureExt, StreamExt};
+use futures::{future::BoxFuture, stream::FuturesOrdered, FutureExt, StreamExt};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -34,7 +34,7 @@ impl SearchMatcher {
 
 struct DirectoryScan {
     matches: Vec<FileEntry>,
-    children: Vec<(VfsPath, usize)>,
+    children: Vec<VfsPath>,
     total_scanned: usize,
     errors: Vec<String>,
     hit_limit: bool,
@@ -59,63 +59,70 @@ pub async fn search_recursive(
         SearchMatcher::Contains(query.to_lowercase())
     };
 
+    // The legacy implementation returned the first match even when limit=0 because
+    // it checked the limit only after pushing a match. Treat that edge case as a
+    // one-result limit while keeping normal limits unchanged.
+    let limit = limit.max(1);
     let mut matches = Vec::new();
     let mut errors = Vec::new();
     let mut total_scanned = 0usize;
-    let mut queue: VecDeque<(VfsPath, usize)> = VecDeque::new();
-    let mut active: futures::stream::FuturesUnordered<BoxFuture<'static, DirectoryScan>> =
-        futures::stream::FuturesUnordered::new();
+    let mut current_level: VecDeque<VfsPath> = VecDeque::from([root_vfs]);
+    let mut depth = 0usize;
     let mut truncated = false;
 
-    queue.push_back((root_vfs, 0));
+    // Process one BFS depth at a time. Within a depth, at most
+    // SEARCH_DIRECTORY_CONCURRENCY provider streams run concurrently. FuturesOrdered
+    // preserves the exact directory order of the old sequential BFS even when later
+    // provider calls complete first, so result/error ordering remains deterministic.
+    while !current_level.is_empty() && depth <= max_depth && !truncated {
+        let mut active: FuturesOrdered<BoxFuture<'static, DirectoryScan>> =
+            FuturesOrdered::new();
+        let mut next_level = VecDeque::new();
 
-    loop {
-        while active.len() < SEARCH_DIRECTORY_CONCURRENCY {
-            let Some((directory, depth)) = queue.pop_front() else {
+        fill_search_window(
+            &mut active,
+            &mut current_level,
+            provider,
+            connection_id,
+            depth,
+            max_depth,
+            &matcher,
+            limit,
+        );
+
+        while let Some(scan) = active.next().await {
+            total_scanned = total_scanned.saturating_add(scan.total_scanned);
+            errors.extend(scan.errors);
+
+            let remaining = limit.saturating_sub(matches.len());
+            let found = scan.matches.len();
+            matches.extend(scan.matches.into_iter().take(remaining));
+
+            // Preserve the existing contract: reaching the requested result limit marks
+            // the response truncated immediately. Dropping `active` cancels unfinished
+            // directory streams; there are no detached traversal tasks.
+            if scan.hit_limit || found > remaining || matches.len() >= limit {
+                truncated = true;
                 break;
-            };
-            if depth > max_depth {
-                continue;
             }
 
-            active.push(
-                scan_directory(
-                    Arc::clone(provider),
-                    connection_id.to_owned(),
-                    directory,
-                    depth,
-                    max_depth,
-                    matcher.clone(),
-                    limit,
-                )
-                .boxed(),
+            next_level.extend(scan.children);
+            fill_search_window(
+                &mut active,
+                &mut current_level,
+                provider,
+                connection_id,
+                depth,
+                max_depth,
+                &matcher,
+                limit,
             );
         }
 
-        let Some(scan) = active.next().await else {
-            break;
-        };
-
-        total_scanned = total_scanned.saturating_add(scan.total_scanned);
-        errors.extend(scan.errors);
-
-        let remaining = limit.saturating_sub(matches.len());
-        let found = scan.matches.len();
-        matches.extend(scan.matches.into_iter().take(remaining));
-
-        // Preserve the existing contract: reaching the requested result limit marks
-        // the response as truncated immediately. Dropping `active` below cancels
-        // unfinished directory streams without spawning detached tasks.
-        if scan.hit_limit || found > remaining || matches.len() >= limit {
-            truncated = true;
-            break;
+        if !truncated {
+            current_level = next_level;
+            depth = depth.saturating_add(1);
         }
-
-        // Children are appended only after their parent directory finishes. Since
-        // directories themselves are taken from the front of this queue, scheduling
-        // remains breadth-first while up to SEARCH_DIRECTORY_CONCURRENCY listings may
-        // make progress concurrently.
-        queue.extend(scan.children);
     }
 
     Ok(SearchOutput {
@@ -124,6 +131,36 @@ pub async fn search_recursive(
         total_scanned,
         errors,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_search_window(
+    active: &mut FuturesOrdered<BoxFuture<'static, DirectoryScan>>,
+    current_level: &mut VecDeque<VfsPath>,
+    provider: &Arc<dyn FileSystem>,
+    connection_id: &str,
+    depth: usize,
+    max_depth: usize,
+    matcher: &SearchMatcher,
+    limit: usize,
+) {
+    while active.len() < SEARCH_DIRECTORY_CONCURRENCY {
+        let Some(directory) = current_level.pop_front() else {
+            break;
+        };
+        active.push_back(
+            scan_directory(
+                Arc::clone(provider),
+                connection_id.to_owned(),
+                directory,
+                depth,
+                max_depth,
+                matcher.clone(),
+                limit,
+            )
+            .boxed(),
+        );
+    }
 }
 
 async fn scan_directory(
@@ -176,7 +213,7 @@ async fn scan_directory(
 
         if entry.kind == FileKind::Directory && depth < max_depth {
             if let Ok(child_vfs) = VfsPath::new(&connection_id, &entry.path) {
-                children.push((child_vfs, depth + 1));
+                children.push(child_vfs);
             }
         }
     }
