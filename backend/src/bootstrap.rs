@@ -266,6 +266,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             local_root.clone(),
             registry,
             runtime.view(),
+            runtime.supervisor.clone(),
         )),
         realtime: RealtimeState::new(RealtimeService::new(
             db.clone(),
@@ -316,6 +317,7 @@ fn spawn_runtime_tasks(
     housekeeping_db: DbPool,
 ) {
     let cleanup_token = runtime.shutdown_token.clone();
+    let cleanup_health = runtime.supervisor.clone();
     runtime
         .supervisor
         .spawn("stale_staging_cleanup", async move {
@@ -327,16 +329,20 @@ fn spawn_runtime_tasks(
                 tokio::select! {
                     _ = cleanup_token.cancelled() => break,
                     _ = interval.tick() => {
-                        let _ = crate::vfs::cleanup_stale_staging_files(
+                        match crate::vfs::cleanup_stale_staging_files(
                             &local_root,
                             std::time::Duration::from_secs(crate::config::STAGING_RETENTION_SECS),
-                        ).await;
+                        ).await {
+                            Ok(_) => cleanup_health.record_success("stale_staging_cleanup"),
+                            Err(error) => cleanup_health.record_failure("stale_staging_cleanup", error),
+                        }
                     }
                 }
             }
         });
 
     let vacuum_token = runtime.shutdown_token.clone();
+    let vacuum_health = runtime.supervisor.clone();
     runtime
         .supervisor
         .spawn("event_journal_vacuum", async move {
@@ -348,17 +354,22 @@ fn spawn_runtime_tasks(
                 tokio::select! {
                     _ = vacuum_token.cancelled() => break,
                     _ = interval.tick() => {
-                        let _ = journal
+                        match journal
                             .vacuum(std::time::Duration::from_secs(
                                 crate::config::EVENT_JOURNAL_RETENTION_SECS,
                             ))
-                            .await;
+                            .await
+                        {
+                            Ok(_) => vacuum_health.record_success("event_journal_vacuum"),
+                            Err(error) => vacuum_health.record_failure("event_journal_vacuum", error),
+                        }
                     }
                 }
             }
         });
 
     let housekeeping_token = runtime.shutdown_token.clone();
+    let housekeeping_health = runtime.supervisor.clone();
     runtime.supervisor.spawn("housekeeping", async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         interval.tick().await;
@@ -367,25 +378,43 @@ fn spawn_runtime_tasks(
                 _ = housekeeping_token.cancelled() => break,
                 _ = interval.tick() => {
                     let now = chrono::Utc::now().to_rfc3339();
-                    if let Ok(result) = sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
+                    let mut failed = false;
+
+                    match sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
                         .bind(&now)
                         .execute(&housekeeping_db)
                         .await
                     {
-                        if result.rows_affected() > 0 {
-                            tracing::info!("Housekeeping: purged {} expired sessions", result.rows_affected());
+                        Ok(result) => {
+                            if result.rows_affected() > 0 {
+                                tracing::info!("Housekeeping: purged {} expired sessions", result.rows_affected());
+                            }
+                        }
+                        Err(error) => {
+                            failed = true;
+                            housekeeping_health.record_failure("housekeeping", error);
                         }
                     }
 
-                    if let Ok(result) = sqlx::query(
+                    match sqlx::query(
                         "DELETE FROM transfer_jobs WHERE dismissed_at IS NOT NULL AND dismissed_at < datetime('now', '-30 days')",
                     )
                     .execute(&housekeeping_db)
                     .await
                     {
-                        if result.rows_affected() > 0 {
-                            tracing::info!("Housekeeping: purged {} old dismissed transfer jobs", result.rows_affected());
+                        Ok(result) => {
+                            if result.rows_affected() > 0 {
+                                tracing::info!("Housekeeping: purged {} old dismissed transfer jobs", result.rows_affected());
+                            }
                         }
+                        Err(error) => {
+                            failed = true;
+                            housekeeping_health.record_failure("housekeeping", error);
+                        }
+                    }
+
+                    if !failed {
+                        housekeeping_health.record_success("housekeeping");
                     }
                 }
             }
