@@ -11,7 +11,6 @@ use axum::{
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -216,6 +215,7 @@ async fn handle_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn websocket_query_keeps_resume_contract() {
