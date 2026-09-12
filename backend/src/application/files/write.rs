@@ -63,10 +63,6 @@ impl WriteFile {
         let provider = self.filesystem.resolve(&command.connection).await?;
         let path = VfsPath::new(command.connection.as_str(), command.path.clone())?;
 
-        // Serialize the complete read-check-write sequence with uploads targeting
-        // the same canonical destination. This closes the ETag TOCTOU window:
-        // no second writer can pass the same precondition while another writer
-        // is between `stat` and commit.
         let _mutation_guard = self
             .mutations
             .try_acquire(&command.connection, &path.path)
@@ -125,9 +121,6 @@ impl WriteFile {
         let content = command.content;
 
         if capabilities.atomic_rename {
-            // Never share a staging path between operations. The mutation guard
-            // already serializes this destination, while the operation id also
-            // prevents stale artifacts from a previous crash being reused.
             let temporary = VfsPath::new(
                 command.connection.as_str(),
                 format!("{}.aerofs.tmp-{}", path.path, Uuid::new_v4()),
@@ -184,7 +177,7 @@ impl WriteFile {
                 "write",
                 Some(format!("Bytes written: {}", metadata.size)),
             )
-            .await;
+            .await?;
         Ok(metadata)
     }
 }

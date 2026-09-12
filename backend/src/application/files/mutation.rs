@@ -72,7 +72,7 @@ impl CreateDirectory {
                 "create",
                 None,
             )
-            .await;
+            .await?;
         Ok(metadata)
     }
 }
@@ -129,7 +129,7 @@ impl RenameEntry {
             .await;
         self.effects
             .file_renamed(actor, &command.connection, &from.path, &to.path)
-            .await;
+            .await?;
         Ok(())
     }
 }
@@ -188,7 +188,7 @@ impl CopyEntry {
             .await;
         self.effects
             .file_copied(actor, &command.connection, &from.path, &to.path)
-            .await;
+            .await?;
         Ok(to.path)
     }
 }
@@ -236,9 +236,6 @@ impl DeleteEntries {
         let provider = self.filesystem.resolve(&command.connection).await?;
         let connection = command.connection.clone();
 
-        // Bound both active I/O and in-memory future creation. `buffer_unordered`
-        // polls at most eight delete futures concurrently instead of spawning one
-        // Tokio task per requested path.
         let mut deletes = stream::iter(command.paths.into_iter().map(|raw_path| {
             let provider = provider.clone();
             let connection = connection.clone();
@@ -259,7 +256,8 @@ impl DeleteEntries {
             match result {
                 Ok(()) => {
                     self.effects.invalidate_prefix(&connection, &path).await;
-                    self.effects
+                    match self
+                        .effects
                         .file_changed(
                             actor,
                             &connection,
@@ -268,8 +266,11 @@ impl DeleteEntries {
                             "delete",
                             None,
                         )
-                        .await;
-                    succeeded.push(path);
+                        .await
+                    {
+                        Ok(()) => succeeded.push(path),
+                        Err(error) => failed.push((path, error.to_string())),
+                    }
                 }
                 Err(error) => failed.push((path, error.to_string())),
             }
