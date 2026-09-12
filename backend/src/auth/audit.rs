@@ -123,9 +123,8 @@ pub async fn record_audit_log(
     let id = format!("log_{}", &Uuid::new_v4().to_string()[..12]);
     let now = Utc::now().to_rfc3339();
 
-    let _ = sqlx::query(
-        "INSERT INTO audit_logs (id, user_id, action, connection_id, path, status, ip_address, details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    if let Err(error) = sqlx::query(
+        "INSERT INTO audit_logs (id, user_id, action, connection_id, path, status, ip_address, details, created_at)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
@@ -137,5 +136,18 @@ pub async fn record_audit_log(
     .bind(details)
     .bind(&now)
     .execute(db)
-    .await;
+    .await
+    {
+        // Audit remains synchronous and correctness-sensitive in Phase 8. Do not
+        // silently lose compliance evidence if persistence fails.
+        tracing::error!(
+            %error,
+            action,
+            status,
+            user_id = ?user_id,
+            connection_id = ?connection_id,
+            path = ?path,
+            "audit log persistence failed"
+        );
+    }
 }

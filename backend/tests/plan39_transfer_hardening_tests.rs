@@ -62,17 +62,16 @@ async fn test_realtime_cancellation_with_token() {
     let cancel_res = TransferService::cancel_transfer(&state, &admin, &job_id).await;
     assert!(cancel_res.is_ok());
 
+    // Realtime lifecycle assertions must observe the manager's authoritative live
+    // state. `list_jobs(..., include_dismissed=true)` intentionally reloads history
+    // from SQLite and can lag the in-memory state while a worker is finalizing cancel.
     let mut cancelled = false;
     let mut last_status = None;
     for _ in 0..150 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let jobs = state
-            .transfer_manager
-            .list_jobs(Some(&admin.id), true, true)
-            .await;
-        if let Some(j) = jobs.iter().find(|j| j.id == job_id) {
-            last_status = Some(j.status);
-            if j.status == TransferStatus::Cancelled {
+        if let Some(job) = state.transfer_manager.get_job(&job_id).await {
+            last_status = Some(job.status);
+            if job.status == TransferStatus::Cancelled {
                 cancelled = true;
                 break;
             }

@@ -132,6 +132,8 @@ impl SqliteFileMutationEffects {
 #[async_trait]
 impl FileMutationEffects for SqliteFileMutationEffects {
     async fn invalidate(&self, connection: &ConnectionId, path: &str) {
+        // Immediate invalidation remains on the synchronous correctness path.
+        // Event-derived invalidation provides recovery/convergence after lag/restart.
         self.cache.invalidate(connection.as_str(), path).await;
     }
 
@@ -159,7 +161,8 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             details.as_deref(),
         )
         .await;
-        let _ = self
+
+        if let Err(error) = self
             .event_journal
             .append(
                 crate::events::DomainEvent::file_change(
@@ -169,7 +172,16 @@ impl FileMutationEffects for SqliteFileMutationEffects {
                 ),
                 None,
             )
-            .await;
+            .await
+        {
+            tracing::error!(
+                %error,
+                connection_id = %connection.as_str(),
+                path,
+                event_action,
+                "file mutation event persistence failed"
+            );
+        }
     }
 
     async fn file_renamed(
@@ -190,12 +202,22 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             Some(&format!("Renamed to: {}", to)),
         )
         .await;
-        let _ = self
+
+        if let Err(error) = self
             .event_journal
             .append(
                 crate::events::DomainEvent::file_rename(connection.as_str(), from, to),
                 None,
             )
-            .await;
+            .await
+        {
+            tracing::error!(
+                %error,
+                connection_id = %connection.as_str(),
+                from,
+                to,
+                "file rename event persistence failed"
+            );
+        }
     }
 }

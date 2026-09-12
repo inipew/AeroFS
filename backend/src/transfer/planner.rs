@@ -9,16 +9,22 @@ use std::sync::Arc;
 pub enum TransferStrategy {
     /// Instant atomic filesystem rename within the same connection/provider
     NativeRename,
-    /// Fast-path zero-egress server-side copy (e.g. S3 CopyObject or local fs hardlink/clone)
+    /// Fast-path zero-egress server-side copy (for object stores such as S3 CopyObject)
     ServerSideCopy,
-    /// Asynchronous streaming transfer across different connections or as fallback
+    /// Asynchronous streaming transfer across different connections or when the engine
+    /// must retain granular cancellation/progress control.
     Streaming,
 }
 
 pub struct TransferPlanner;
 
 impl TransferPlanner {
-    /// Determine the most efficient and semantically correct transfer strategy
+    /// Determine the most efficient and semantically correct transfer strategy.
+    ///
+    /// Native same-filesystem copy is deliberately kept on the streaming path. A provider
+    /// copy call can be one long, non-yielding operation, which prevents the transfer engine
+    /// from honoring CancellationToken promptly. Object stores without atomic rename keep
+    /// the zero-egress server-side-copy optimization.
     pub fn plan_transfer(
         job: &TransferJob,
         src_fs: &Arc<dyn FileSystem>,
@@ -33,8 +39,10 @@ impl TransferPlanner {
             if job.transfer_type == TransferType::Move && (caps.rename || caps.atomic_rename) {
                 return TransferStrategy::NativeRename;
             }
-            // Strict Server-Side Copy: Cloud object storage (S3 CopyObject) to avoid egress
-            if caps.server_side_copy && caps.multipart_write {
+
+            // Strict object-store fast path: retain engine-controlled streaming for
+            // local/rename-capable filesystems so cancellation remains responsive.
+            if caps.server_side_copy && caps.multipart_write && !caps.atomic_rename {
                 return TransferStrategy::ServerSideCopy;
             }
         }

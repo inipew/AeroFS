@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::db::DbPool;
-use crate::events::EventJournal;
+use crate::events::{EventJournal, MetadataCacheEventSubscriber};
 use crate::infrastructure::CredentialStore;
 use crate::runtime::{ResourceBudget, TaskSupervisor};
 use crate::services::connection_service::ConnectionService;
@@ -225,6 +225,13 @@ impl AppState {
         );
 
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
+        MetadataCacheEventSubscriber::spawn(
+            &runtime.supervisor,
+            event_journal.clone(),
+            metadata_cache.clone(),
+            runtime.shutdown_token.clone(),
+        );
+
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());
         let cfg_limits_global = config.limits.global_io_concurrency;
         let cfg_limits_archive = config.limits.archive_concurrency;
