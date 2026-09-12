@@ -5,6 +5,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant};
@@ -17,19 +18,44 @@ struct CachedResponse {
     created_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestFingerprint([u8; 32]);
+
 #[derive(Clone)]
 enum CacheEntry {
-    InProgress(Instant),
-    Completed(CachedResponse),
+    InProgress {
+        created_at: Instant,
+        fingerprint: RequestFingerprint,
+    },
+    Completed {
+        response: CachedResponse,
+        fingerprint: RequestFingerprint,
+    },
 }
 
 impl CacheEntry {
     fn created_at(&self) -> Instant {
         match self {
-            Self::InProgress(created_at) => *created_at,
-            Self::Completed(response) => response.created_at,
+            Self::InProgress { created_at, .. } => *created_at,
+            Self::Completed { response, .. } => response.created_at,
         }
     }
+
+    fn fingerprint(&self) -> RequestFingerprint {
+        match self {
+            Self::InProgress { fingerprint, .. } | Self::Completed { fingerprint, .. } => {
+                *fingerprint
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+enum CacheLookup {
+    Hit(CachedResponse),
+    InProgress,
+    PayloadConflict,
+    Stale,
 }
 
 static IDEMPOTENCY_CACHE: LazyLock<Arc<RwLock<HashMap<String, CacheEntry>>>> =
@@ -39,7 +65,44 @@ const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
 const IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
 const MAX_CACHE_ENTRIES: usize = 1000;
+const MAX_IDEMPOTENT_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CACHED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+fn request_fingerprint(body: &[u8]) -> RequestFingerprint {
+    let digest = Sha256::digest(body);
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&digest);
+    RequestFingerprint(bytes)
+}
+
+fn scope_fingerprint(scope: &str) -> String {
+    hex::encode(Sha256::digest(scope.as_bytes()))
+}
+
+fn classify_cache_entry(
+    entry: &CacheEntry,
+    fingerprint: RequestFingerprint,
+    now: Instant,
+) -> CacheLookup {
+    let age = now.saturating_duration_since(entry.created_at());
+    let is_fresh = match entry {
+        CacheEntry::InProgress { .. } => age < IN_FLIGHT_TIMEOUT,
+        CacheEntry::Completed { .. } => age < CACHE_TTL,
+    };
+
+    if !is_fresh {
+        return CacheLookup::Stale;
+    }
+
+    if entry.fingerprint() != fingerprint {
+        return CacheLookup::PayloadConflict;
+    }
+
+    match entry {
+        CacheEntry::Completed { response, .. } => CacheLookup::Hit(response.clone()),
+        CacheEntry::InProgress { .. } => CacheLookup::InProgress,
+    }
+}
 
 /// Axum middleware for transparent scoped Idempotency-Key deduplication on mutating requests.
 pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
@@ -65,6 +128,21 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
         None => return next.run(req).await,
     };
 
+    if let Some(content_length) = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        if content_length > MAX_IDEMPOTENT_REQUEST_BYTES {
+            return crate::errors::AppError::PayloadTooLarge(format!(
+                "Idempotency-Key request bodies are limited to {} bytes; use an upload session or omit the idempotency key for larger streaming bodies",
+                MAX_IDEMPOTENT_REQUEST_BYTES
+            ))
+            .into_response();
+        }
+    }
+
     let auth_scope = req
         .headers()
         .get(axum::http::header::COOKIE)
@@ -82,16 +160,48 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
         })
         .unwrap_or_else(|| "anon".to_string());
 
-    // Include path + query so the same key cannot collide across semantically
-    // different request targets.
-    let scoped_key = format!("{}:{}:{}:{}", auth_scope, method, req.uri(), raw_key);
+    let uri = req.uri().clone();
+    let (parts, body) = req.into_parts();
+    let request_body = match to_bytes(body, MAX_IDEMPOTENT_REQUEST_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                max_bytes = MAX_IDEMPOTENT_REQUEST_BYTES,
+                "failed to buffer idempotent request body"
+            );
+            return crate::errors::AppError::PayloadTooLarge(format!(
+                "Idempotency-Key request body could not be buffered within the {} byte limit",
+                MAX_IDEMPOTENT_REQUEST_BYTES
+            ))
+            .into_response();
+        }
+    };
+    let fingerprint = request_fingerprint(&request_body);
+    let req = Request::from_parts(parts, Body::from(request_body));
+
+    // Scope by authenticated principal, method, full URI (including query), and
+    // the caller-provided key. The payload fingerprint is stored in the entry
+    // rather than appended to the key: reusing one idempotency key for a different
+    // payload is a conflict, not a second independent operation.
+    // Hash the auth scope before composing/logging the cache key so bearer/session
+    // credentials are never retained as plaintext cache keys or debug output.
+    let scoped_key = format!(
+        "{}:{}:{}:{}",
+        scope_fingerprint(&auth_scope),
+        method,
+        uri,
+        raw_key
+    );
 
     {
         if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
             if guard.len() >= MAX_CACHE_ENTRIES {
                 guard.retain(|_, value| match value {
-                    CacheEntry::InProgress(t) => t.elapsed() < IN_FLIGHT_TIMEOUT,
-                    CacheEntry::Completed(c) => c.created_at.elapsed() < CACHE_TTL,
+                    CacheEntry::InProgress { created_at, .. } => {
+                        created_at.elapsed() < IN_FLIGHT_TIMEOUT
+                    }
+                    CacheEntry::Completed { response, .. } => response.created_at.elapsed() < CACHE_TTL,
                 });
             }
             if guard.len() >= MAX_CACHE_ENTRIES && !guard.contains_key(&scoped_key) {
@@ -105,8 +215,8 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
             }
 
             if let Some(entry) = guard.get(&scoped_key) {
-                match entry {
-                    CacheEntry::Completed(cached) if cached.created_at.elapsed() < CACHE_TTL => {
+                match classify_cache_entry(entry, fingerprint, Instant::now()) {
+                    CacheLookup::Hit(cached) => {
                         tracing::debug!("Idempotency hit for scoped key: {}", scoped_key);
                         let mut resp = Response::builder().status(cached.status);
                         if let Some(ref ct) = cached.content_type {
@@ -120,17 +230,30 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
                             .body(Body::from(cached.body.clone()))
                             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
-                    CacheEntry::InProgress(t) if t.elapsed() < IN_FLIGHT_TIMEOUT => {
+                    CacheLookup::InProgress => {
                         return crate::errors::AppError::ConcurrentIdempotentRequest(
                             "An identical request is currently being processed".to_string(),
                         )
                         .into_response();
                     }
-                    _ => {}
+                    CacheLookup::PayloadConflict => {
+                        return crate::errors::AppError::Conflict(
+                            "Idempotency-Key was already used for the same endpoint with a different request payload"
+                                .to_string(),
+                        )
+                        .into_response();
+                    }
+                    CacheLookup::Stale => {}
                 }
             }
 
-            guard.insert(scoped_key.clone(), CacheEntry::InProgress(Instant::now()));
+            guard.insert(
+                scoped_key.clone(),
+                CacheEntry::InProgress {
+                    created_at: Instant::now(),
+                    fingerprint,
+                },
+            );
         }
     }
 
@@ -169,12 +292,15 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
                 if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
                     guard.insert(
                         scoped_key,
-                        CacheEntry::Completed(CachedResponse {
-                            status,
-                            content_type,
-                            body: bytes.clone(),
-                            created_at: Instant::now(),
-                        }),
+                        CacheEntry::Completed {
+                            response: CachedResponse {
+                                status,
+                                content_type,
+                                body: bytes.clone(),
+                                created_at: Instant::now(),
+                            },
+                            fingerprint,
+                        },
                     );
                 }
                 Response::from_parts(parts, Body::from(bytes))
@@ -195,5 +321,58 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
             guard.remove(&scoped_key);
         }
         resp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_fingerprint_changes_when_payload_changes() {
+        let first = request_fingerprint(br#"{"path":"/one"}"#);
+        let second = request_fingerprint(br#"{"path":"/two"}"#);
+        assert_ne!(first, second);
+        assert_eq!(first, request_fingerprint(br#"{"path":"/one"}"#));
+    }
+
+    #[test]
+    fn fresh_entry_with_different_payload_is_conflict() {
+        let entry = CacheEntry::InProgress {
+            created_at: Instant::now(),
+            fingerprint: request_fingerprint(b"one"),
+        };
+
+        assert!(matches!(
+            classify_cache_entry(&entry, request_fingerprint(b"two"), Instant::now()),
+            CacheLookup::PayloadConflict
+        ));
+    }
+
+    #[test]
+    fn fresh_entry_with_same_payload_preserves_inflight_semantics() {
+        let fingerprint = request_fingerprint(b"same");
+        let entry = CacheEntry::InProgress {
+            created_at: Instant::now(),
+            fingerprint,
+        };
+
+        assert!(matches!(
+            classify_cache_entry(&entry, fingerprint, Instant::now()),
+            CacheLookup::InProgress
+        ));
+    }
+
+    #[test]
+    fn stale_entry_can_be_reused_with_new_payload() {
+        let entry = CacheEntry::InProgress {
+            created_at: Instant::now() - IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
+            fingerprint: request_fingerprint(b"old"),
+        };
+
+        assert!(matches!(
+            classify_cache_entry(&entry, request_fingerprint(b"new"), Instant::now()),
+            CacheLookup::Stale
+        ));
     }
 }
