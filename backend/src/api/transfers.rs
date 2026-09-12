@@ -46,6 +46,7 @@ fn actor(user: &AuthenticatedUser) -> crate::domain::Actor {
     }
 }
 
+/// Queue a new transfer job with full source and destination authorization
 #[utoipa::path(
     post,
     path = "/api/v1/transfers",
@@ -94,6 +95,7 @@ pub async fn create_transfer(
     ))
 }
 
+/// List active and undismissed transfer jobs (scoped by user ownership and connection permissions)
 #[utoipa::path(
     get,
     path = "/api/v1/transfers",
@@ -112,6 +114,7 @@ pub async fn list_transfers(
     Ok(Json(state.use_cases.list(&actor(&user)).await?))
 }
 
+/// Cancel an active transfer job (enforcing user ownership)
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/cancel",
@@ -139,6 +142,7 @@ pub async fn cancel_transfer(
     }))
 }
 
+/// Retry or resume an interrupted or failed transfer job
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/retry",
@@ -165,6 +169,7 @@ pub async fn retry_transfer(
     }))
 }
 
+/// Dismiss a single transfer job from history (persistent)
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/dismiss",
@@ -191,6 +196,7 @@ pub async fn dismiss_transfer(
     }))
 }
 
+/// Dismiss all finished transfer jobs for the authenticated user (persistent Clear)
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/clear-finished",
