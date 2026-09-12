@@ -8,7 +8,7 @@ use crate::sync::SyncManager;
 use crate::transfer::TransferManager;
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
-use crate::{application::files::{FileUseCases, ListDirectory}, infrastructure::files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings}};
+use crate::{application::files::{FileUseCases, ListDirectory, ReadFile, StatFile}, infrastructure::files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings}};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -280,6 +280,14 @@ impl AppState {
                 Arc::new(SqliteAuthorization::new(db.clone())),
                 Arc::new(RegistryFileSystemResolver::new(registry.clone())),
                 Arc::new(SqliteFileSettings::new(db.clone(), config.clone())),
+            ),
+            stat_file: StatFile::new(
+                Arc::new(SqliteAuthorization::new(db.clone())),
+                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
+            ),
+            read_file: ReadFile::new(
+                Arc::new(SqliteAuthorization::new(db.clone())),
+                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
             ),
         };
         let state = Self {

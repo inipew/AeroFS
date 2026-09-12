@@ -6,11 +6,15 @@ mod listing;
 mod mutation;
 mod presign;
 mod read;
+mod read_file;
+mod stat;
 mod write;
 
 pub use list_directory::{ListDirectory, ListDirectoryCommand};
 pub use listing::ListOptions;
 pub use read::ReadOptions;
+pub use read_file::{ReadFile, ReadFileCommand, ReadFileResult};
+pub use stat::{StatFile, StatFileCommand};
 
 use crate::events::EventJournal;
 use crate::services::cache::MetadataCache;
@@ -24,6 +28,8 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub struct FileUseCases {
     pub list_directory: ListDirectory,
+    pub stat_file: StatFile,
+    pub read_file: ReadFile,
 }
 
 /// Explicit dependencies — no god context.

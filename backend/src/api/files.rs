@@ -1,7 +1,7 @@
 use crate::api::extractors::{Json, Path, Query};
 use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
 use crate::domain::{
-    parse_single_byte_range, ByteRange, DirectoryListing, FileKind, FileMetadata, RangeError,
+    parse_single_byte_range, ByteRange, DirectoryListing, FileMetadata, RangeError,
     SortField, SortOrder, VfsPath,
 };
 use crate::errors::{AppError, ErrorResponse, VfsError};
@@ -297,9 +297,8 @@ pub async fn stat_file(
 ) -> Result<impl IntoResponse, AppError> {
     let conn = crate::domain::ConnectionId::new(connection_id.clone())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let meta = crate::application::FileApplicationService::from_state(&state)
-        .stat_typed(&user.0, &conn, query.path)
-        .await?;
+    let actor = crate::domain::Actor { id: user.0.id.clone(), username: user.0.username.clone(), is_admin: user.0.is_admin };
+    let meta = state.files.stat_file.execute(&actor, crate::application::files::StatFileCommand { connection: conn, path: query.path }).await?;
     Ok(Json(meta))
 }
 
@@ -333,23 +332,12 @@ pub async fn get_file_content(
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let action = if query.download.unwrap_or(false) {
-        PermissionAction::Download
-    } else {
-        PermissionAction::Read
-    };
-    check_permission(&state.db, &user, &connection_id, action).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let vfs_path = VfsPath::new(&connection_id, query.path)?;
-    let meta = provider.stat(&vfs_path).await?;
-
-    if meta.kind != FileKind::File {
-        return Err(AppError::BadRequest("Target is not a regular file".into()));
-    }
+    let actor = crate::domain::Actor { id: user.0.id.clone(), username: user.0.username.clone(), is_admin: user.0.is_admin };
+    let connection = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let read = state.files.read_file.execute(&actor, crate::application::files::ReadFileCommand { connection, path: query.path, download: query.download.unwrap_or(false) }).await?;
+    let provider = read.filesystem;
+    let vfs_path = read.path;
+    let meta = read.metadata;
 
     let file_size = meta.size;
     let mime = meta

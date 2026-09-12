@@ -13,7 +13,10 @@ impl SqliteAuthorization { pub fn new(db: crate::db::DbPool) -> Self { Self { db
 impl Authorization for SqliteAuthorization {
     async fn authorize(&self, actor: &Actor, connection: &ConnectionId, action: FileAction) -> Result<(), AppError> {
         let user = UserInfo { id: actor.id.clone(), username: actor.username.clone(), is_admin: actor.is_admin };
-        let permission = match action { FileAction::List => PermissionAction::Read };
+        let permission = match action {
+            FileAction::List | FileAction::Read => PermissionAction::Read,
+            FileAction::Download => PermissionAction::Download,
+        };
         check_permission(&self.db, &user, connection.as_str(), permission).await
     }
 }

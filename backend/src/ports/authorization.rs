@@ -3,7 +3,7 @@ use crate::errors::AppError;
 use async_trait::async_trait;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileAction { List }
+pub enum FileAction { List, Read, Download }
 
 #[async_trait]
 pub trait Authorization: Send + Sync {
