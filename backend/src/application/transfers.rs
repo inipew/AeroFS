@@ -3,9 +3,9 @@ use crate::errors::AppError;
 use crate::ports::{
     authorization::{Authorization, FileAction},
     filesystem::FileSystemResolver,
-    transfer::{TransferEffects, TransferQueue, TransferSubmission},
+    transfer::{TransferControl, TransferEffects, TransferQueue, TransferSubmission},
 };
-use crate::transfer::TransferType;
+use crate::transfer::{TransferJobResponse, TransferType};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -72,8 +72,6 @@ impl CreateTransfer {
             ));
         }
 
-        // Resolve both sides before admission so queued work cannot start with an
-        // already-missing provider. The engine may still re-resolve on execution/retry.
         self.filesystem.resolve(&command.source_connection).await?;
         self.filesystem.resolve(&command.destination_connection).await?;
 
@@ -95,4 +93,34 @@ impl CreateTransfer {
 #[derive(Clone)]
 pub struct TransferUseCases {
     pub create_transfer: CreateTransfer,
+    control: Arc<dyn TransferControl>,
+}
+
+impl TransferUseCases {
+    pub fn new(create_transfer: CreateTransfer, control: Arc<dyn TransferControl>) -> Self {
+        Self {
+            create_transfer,
+            control,
+        }
+    }
+
+    pub async fn list(&self, actor: &Actor) -> Result<Vec<TransferJobResponse>, AppError> {
+        self.control.list(actor).await
+    }
+
+    pub async fn cancel(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
+        self.control.cancel(actor, job_id).await
+    }
+
+    pub async fn retry(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
+        self.control.retry(actor, job_id).await
+    }
+
+    pub async fn dismiss(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
+        self.control.dismiss(actor, job_id).await
+    }
+
+    pub async fn clear_finished(&self, actor: &Actor) -> Result<usize, AppError> {
+        self.control.clear_finished(actor).await
+    }
 }
