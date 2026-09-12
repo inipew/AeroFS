@@ -22,6 +22,7 @@ pub struct ShareActionResponse {
     pub message: String,
 }
 
+/// List shares with strict user ownership filter (Admins can view all)
 #[utoipa::path(
     get,
     path = "/api/v1/shares",
@@ -40,6 +41,7 @@ pub async fn list_shares(
     Ok(Json(state.service.list_shares(&user).await?))
 }
 
+/// Create a new shared link for a file or directory
 #[utoipa::path(
     post,
     path = "/api/v1/shares",
@@ -61,6 +63,7 @@ pub async fn create_share(
     Ok((StatusCode::CREATED, Json(state.service.create_share(&user, payload).await?)))
 }
 
+/// Delete / revoke a shared link
 #[utoipa::path(
     delete,
     path = "/api/v1/shares/{id}",
@@ -87,6 +90,7 @@ pub async fn delete_share(
     }))
 }
 
+/// Public access endpoint for downloading shared files without authentication
 #[utoipa::path(
     get,
     path = "/api/v1/shares/public/{token}",
