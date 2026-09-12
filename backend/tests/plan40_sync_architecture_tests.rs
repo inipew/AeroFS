@@ -13,7 +13,7 @@ use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::middleware::REQUEST_ID_HEADER;
 use backend::ports::transfer::TransferType;
 use backend::services::TransferService;
-use backend::state::{AppState, RealtimeState, RuntimeOwner, ShutdownReason};
+use backend::state::{AppState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -97,8 +97,8 @@ async fn write_file(
     path: &str,
     content: Vec<u8>,
 ) {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .write_file
         .execute(
@@ -164,8 +164,8 @@ async fn test_part_file_filtered_from_directory_listing() {
     )
     .await;
 
-    let listing = state
-        .file_api
+    let file_api = FileApiState::from_ref(&state);
+    let listing = file_api
         .files
         .list_directory
         .execute(
