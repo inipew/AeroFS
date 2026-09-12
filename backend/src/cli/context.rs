@@ -4,7 +4,10 @@ use crate::cli::error::{CliError, ExitCode};
 use crate::cli::output::OutputFormatter;
 use crate::config::AppConfig;
 use crate::db::{connect_db, DbPool};
-use crate::state::{AppState, RuntimeOwner, ShutdownReason};
+use crate::state::{
+    AppState, ConnectionState, RuntimeOwner, ShutdownReason, TransferState,
+};
+use axum::extract::FromRef;
 use std::ops::Deref;
 use std::path::PathBuf;
 
@@ -30,6 +33,21 @@ impl Deref for CliState {
 impl Drop for CliState {
     fn drop(&mut self) {
         self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+// `FromRef` is generic over the concrete source type, so deref coercion alone is
+// not considered when CLI commands ask for Axum-style capabilities. Keep these
+// adapters at the CLI boundary and delegate extraction to the canonical AppState.
+impl FromRef<CliState> for ConnectionState {
+    fn from_ref(state: &CliState) -> Self {
+        ConnectionState::from_ref(&state.state)
+    }
+}
+
+impl FromRef<CliState> for TransferState {
+    fn from_ref(state: &CliState) -> Self {
+        TransferState::from_ref(&state.state)
     }
 }
 
