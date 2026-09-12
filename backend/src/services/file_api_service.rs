@@ -1,0 +1,278 @@
+use crate::config::AppConfig;
+use crate::db::DbPool;
+use crate::domain::{Actor, ConnectionId, VfsPath};
+use crate::errors::AppError;
+use crate::filesystem::safepath::SafePath;
+use crate::ports::{
+    authorization::{Authorization, FileAction},
+    effects::{FileAccessEffects, FileMutationEffects},
+    filesystem::FileSystemResolver,
+};
+use crate::services::SettingsService;
+use std::{path::PathBuf, sync::Arc};
+
+#[derive(Debug, Clone)]
+pub struct RecursiveChmodResult {
+    pub succeeded: usize,
+    pub failed: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageInfoSnapshot {
+    pub source_name: String,
+    pub source_size_formatted: String,
+    pub disk_label: String,
+    pub disk_usage_text: String,
+    pub used_percent: u8,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+}
+
+#[derive(Clone)]
+pub struct FileApiService {
+    db: DbPool,
+    config: Arc<AppConfig>,
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    access_effects: Arc<dyn FileAccessEffects>,
+    mutation_effects: Arc<dyn FileMutationEffects>,
+    settings: SettingsService,
+}
+
+impl FileApiService {
+    pub fn new(
+        db: DbPool,
+        config: Arc<AppConfig>,
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        access_effects: Arc<dyn FileAccessEffects>,
+        mutation_effects: Arc<dyn FileMutationEffects>,
+        settings: SettingsService,
+    ) -> Self {
+        Self {
+            db,
+            config,
+            authorization,
+            filesystem,
+            access_effects,
+            mutation_effects,
+            settings,
+        }
+    }
+
+    pub async fn chmod_recursive(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        path: &str,
+        mode: u32,
+    ) -> Result<RecursiveChmodResult, AppError> {
+        #[cfg(not(unix))]
+        {
+            let _ = (actor, connection, path, mode);
+            return Err(AppError::BadRequest(
+                "CHMOD is only supported on Unix systems".into(),
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            if connection.as_str() != ConnectionId::LOCAL {
+                return Err(AppError::BadRequest(
+                    "Recursive CHMOD is only supported for local storage".into(),
+                ));
+            }
+
+            self.authorization
+                .authorize(actor, connection, FileAction::Write)
+                .await?;
+
+            let root = self.local_root().await;
+            let safe_path = SafePath::resolve(
+                &root,
+                path,
+                self.config.security.allow_symlinks_outside_root,
+            )
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+
+            let vfs_path = VfsPath::new(connection.as_str(), path)?;
+            let provider = self.filesystem.resolve(connection).await?;
+            provider
+                .set_permissions(&vfs_path, &format!("{:04o}", mode))
+                .await?;
+
+            let mut result = RecursiveChmodResult {
+                succeeded: 0,
+                failed: Vec::new(),
+            };
+            let absolute = safe_path.absolute();
+            if absolute.is_dir() {
+                result = apply_chmod_recursive(absolute, mode).await;
+            }
+
+            self.mutation_effects
+                .invalidate_prefix(connection, &vfs_path.path)
+                .await;
+
+            if result.failed.is_empty() {
+                self.access_effects
+                    .accessed(
+                        actor,
+                        connection,
+                        &vfs_path.path,
+                        "FILE_CHMOD",
+                        Some(format!(
+                            "Changed permissions to {:o} on {} recursively",
+                            mode, vfs_path.path
+                        )),
+                    )
+                    .await;
+            }
+
+            Ok(result)
+        }
+    }
+
+    pub async fn storage_info(&self, connection_id: &str) -> StorageInfoSnapshot {
+        if connection_id == ConnectionId::LOCAL {
+            let root = self.local_root().await;
+
+            #[cfg(unix)]
+            {
+                let mut stat = std::mem::MaybeUninit::uninit();
+                if let Ok(c_path) = std::ffi::CString::new(root.to_string_lossy().as_bytes()) {
+                    if unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) } == 0 {
+                        let stat = unsafe { stat.assume_init() };
+                        let total = stat.f_blocks * stat.f_frsize;
+                        let free = stat.f_bavail * stat.f_frsize;
+                        let used = total.saturating_sub(free);
+                        let pct = if total > 0 {
+                            ((used as f64 / total as f64) * 100.0) as u8
+                        } else {
+                            0
+                        };
+                        let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
+                        return StorageInfoSnapshot {
+                            source_name: "Local Storage".to_string(),
+                            source_size_formatted: format_bytes(used),
+                            disk_label: "Disk".to_string(),
+                            disk_usage_text: format!("{}% · {:.0} GiB", pct, total_gib),
+                            used_percent: pct,
+                            total_bytes: total,
+                            used_bytes: used,
+                            free_bytes: free,
+                        };
+                    }
+                }
+            }
+
+            return StorageInfoSnapshot {
+                source_name: "Local Storage".to_string(),
+                source_size_formatted: "Local".to_string(),
+                disk_label: "Disk".to_string(),
+                disk_usage_text: "Available".to_string(),
+                used_percent: 0,
+                total_bytes: 0,
+                used_bytes: 0,
+                free_bytes: 0,
+            };
+        }
+
+        let row: Option<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT name, provider, host, port FROM connections WHERE id = ?",
+        )
+        .bind(connection_id)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or(None);
+
+        if let Some((name, provider, host, port)) = row {
+            let port_str = port.map(|value| value.to_string()).unwrap_or_else(|| "21".into());
+            let host_str = host.unwrap_or_else(|| "Remote".into());
+            return StorageInfoSnapshot {
+                source_name: name,
+                source_size_formatted: format!("{} Remote", provider.to_uppercase()),
+                disk_label: format!("{}:{}", host_str, port_str),
+                disk_usage_text: "Connected · Online".to_string(),
+                used_percent: 0,
+                total_bytes: 0,
+                used_bytes: 0,
+                free_bytes: 0,
+            };
+        }
+
+        StorageInfoSnapshot {
+            source_name: connection_id.to_string(),
+            source_size_formatted: "Remote".to_string(),
+            disk_label: "Network".to_string(),
+            disk_usage_text: "Connected".to_string(),
+            used_percent: 0,
+            total_bytes: 0,
+            used_bytes: 0,
+            free_bytes: 0,
+        }
+    }
+
+    async fn local_root(&self) -> PathBuf {
+        self.settings
+            .get_system_setting("local_root")
+            .await
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.config.filesystem.default_local_root.clone())
+    }
+}
+
+#[cfg(unix)]
+async fn apply_chmod_recursive(dir: &std::path::Path, mode: u32) -> RecursiveChmodResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut succeeded = 0;
+    let mut failed = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+
+    while let Some(curr_dir) = stack.pop() {
+        match tokio::fs::read_dir(&curr_dir).await {
+            Ok(mut entries) => loop {
+                match entries.next_entry().await {
+                    Ok(Some(entry)) => {
+                        let path = entry.path();
+                        let perms = std::fs::Permissions::from_mode(mode);
+                        match std::fs::set_permissions(&path, perms) {
+                            Ok(_) => succeeded += 1,
+                            Err(error) => failed.push(format!("{}: {}", path.display(), error)),
+                        }
+                        if path.is_dir() {
+                            stack.push(path);
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        failed.push(format!("{}: {}", curr_dir.display(), error));
+                        break;
+                    }
+                }
+            },
+            Err(error) => failed.push(format!("{}: {}", curr_dir.display(), error)),
+        }
+    }
+
+    RecursiveChmodResult { succeeded, failed }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 * 1024 {
+        format!(
+            "{:.1} TiB",
+            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
+        )
+    } else if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
