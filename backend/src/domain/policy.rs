@@ -68,7 +68,14 @@ async fn inherit_from_parent_strict(
     let Some(parent) = dst_vfs.parent() else {
         return Ok(None);
     };
-    let parent_meta = dst_fs.stat(&parent).await?;
+    let parent_meta = match dst_fs.stat(&parent).await {
+        Ok(metadata) => metadata,
+        // `create_dir` may create missing ancestors. A missing parent therefore
+        // means there is currently nothing to inherit, not that the provider is
+        // unhealthy. Other stat failures remain observable to the caller.
+        Err(VfsError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let Some(parent_perms) = parent_meta.permissions else {
         return Ok(None);
     };
