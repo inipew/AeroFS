@@ -1,7 +1,7 @@
 use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, ErrorResponse};
-use crate::state::AppState;
+use crate::state::TransferState;
 use crate::transfer::model::TransferJobResponse;
 use crate::transfer::TransferType;
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
@@ -46,7 +46,6 @@ fn actor(user: &AuthenticatedUser) -> crate::domain::Actor {
     }
 }
 
-/// Queue a new transfer job with full source and destination authorization
 #[utoipa::path(
     post,
     path = "/api/v1/transfers",
@@ -61,17 +60,16 @@ fn actor(user: &AuthenticatedUser) -> crate::domain::Actor {
     tag = "transfers"
 )]
 pub async fn create_transfer(
-    State(state): State<AppState>,
+    State(state): State<TransferState>,
     user: AuthenticatedUser,
     Json(payload): Json<CreateTransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let source_connection = crate::domain::ConnectionId::new(payload.source_connection_id)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
-    let destination_connection =
-        crate::domain::ConnectionId::new(payload.destination_connection_id)
-            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let destination_connection = crate::domain::ConnectionId::new(payload.destination_connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let job_id = state
-        .transfers
+        .use_cases
         .create_transfer
         .execute(
             &actor(&user),
@@ -96,7 +94,6 @@ pub async fn create_transfer(
     ))
 }
 
-/// List active and undismissed transfer jobs (scoped by user ownership and connection permissions)
 #[utoipa::path(
     get,
     path = "/api/v1/transfers",
@@ -109,13 +106,12 @@ pub async fn create_transfer(
     tag = "transfers"
 )]
 pub async fn list_transfers(
-    State(state): State<AppState>,
+    State(state): State<TransferState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(state.transfers.list(&actor(&user)).await?))
+    Ok(Json(state.use_cases.list(&actor(&user)).await?))
 }
 
-/// Cancel an active transfer job (enforcing user ownership)
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/cancel",
@@ -132,18 +128,17 @@ pub async fn list_transfers(
     tag = "transfers"
 )]
 pub async fn cancel_transfer(
-    State(state): State<AppState>,
+    State(state): State<TransferState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.transfers.cancel(&actor(&user), &id).await?;
+    state.use_cases.cancel(&actor(&user), &id).await?;
     Ok(Json(TransferActionResponse {
         success: true,
         message: format!("Transfer job '{}' cancelled", id),
     }))
 }
 
-/// Retry or resume an interrupted or failed transfer job
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/retry",
@@ -159,18 +154,17 @@ pub async fn cancel_transfer(
     tag = "transfers"
 )]
 pub async fn retry_transfer(
-    State(state): State<AppState>,
+    State(state): State<TransferState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.transfers.retry(&actor(&user), &id).await?;
+    state.use_cases.retry(&actor(&user), &id).await?;
     Ok(Json(TransferActionResponse {
         success: true,
         message: format!("Transfer job '{}' queued for retry", id),
     }))
 }
 
-/// Dismiss a single transfer job from history (persistent)
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/dismiss",
@@ -186,18 +180,17 @@ pub async fn retry_transfer(
     tag = "transfers"
 )]
 pub async fn dismiss_transfer(
-    State(state): State<AppState>,
+    State(state): State<TransferState>,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.transfers.dismiss(&actor(&user), &id).await?;
+    state.use_cases.dismiss(&actor(&user), &id).await?;
     Ok(Json(TransferActionResponse {
         success: true,
         message: format!("Transfer job '{}' dismissed", id),
     }))
 }
 
-/// Dismiss all finished transfer jobs for the authenticated user (persistent Clear)
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/clear-finished",
@@ -210,10 +203,10 @@ pub async fn dismiss_transfer(
     tag = "transfers"
 )]
 pub async fn clear_finished_transfers(
-    State(state): State<AppState>,
+    State(state): State<TransferState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let cleared = state.transfers.clear_finished(&actor(&user)).await?;
+    let cleared = state.use_cases.clear_finished(&actor(&user)).await?;
     Ok(Json(ClearFinishedTransfersResponse {
         success: true,
         cleared,
