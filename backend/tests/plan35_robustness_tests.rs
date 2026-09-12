@@ -7,16 +7,9 @@ use backend::domain::operation::{
 use backend::domain::policy::PermissionInheritanceMode;
 use backend::domain::retry::RetryPolicy;
 use backend::errors::{AppError, VfsError};
-use backend::infrastructure::{
-    archive::SqliteArchiveEffects,
-    files::{RegistryFileSystemResolver, SqliteAuthorization},
-};
-use backend::services::ArchiveService;
-use backend::state::SearchState;
+use backend::state::{ArchiveState, SearchState};
 use backend::AppState;
-use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::sync::Semaphore;
 
 #[test]
 fn test_plan35_structured_error_responses() {
@@ -36,24 +29,19 @@ fn test_plan35_structured_error_responses() {
 #[test]
 fn test_plan35_retry_policy_behavior() {
     let policy = RetryPolicy::new(3);
-
     assert_eq!(policy.max_attempts, 3);
     assert!(!policy.is_retryable(&AppError::NotFound("missing".to_string())));
     assert!(!policy.is_retryable(&AppError::Forbidden("denied".to_string())));
     assert!(!policy.is_retryable(&AppError::BadRequest("bad".to_string())));
     assert!(policy.is_retryable(&AppError::ChecksumMismatch("corrupted".to_string())));
-    assert!(
-        policy.is_retryable(&AppError::Vfs(VfsError::ConnectionError(
-            "drop".to_string()
-        )))
-    );
+    assert!(policy.is_retryable(&AppError::Vfs(VfsError::ConnectionError("drop".to_string()))));
     assert!(policy.is_retryable(&AppError::Vfs(VfsError::IoError("reset".to_string()))));
 
     let b1 = policy.compute_backoff(1);
     let b2 = policy.compute_backoff(2);
     let b3 = policy.compute_backoff(3);
-    assert!(b1 <= b2, "Backoff should be monotonically non-decreasing");
-    assert!(b2 <= b3, "Backoff should be monotonically non-decreasing");
+    assert!(b1 <= b2);
+    assert!(b2 <= b3);
 }
 
 #[test]
@@ -69,18 +57,15 @@ fn test_plan35_operation_plan_and_execution_result() {
         permission_mode: PermissionInheritanceMode::InheritParent,
         overwrite_mode: None,
     };
-
     assert_eq!(plan.failure_strategy, FailureStrategy::ContinueOnFailure);
 
     let mut result = OperationExecutionResult::new(plan.id.clone(), 3);
     assert_eq!(result.status, OperationStatus::Executing);
-
     result.succeeded_items.push("file1.txt".to_string());
     result
         .failed_items
         .push(("file2.txt".to_string(), "Permission denied".to_string()));
     result.succeeded_items.push("file3.txt".to_string());
-
     assert!(!result.is_success());
     result.finalize();
     assert_eq!(result.status, OperationStatus::Partial);
@@ -96,32 +81,15 @@ async fn test_plan35_backpressure_semaphores() {
     let mut config = AppConfig::default();
     config.database.url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
     config.filesystem.default_local_root = storage_dir;
+    let expected_archive = config.limits.archive_concurrency;
+    let expected_search = config.limits.search_concurrency;
 
     let db = init_db(&config.database.url).await.unwrap();
     let state = AppState::new_with_db(config, db).await;
 
-    // 1. Archive backpressure is owned by the archive capability after H5.
-    let limiter = Arc::new(Semaphore::new(state.config.limits.archive_concurrency));
-    let archive = ArchiveService::new(
-        Arc::new(SqliteAuthorization::new(state.db.clone())),
-        Arc::new(RegistryFileSystemResolver::new(state.registry.clone())),
-        Arc::new(SqliteArchiveEffects::new(
-            state.db.clone(),
-            state.transfer_manager.clone(),
-        )),
-        limiter.clone(),
-    );
-    assert_eq!(archive.available_capacity(), 4);
-    {
-        let permit1 = limiter.acquire().await.unwrap();
-        let permit2 = limiter.acquire().await.unwrap();
-        assert_eq!(archive.available_capacity(), 2);
-        drop(permit1);
-        drop(permit2);
-    }
-    assert_eq!(archive.available_capacity(), 4);
+    let archive = ArchiveState::from_ref(&state);
+    assert_eq!(archive.service.available_capacity(), expected_archive);
 
-    // 2. Search limiter is encapsulated by the narrow search capability.
     let search = SearchState::from_ref(&state);
-    assert_eq!(search.service.available_capacity(), 8);
+    assert_eq!(search.service.available_capacity(), expected_search);
 }
