@@ -1,3 +1,4 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::AppConfig;
@@ -5,7 +6,7 @@ use backend::db::init_db;
 use backend::domain::{parse_single_byte_range, Actor, Capabilities, ConnectionId, RangeError};
 use backend::errors::AppError;
 use backend::services::TransferService;
-use backend::state::{AppState, RuntimeOwner, ShutdownReason};
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::transfer::{TransferJob, TransferPhase, TransferStatus, TransferType};
 use chrono::Utc;
 use std::collections::HashSet;
@@ -37,8 +38,8 @@ async fn write_file(
     content: Vec<u8>,
     expected_etag: Option<&str>,
 ) -> Result<backend::domain::FileMetadata, AppError> {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .write_file
         .execute(
@@ -187,9 +188,9 @@ fn test_rfc_range_parser_comprehensive() {
 async fn test_batch_delete_deduplication_and_nesting() {
     let (state, admin, _regular, _runtime) = setup_test_context().await;
     let connection = ConnectionId::new("local").unwrap();
+    let file_api = FileApiState::from_ref(&state);
 
-    state
-        .file_api
+    file_api
         .files
         .create_directory
         .execute(
@@ -229,8 +230,7 @@ async fn test_batch_delete_deduplication_and_nesting() {
         "/batch_test".to_string(),
     ];
 
-    let result = state
-        .file_api
+    let result = file_api
         .files
         .delete_entries
         .execute(
