@@ -192,6 +192,13 @@ where
     }
 
     if use_staging {
+        if let Some(ref perms) = context.target_perms {
+            if let Err(error) = provider.set_permissions(&write_target, perms).await {
+                cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
+                return Err(AppError::from(error));
+            }
+        }
+
         if let Err(rename_err) = provider.rename(&write_target, &context.target).await {
             cleanup_upload_target(provider.as_ref(), &write_target, &context.job_id).await;
             return Err(AppError::Internal(anyhow::anyhow!(format!(
@@ -199,12 +206,14 @@ where
                 context.target.path, rename_err
             ))));
         }
-    }
-
-    if let Some(ref perms) = context.target_perms {
+    } else if let Some(ref perms) = context.target_perms {
         if let Err(error) = provider.set_permissions(&context.target, perms).await {
-            tracing::warn!(job_id = %context.job_id, path = %context.target.path, ?error,
-                "upload committed but inherited permissions could not be applied");
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Upload content for '{}' was written, but applying inherited permissions '{}' failed: {}. Filesystem mutation committed; recovery required",
+                context.target.path,
+                perms,
+                error
+            )));
         }
     }
 
