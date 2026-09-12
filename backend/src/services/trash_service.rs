@@ -158,7 +158,7 @@ impl TrashService {
                             "delete",
                             Some(format!("Moved {} to trash", path_str)),
                         )
-                        .await;
+                        .await?;
 
                     moved_items.push(MovedTrashItem {
                         id: item_id,
@@ -218,7 +218,7 @@ impl TrashService {
                 "create",
                 Some(format!("Restored {} from trash", orig_path)),
             )
-            .await;
+            .await?;
         Ok(())
     }
 
