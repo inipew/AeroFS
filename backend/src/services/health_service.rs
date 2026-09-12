@@ -53,7 +53,7 @@ impl HealthService {
         let storage_ok = self.storage_root.exists();
         let degraded_tasks = self
             .supervisor
-            .degraded_tasks(BACKGROUND_FAILURE_THRESHOLD);
+            .readiness_degraded_tasks(BACKGROUND_FAILURE_THRESHOLD);
 
         if !db_ok || !storage_ok || !degraded_tasks.is_empty() {
             let mut reasons = Vec::new();
@@ -64,15 +64,21 @@ impl HealthService {
                 reasons.push("Storage root inaccessible".to_string());
             }
             for (name, health) in degraded_tasks {
+                let restart_suffix = if health.restart_exhausted {
+                    format!("; restart budget exhausted after {} restarts", health.restart_count)
+                } else {
+                    String::new()
+                };
                 reasons.push(format!(
-                    "Background task '{}' failed {} consecutive times{}",
+                    "Critical background task '{}' failed {} consecutive times{}{}",
                     name,
                     health.consecutive_failures,
                     health
                         .last_error
                         .as_deref()
                         .map(|error| format!(": {}", error))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    restart_suffix,
                 ));
             }
             return Err(AppError::ServiceUnavailable(format!(

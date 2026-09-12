@@ -1,12 +1,17 @@
 use crate::events::{DomainEvent, EventEnvelope, EventJournal};
-use crate::runtime::TaskSupervisor;
+use crate::runtime::{RestartPolicy, TaskCriticality, TaskSupervisor};
 use crate::sync::SyncManager;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 const CONSUMER_NAME: &str = "sync-transfer-completion";
+const TASK_NAME: &str = "sync_event_subscriber";
 const REPLAY_BATCH_SIZE: usize = 256;
+const RESTART_BACKOFF: Duration = Duration::from_secs(2);
+const RESTART_BUDGET_RESET_AFTER: Duration = Duration::from_secs(5 * 60);
+const MAX_RESTARTS_PER_BUDGET: u32 = 5;
 
 /// Canonical durable bridge from transfer domain events into Sync state.
 ///
@@ -22,79 +27,97 @@ impl SyncEventSubscriber {
         sync_manager: Arc<SyncManager>,
         shutdown: CancellationToken,
     ) {
-        // Subscribe before replaying so events appended during startup recovery are
-        // buffered by broadcast and can be de-duplicated by the durable cursor.
-        let mut events = event_journal.subscribe();
+        let health = supervisor.clone();
+        let factory_shutdown = shutdown.clone();
 
-        supervisor.spawn("sync_event_subscriber", async move {
-            let mut cursor = match event_journal.consumer_cursor(CONSUMER_NAME).await {
-                Ok(cursor) => cursor,
-                Err(error) => {
-                    tracing::error!(%error, "failed to load sync event cursor");
-                    0
+        supervisor.spawn_resilient(
+            TASK_NAME,
+            TaskCriticality::ReadinessCritical,
+            RestartPolicy::bounded(
+                MAX_RESTARTS_PER_BUDGET,
+                RESTART_BACKOFF,
+                RESTART_BUDGET_RESET_AFTER,
+            ),
+            shutdown,
+            move || {
+                let event_journal = event_journal.clone();
+                let sync_manager = sync_manager.clone();
+                let shutdown = factory_shutdown.clone();
+                let health = health.clone();
+                async move {
+                    run_subscriber(event_journal, sync_manager, shutdown, health).await
                 }
-            };
+            },
+        );
+    }
+}
 
-            if let Err(error) = replay_backlog(
-                &event_journal,
-                &sync_manager,
-                &mut cursor,
-            )
-            .await
-            {
-                tracing::error!(%error, "failed to replay sync event backlog");
-            }
+async fn run_subscriber(
+    event_journal: Arc<EventJournal>,
+    sync_manager: Arc<SyncManager>,
+    shutdown: CancellationToken,
+    health: TaskSupervisor,
+) -> anyhow::Result<()> {
+    // Every restart gets a fresh live subscription. Any events missed between worker
+    // instances are recovered from the durable journal before live processing resumes.
+    let mut events = event_journal.subscribe();
+    let mut cursor = event_journal.consumer_cursor(CONSUMER_NAME).await?;
 
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => break,
-                    result = events.recv() => {
-                        match result {
-                            Ok(envelope) => {
-                                if let Some(journal_id) = envelope.journal_id {
-                                    if journal_id <= cursor {
-                                        continue;
-                                    }
-                                }
+    replay_backlog(&event_journal, &sync_manager, &mut cursor).await?;
+    health.record_success(TASK_NAME);
 
-                                if let Err(error) = process_envelope(
-                                    &event_journal,
-                                    &sync_manager,
-                                    &mut cursor,
-                                    envelope,
-                                )
-                                .await
-                                {
-                                    tracing::warn!(%error, "sync event handling failed; replaying from durable cursor");
-                                    if let Err(replay_error) = replay_backlog(
-                                        &event_journal,
-                                        &sync_manager,
-                                        &mut cursor,
-                                    )
-                                    .await
-                                    {
-                                        tracing::error!(%replay_error, "sync event backlog replay failed");
-                                    }
-                                }
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            result = events.recv() => {
+                match result {
+                    Ok(envelope) => {
+                        if let Some(journal_id) = envelope.journal_id {
+                            if journal_id <= cursor {
+                                continue;
                             }
-                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                tracing::warn!(skipped, cursor, "sync event subscriber lagged; replaying durable journal");
-                                if let Err(error) = replay_backlog(
-                                    &event_journal,
-                                    &sync_manager,
-                                    &mut cursor,
-                                )
-                                .await
-                                {
-                                    tracing::error!(%error, "sync event backlog replay failed after lag");
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
                         }
+
+                        if let Err(error) = process_envelope(
+                            &event_journal,
+                            &sync_manager,
+                            &mut cursor,
+                            envelope,
+                        )
+                        .await
+                        {
+                            tracing::warn!(%error, "sync event handling failed; replaying from durable cursor");
+                            // Replay is the recovery source of truth. If recovery itself
+                            // fails, leave this worker instance so the supervisor applies
+                            // bounded backoff/restart instead of spinning in the live loop.
+                            replay_backlog(
+                                &event_journal,
+                                &sync_manager,
+                                &mut cursor,
+                            )
+                            .await?;
+                        }
+                        health.record_success(TASK_NAME);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, cursor, "sync event subscriber lagged; replaying durable journal");
+                        replay_backlog(
+                            &event_journal,
+                            &sync_manager,
+                            &mut cursor,
+                        )
+                        .await?;
+                        health.record_success(TASK_NAME);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        if shutdown.is_cancelled() {
+                            return Ok(());
+                        }
+                        anyhow::bail!("sync event journal broadcast closed unexpectedly");
                     }
                 }
             }
-        });
+        }
     }
 }
 
