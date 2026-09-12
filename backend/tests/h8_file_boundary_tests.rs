@@ -98,3 +98,31 @@ fn recursive_chmod_is_local_only() {
     assert!(compact.contains("SafePath::resolve("));
     assert!(compact.contains("self.authorization.authorize(actor,connection,FileAction::Write)"));
 }
+
+#[test]
+fn permission_inheritance_failures_are_not_best_effort() {
+    let mutation = source("src/application/files/mutation.rs");
+    let write = source("src/application/files/write.rs");
+    let policy = source("src/domain/policy.rs");
+
+    assert!(
+        !mutation.contains("let _ = provider.set_permissions"),
+        "directory creation must not swallow inherited permission failures"
+    );
+    assert!(
+        !write.contains("let _ = provider.set_permissions"),
+        "file writes must not swallow inherited permission failures"
+    );
+    assert!(
+        mutation.contains("Filesystem mutation committed; recovery required"),
+        "post-create permission failure must expose partial-commit recovery semantics"
+    );
+    assert!(
+        write.contains("Filesystem mutation committed; recovery required"),
+        "direct-write permission failure must expose partial-commit recovery semantics"
+    );
+    assert!(
+        policy.contains("Result<Option<String>, VfsError>"),
+        "permission resolution must distinguish provider failure from no permission value"
+    );
+}
