@@ -8,6 +8,7 @@ use crate::db::DbPool;
 use crate::events::EventJournal;
 use crate::infrastructure::CredentialStore;
 use crate::runtime::{ResourceBudget, TaskSupervisor};
+use crate::services::{HealthService, SearchService};
 use crate::sync::SyncManager;
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
@@ -82,6 +83,25 @@ impl ShutdownReason {
 }
 
 #[derive(Clone)]
+pub struct RuntimeView {
+    phase: Arc<AtomicU8>,
+}
+
+impl RuntimeView {
+    pub fn phase(&self) -> RuntimePhase {
+        RuntimePhase::from_u8(self.phase.load(Ordering::Acquire))
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.phase() == RuntimePhase::Running
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        matches!(self.phase(), RuntimePhase::ShuttingDown | RuntimePhase::Stopped)
+    }
+}
+
+#[derive(Clone)]
 pub struct AppRuntime {
     pub shutdown_token: CancellationToken,
     pub force_shutdown_token: CancellationToken,
@@ -107,6 +127,12 @@ impl Default for AppRuntime {
 }
 
 impl AppRuntime {
+    pub fn view(&self) -> RuntimeView {
+        RuntimeView {
+            phase: self.phase.clone(),
+        }
+    }
+
     pub fn phase(&self) -> RuntimePhase {
         RuntimePhase::from_u8(self.phase.load(Ordering::Acquire))
     }
@@ -144,6 +170,28 @@ impl AppRuntime {
     }
 }
 
+#[derive(Clone)]
+pub struct SearchState {
+    pub service: SearchService,
+}
+
+impl SearchState {
+    pub fn new(service: SearchService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
+pub struct HealthState {
+    pub service: HealthService,
+}
+
+impl HealthState {
+    pub fn new(service: HealthService) -> Self {
+        Self { service }
+    }
+}
+
 /// Runtime container handed to adapters.
 /// Concrete dependency construction belongs in `crate::bootstrap`.
 #[derive(Clone)]
@@ -158,7 +206,6 @@ pub struct AppState {
     pub upload_locks: Arc<crate::services::UploadLockManager>,
     pub global_io_semaphore: Arc<Semaphore>,
     pub archive_semaphore: Arc<Semaphore>,
-    pub search_semaphore: Arc<Semaphore>,
     pub resource_budget: Arc<ResourceBudget>,
     pub event_journal: Arc<EventJournal>,
     pub sync_manager: Arc<SyncManager>,
@@ -166,6 +213,20 @@ pub struct AppState {
     pub files: FileUseCases,
     pub transfers: TransferUseCases,
     pub uploads: UploadApplicationService,
+    search: SearchState,
+    health: HealthState,
+}
+
+impl axum::extract::FromRef<AppState> for SearchState {
+    fn from_ref(state: &AppState) -> Self {
+        state.search.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for HealthState {
+    fn from_ref(state: &AppState) -> Self {
+        state.health.clone()
+    }
 }
 
 impl AppState {
@@ -173,6 +234,12 @@ impl AppState {
     /// Production startup should use `bootstrap::build_app_state` directly.
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
         crate::bootstrap::build_app_state(config, db).await
+    }
+
+    pub(crate) fn with_narrow_states(mut self, search: SearchState, health: HealthState) -> Self {
+        self.search = search;
+        self.health = health;
+        self
     }
 
     pub async fn get_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
