@@ -10,11 +10,17 @@ use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
 use crate::{
     application::{
-        files::{FileUseCases, ListDirectory, ReadFile, StatFile},
+        files::{
+            CopyEntry, CreateDirectory, DeleteEntries, FileUseCases, ListDirectory, ReadFile,
+            RenameEntry, StatFile, WriteFile,
+        },
         transfers::{CreateTransfer, TransferUseCases},
     },
     infrastructure::{
-        files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings},
+        files::{
+            RegistryFileSystemResolver, SqliteAuthorization, SqliteFileMutationEffects,
+            SqliteFileSettings,
+        },
         transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
     },
 };
@@ -236,19 +242,48 @@ impl AppState {
         let cfg_limits_search = config.limits.search_concurrency;
         let config = Arc::new(config);
 
+        let file_authorization = Arc::new(SqliteAuthorization::new(db.clone()));
+        let file_filesystem = Arc::new(RegistryFileSystemResolver::new(registry.clone()));
+        let file_settings = Arc::new(SqliteFileSettings::new(db.clone(), config.clone()));
+        let file_effects = Arc::new(SqliteFileMutationEffects::new(
+            db.clone(),
+            metadata_cache.clone(),
+            event_journal.clone(),
+        ));
+
         let files = FileUseCases {
             list_directory: ListDirectory::new(
-                Arc::new(SqliteAuthorization::new(db.clone())),
-                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
-                Arc::new(SqliteFileSettings::new(db.clone(), config.clone())),
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_settings.clone(),
             ),
-            stat_file: StatFile::new(
-                Arc::new(SqliteAuthorization::new(db.clone())),
-                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
+            stat_file: StatFile::new(file_authorization.clone(), file_filesystem.clone()),
+            read_file: ReadFile::new(file_authorization.clone(), file_filesystem.clone()),
+            write_file: WriteFile::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_settings,
+                file_effects.clone(),
             ),
-            read_file: ReadFile::new(
-                Arc::new(SqliteAuthorization::new(db.clone())),
-                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
+            create_directory: CreateDirectory::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            rename_entry: RenameEntry::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            copy_entry: CopyEntry::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            delete_entries: DeleteEntries::new(
+                file_authorization,
+                file_filesystem,
+                file_effects,
             ),
         };
 
