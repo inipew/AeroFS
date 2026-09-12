@@ -19,6 +19,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-C debuginfo=0"
 
 jobs:
   frontend:
@@ -54,7 +56,7 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -63,20 +65,16 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # The backend embeds ../frontend/dist at compile time via rust-embed.
-      # Build the production frontend before compiling any backend target.
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Cache Rust dependencies and target
+        uses: Swatinem/rust-cache@v2
         with:
-          bun-version: 1.4.0
+          workspaces: "backend -> target"
 
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: bun install --frozen-lockfile
-
-      - name: Build embedded frontend assets
-        working-directory: frontend
-        run: bun run build
+      # Prepare lightweight stub so rust-embed compiles without running redundant frontend build
+      - name: Prepare embedded frontend stub
+        run: |
+          mkdir -p frontend/dist
+          echo '<!DOCTYPE html><html><head><title>AeroFS</title></head><body><div id="app"></div></body></html>' > frontend/dist/index.html
 
       - name: Test backend
         working-directory: backend
@@ -85,7 +83,7 @@ jobs:
   contract:
     name: OpenAPI Contract
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -93,6 +91,11 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "backend -> target"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -103,10 +106,11 @@ jobs:
         working-directory: frontend
         run: bun install --frozen-lockfile
 
-      # api:export compiles the backend, which embeds frontend/dist.
-      - name: Build embedded frontend assets
-        working-directory: frontend
-        run: bun run build
+      # Prepare lightweight stub so rust-embed compiles without running redundant frontend build
+      - name: Prepare embedded frontend stub
+        run: |
+          mkdir -p frontend/dist
+          echo '<!DOCTYPE html><html><head><title>AeroFS</title></head><body><div id="app"></div></body></html>' > frontend/dist/index.html
 
       - name: Export OpenAPI schema
         working-directory: frontend
