@@ -1,11 +1,15 @@
-use crate::auth::audit::record_audit_log;
-use crate::auth::permissions::{check_permission, PermissionAction};
 use crate::auth::AuthenticatedUser;
-use crate::domain::{FileKind, VfsPath};
+use crate::db::DbPool;
+use crate::domain::{Actor, ConnectionId, FileKind, VfsPath};
 use crate::errors::AppError;
-use crate::state::AppState;
+use crate::ports::{
+    authorization::{Authorization, FileAction},
+    effects::FileMutationEffects,
+    filesystem::FileSystemResolver,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -34,21 +38,46 @@ pub struct MovedTrashItem {
 
 type TrashDbRow = (String, String, String, String, i64, Option<i64>, String);
 
-pub struct TrashService;
+#[derive(Clone)]
+pub struct TrashService {
+    db: DbPool,
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    effects: Arc<dyn FileMutationEffects>,
+}
 
 impl TrashService {
-    pub async fn list_trash(
-        state: &AppState,
-        _user: &AuthenticatedUser,
-    ) -> Result<Vec<TrashItem>, AppError> {
+    pub fn new(
+        db: DbPool,
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        effects: Arc<dyn FileMutationEffects>,
+    ) -> Self {
+        Self {
+            db,
+            authorization,
+            filesystem,
+            effects,
+        }
+    }
+
+    fn actor(user: &AuthenticatedUser) -> Actor {
+        Actor {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+        }
+    }
+
+    pub async fn list_trash(&self, _user: &AuthenticatedUser) -> Result<Vec<TrashItem>, AppError> {
         let rows: Vec<TrashDbRow> = sqlx::query_as(
-            "SELECT id, connection_id, original_path, item_name, is_directory, size, deleted_at FROM trash_items ORDER BY deleted_at DESC"
+            "SELECT id, connection_id, original_path, item_name, is_directory, size, deleted_at FROM trash_items ORDER BY deleted_at DESC",
         )
-        .fetch_all(&state.db)
+        .fetch_all(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
-        let items: Vec<TrashItem> = rows
+        Ok(rows
             .into_iter()
             .map(
                 |(id, connection_id, original_path, item_name, is_dir, size, deleted_at)| {
@@ -63,61 +92,48 @@ impl TrashService {
                     }
                 },
             )
-            .collect();
-
-        Ok(items)
+            .collect())
     }
 
     pub async fn move_to_trash(
-        state: &AppState,
+        &self,
         user: &AuthenticatedUser,
         payload: MoveToTrashRequest,
     ) -> Result<Vec<MovedTrashItem>, AppError> {
-        check_permission(
-            &state.db,
-            user,
-            &payload.connection_id,
-            PermissionAction::Write,
-        )
-        .await?;
-
-        let provider = state
-            .registry
-            .get(&payload.connection_id)
-            .await
-            .ok_or_else(|| AppError::NotFound("Storage connection not found".into()))?;
+        let connection = ConnectionId::new(payload.connection_id.clone())
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        let actor = Self::actor(user);
+        self.authorization
+            .authorize(&actor, &connection, FileAction::Write)
+            .await?;
+        let provider = self.filesystem.resolve(&connection).await?;
 
         let now_str = Utc::now().to_rfc3339();
-        let trash_dir_vfs = VfsPath::new(&payload.connection_id, "/.trash")?;
+        let trash_dir_vfs = VfsPath::new(connection.as_str(), "/.trash")?;
         let _ = provider.create_dir(&trash_dir_vfs).await;
-
         let mut moved_items = Vec::new();
 
         for path_str in &payload.paths {
-            let vfs_path = match VfsPath::new(&payload.connection_id, path_str) {
+            let vfs_path = match VfsPath::new(connection.as_str(), path_str) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
             if let Ok(meta) = provider.stat(&vfs_path).await {
                 let item_id = Uuid::new_v4().to_string();
                 let trash_filename = format!("/.trash/{}_{}", &item_id[..8], meta.name);
-                let dest_vfs = match VfsPath::new(&payload.connection_id, &trash_filename) {
+                let dest_vfs = match VfsPath::new(connection.as_str(), &trash_filename) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
 
                 if provider.rename(&vfs_path, &dest_vfs).await.is_ok() {
-                    let is_dir = if meta.kind == FileKind::Directory {
-                        1
-                    } else {
-                        0
-                    };
-                    let _ = sqlx::query(
+                    let is_dir = i64::from(meta.kind == FileKind::Directory);
+                    let inserted = sqlx::query(
                         "INSERT INTO trash_items (id, connection_id, original_path, trash_path, item_name, is_directory, size, deleted_at, deleted_by)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )
                     .bind(&item_id)
-                    .bind(&payload.connection_id)
+                    .bind(connection.as_str())
                     .bind(path_str)
                     .bind(&trash_filename)
                     .bind(&meta.name)
@@ -125,34 +141,23 @@ impl TrashService {
                     .bind(meta.size as i64)
                     .bind(&now_str)
                     .bind(&user.username)
-                    .execute(&state.db)
+                    .execute(&self.db)
                     .await;
 
-                    // Invalidate short-TTL metadata cache
-                    state
-                        .metadata_cache
-                        .invalidate_prefix(&payload.connection_id, path_str)
-                        .await;
+                    if inserted.is_err() {
+                        let _ = provider.rename(&dest_vfs, &vfs_path).await;
+                        continue;
+                    }
 
-                    record_audit_log(
-                        &state.db,
-                        Some(&user.id),
-                        "TRASH_MOVE",
-                        Some(&payload.connection_id),
-                        Some(path_str),
-                        "SUCCESS",
-                        None,
-                        Some(&format!("Moved {} to trash", path_str)),
-                    )
-                    .await;
-
-                    state
-                        .transfer_manager
-                        .broadcast_event(crate::transfer::WsEvent::file_change(
-                            &payload.connection_id,
+                    self.effects
+                        .file_changed(
+                            &actor,
+                            &connection,
                             path_str,
+                            "TRASH_MOVE",
                             "delete",
-                        ))
+                            Some(format!("Moved {} to trash", path_str)),
+                        )
                         .await;
 
                     moved_items.push(MovedTrashItem {
@@ -167,7 +172,7 @@ impl TrashService {
     }
 
     pub async fn restore_item(
-        state: &AppState,
+        &self,
         user: &AuthenticatedUser,
         trash_id: &str,
     ) -> Result<(), AppError> {
@@ -175,94 +180,116 @@ impl TrashService {
             "SELECT connection_id, original_path, trash_path FROM trash_items WHERE id = ?",
         )
         .bind(trash_id)
-        .fetch_optional(&state.db)
+        .fetch_optional(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
 
         let (connection_id, orig_path, trash_path) =
             row.ok_or_else(|| AppError::NotFound("Trash item not found".into()))?;
-
-        check_permission(&state.db, user, &connection_id, PermissionAction::Create).await?;
-        check_permission(&state.db, user, &connection_id, PermissionAction::Write).await?;
-
-        let provider = state
-            .registry
-            .get(&connection_id)
-            .await
-            .ok_or_else(|| AppError::NotFound("Storage connection not found".into()))?;
-
-        let trash_vfs = VfsPath::new(&connection_id, &trash_path)?;
-        let orig_vfs = VfsPath::new(&connection_id, &orig_path)?;
-
+        let connection = ConnectionId::new(connection_id)
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        let actor = Self::actor(user);
+        self.authorization
+            .authorize(&actor, &connection, FileAction::Create)
+            .await?;
+        self.authorization
+            .authorize(&actor, &connection, FileAction::Write)
+            .await?;
+        let provider = self.filesystem.resolve(&connection).await?;
+        let trash_vfs = VfsPath::new(connection.as_str(), &trash_path)?;
+        let orig_vfs = VfsPath::new(connection.as_str(), &orig_path)?;
         provider.rename(&trash_vfs, &orig_vfs).await?;
 
-        // Invalidate short-TTL metadata cache
-        state
-            .metadata_cache
-            .invalidate_prefix(&connection_id, &orig_path)
-            .await;
-
-        sqlx::query("DELETE FROM trash_items WHERE id = ?")
+        if let Err(error) = sqlx::query("DELETE FROM trash_items WHERE id = ?")
             .bind(trash_id)
-            .execute(&state.db)
+            .execute(&self.db)
             .await
-            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+        {
+            let _ = provider.rename(&orig_vfs, &trash_vfs).await;
+            return Err(anyhow::anyhow!("Database error: {}", error).into());
+        }
 
-        record_audit_log(
-            &state.db,
-            Some(&user.id),
-            "TRASH_RESTORE",
-            Some(&connection_id),
-            Some(&orig_path),
-            "SUCCESS",
-            None,
-            Some(&format!("Restored {} from trash", orig_path)),
-        )
-        .await;
-
-        state
-            .transfer_manager
-            .broadcast_event(crate::transfer::WsEvent::file_change(
-                &connection_id,
+        self.effects
+            .file_changed(
+                &actor,
+                &connection,
                 &orig_path,
+                "TRASH_RESTORE",
                 "create",
-            ))
+                Some(format!("Restored {} from trash", orig_path)),
+            )
             .await;
-
         Ok(())
     }
 
-    pub async fn empty_trash(
-        state: &AppState,
+    pub async fn delete_permanently(
+        &self,
         user: &AuthenticatedUser,
-    ) -> Result<usize, AppError> {
-        let rows: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT id, connection_id, trash_path FROM trash_items")
-                .fetch_all(&state.db)
+        trash_id: &str,
+    ) -> Result<(), AppError> {
+        if !user.is_admin {
+            return Err(AppError::Forbidden(
+                "Only administrators can permanently delete items from trash".into(),
+            ));
+        }
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT connection_id, trash_path FROM trash_items WHERE id = ?")
+                .bind(trash_id)
+                .fetch_optional(&self.db)
                 .await
                 .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+        let (connection_id, trash_path) =
+            row.ok_or_else(|| AppError::NotFound("Trash item not found".into()))?;
+        let connection = ConnectionId::new(connection_id)
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        if let Ok(provider) = self.filesystem.resolve(&connection).await {
+            if let Ok(trash_vfs) = VfsPath::new(connection.as_str(), &trash_path) {
+                let _ = provider.delete(&trash_vfs).await;
+            }
+        }
+        sqlx::query("DELETE FROM trash_items WHERE id = ?")
+            .bind(trash_id)
+            .execute(&self.db)
+            .await
+            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+        Ok(())
+    }
 
+    pub async fn empty_trash(&self, user: &AuthenticatedUser) -> Result<usize, AppError> {
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT id, connection_id, trash_path FROM trash_items")
+                .fetch_all(&self.db)
+                .await
+                .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+        let actor = Self::actor(user);
         let mut deleted_count = 0;
-        for (id, conn_id, trash_path) in rows {
-            if check_permission(&state.db, user, &conn_id, PermissionAction::Delete)
+        for (id, connection_id, trash_path) in rows {
+            let connection = match ConnectionId::new(connection_id) {
+                Ok(connection) => connection,
+                Err(_) => continue,
+            };
+            if self
+                .authorization
+                .authorize(&actor, &connection, FileAction::Delete)
                 .await
                 .is_err()
             {
                 continue;
             }
-
-            if let Some(provider) = state.registry.get(&conn_id).await {
-                if let Ok(trash_vfs) = VfsPath::new(&conn_id, &trash_path) {
+            if let Ok(provider) = self.filesystem.resolve(&connection).await {
+                if let Ok(trash_vfs) = VfsPath::new(connection.as_str(), &trash_path) {
                     let _ = provider.delete(&trash_vfs).await;
                 }
             }
-            let _ = sqlx::query("DELETE FROM trash_items WHERE id = ?")
+            if sqlx::query("DELETE FROM trash_items WHERE id = ?")
                 .bind(&id)
-                .execute(&state.db)
-                .await;
-            deleted_count += 1;
+                .execute(&self.db)
+                .await
+                .is_ok()
+            {
+                deleted_count += 1;
+            }
         }
-
         Ok(deleted_count)
     }
 }
