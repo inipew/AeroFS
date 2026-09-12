@@ -28,6 +28,7 @@ pub struct EmptyTrashResponse {
     pub message: String,
 }
 
+/// List all items in trash
 #[utoipa::path(
     get,
     path = "/api/v1/trash",
@@ -46,6 +47,7 @@ pub async fn list_trash(
     Ok(Json(state.service.list_trash(&user).await?))
 }
 
+/// Move one or more items to trash (soft delete)
 #[utoipa::path(
     post,
     path = "/api/v1/trash/move",
@@ -74,6 +76,7 @@ pub async fn move_to_trash(
     }))
 }
 
+/// Restore an item from trash back to its original location
 #[utoipa::path(
     post,
     path = "/api/v1/trash/restore/{id}",
@@ -100,6 +103,7 @@ pub async fn restore_trash_item(
     }))
 }
 
+/// Delete an item permanently from trash
 #[utoipa::path(
     delete,
     path = "/api/v1/trash/{id}",
@@ -127,6 +131,7 @@ pub async fn delete_trash_item(
     }))
 }
 
+/// Empty entire trash
 #[utoipa::path(
     delete,
     path = "/api/v1/trash/empty",
