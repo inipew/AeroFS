@@ -8,8 +8,8 @@ use futures::Stream;
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub type UploadByteStream =
-    Pin<Box<dyn Stream<Item = Result<Bytes, AppError>> + Send + 'static>>;
+pub type UploadByteStream<'a> =
+    Pin<Box<dyn Stream<Item = Result<Bytes, AppError>> + Send + 'a>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadStaging {
@@ -99,7 +99,7 @@ pub trait UploadExecution: Send + Sync {
         &self,
         provider: Arc<dyn FileSystem>,
         context: InlineUploadContext,
-        stream: UploadByteStream,
+        stream: UploadByteStream<'_>,
     ) -> Result<u64, AppError>;
 
     async fn complete_inline_job(&self, job_id: &str);
