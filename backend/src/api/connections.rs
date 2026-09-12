@@ -35,6 +35,7 @@ pub struct ConnectionActionResponse {
     pub message: String,
 }
 
+/// List all available connections from database (scoped to user's permissions)
 #[utoipa::path(
     get,
     path = "/api/v1/connections",
@@ -52,6 +53,7 @@ pub async fn list_connections(
     Ok(axum::Json(state.service.list_connections(&actor(&user)).await?))
 }
 
+/// Create a new connection with encrypted credential storage (Admin only, Fail-Closed Transactional)
 #[utoipa::path(
     post,
     path = "/api/v1/connections",
@@ -83,6 +85,7 @@ pub async fn create_connection(
     ))
 }
 
+/// Update an existing connection (Admin only, with atomic hot-swap)
 #[utoipa::path(
     put,
     path = "/api/v1/connections/{id}",
@@ -111,6 +114,7 @@ pub async fn update_connection(
     }))
 }
 
+/// Delete a connection
 #[utoipa::path(
     delete,
     path = "/api/v1/connections/{id}",
@@ -136,6 +140,7 @@ pub async fn delete_connection(
     }))
 }
 
+/// Test connection connectivity
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/test",
@@ -156,6 +161,7 @@ pub async fn test_connection(
     Ok(axum::Json(state.service.test_connection(&actor(&user), &id).await?))
 }
 
+/// Get a specific connection and its capabilities
 #[utoipa::path(
     get,
     path = "/api/v1/connections/{id}",
