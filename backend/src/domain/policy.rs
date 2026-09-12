@@ -1,4 +1,5 @@
 use crate::domain::VfsPath;
+use crate::errors::VfsError;
 use crate::vfs::FileSystem;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,23 +14,28 @@ pub enum PermissionInheritanceMode {
     ProviderDefault,
 }
 
-/// Resolves permission string for a destination path according to inheritance policy
+/// Resolves permission string for a destination path according to inheritance policy.
+///
+/// `Ok(None)` means the provider/policy has no permission value to apply. Provider
+/// failures are propagated instead of being mistaken for an absent permission value.
 pub async fn resolve_destination_permissions(
     dst_fs: &Arc<dyn FileSystem>,
     dst_vfs: &VfsPath,
     is_dir: bool,
     mode: PermissionInheritanceMode,
-) -> Option<String> {
+) -> Result<Option<String>, VfsError> {
     match mode {
-        PermissionInheritanceMode::ProviderDefault => None,
+        PermissionInheritanceMode::ProviderDefault => Ok(None),
         PermissionInheritanceMode::InheritExistingOrParent => {
-            // 1. If target already exists, preserve its current permissions
-            if let Ok(existing_meta) = dst_fs.stat(dst_vfs).await {
-                if let Some(perms) = existing_meta.permissions {
-                    return Some(perms);
+            match dst_fs.stat(dst_vfs).await {
+                Ok(existing_meta) => {
+                    if let Some(perms) = existing_meta.permissions {
+                        return Ok(Some(perms));
+                    }
                 }
+                Err(VfsError::NotFound(_)) => {}
+                Err(error) => return Err(error),
             }
-            // 2. Otherwise inherit from parent directory
             inherit_from_parent(dst_fs, dst_vfs, is_dir).await
         }
         PermissionInheritanceMode::InheritParent => {
@@ -42,24 +48,28 @@ async fn inherit_from_parent(
     dst_fs: &Arc<dyn FileSystem>,
     dst_vfs: &VfsPath,
     is_dir: bool,
-) -> Option<String> {
-    let parent = dst_vfs.parent()?;
-    let parent_meta = dst_fs.stat(&parent).await.ok()?;
-    let parent_perms = parent_meta.permissions?;
+) -> Result<Option<String>, VfsError> {
+    let Some(parent) = dst_vfs.parent() else {
+        return Ok(None);
+    };
+    let parent_meta = dst_fs.stat(&parent).await?;
+    let Some(parent_perms) = parent_meta.permissions else {
+        return Ok(None);
+    };
 
     // Parse unix octal if available (e.g. "0755", "755")
     let cleaned = parent_perms.trim_start_matches('0');
     if !cleaned.is_empty() {
         if let Ok(octal) = u32::from_str_radix(cleaned, 8) {
             if is_dir {
-                return Some(format!("{:04o}", octal));
+                return Ok(Some(format!("{:04o}", octal)));
             } else {
                 // For files, mask out execute bit from directory mode (e.g. 0755 -> 0644)
                 let file_octal = octal & !0o111;
-                return Some(format!("{:04o}", file_octal));
+                return Ok(Some(format!("{:04o}", file_octal)));
             }
         }
     }
 
-    Some(parent_perms)
+    Ok(Some(parent_perms))
 }
