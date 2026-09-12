@@ -61,8 +61,8 @@ async fn write_file(
     path: &str,
     content: Vec<u8>,
 ) {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .write_file
         .execute(
@@ -254,9 +254,8 @@ async fn test_plan36_settings_and_preferences_services() {
         .await
         .unwrap();
 
-    let listing = app
-        .state
-        .file_api
+    let file_api = FileApiState::from_ref(&app.state);
+    let listing = file_api
         .files
         .list_directory
         .execute(
