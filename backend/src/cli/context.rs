@@ -1,10 +1,37 @@
+use crate::bootstrap::build_application;
 use crate::cli::args::Cli;
 use crate::cli::error::{CliError, ExitCode};
 use crate::cli::output::OutputFormatter;
 use crate::config::AppConfig;
 use crate::db::{connect_db, DbPool};
-use crate::state::AppState;
+use crate::state::{AppState, RuntimeOwner, ShutdownReason};
+use std::ops::Deref;
 use std::path::PathBuf;
+
+/// Scoped full-application handle for one-shot CLI commands.
+///
+/// CLI commands need request-facing `AppState`, but bootstrapping that state also
+/// starts supervised background workers. Keep the process-owned `RuntimeOwner`
+/// alive for exactly as long as the CLI command uses the state and signal those
+/// workers to stop when the guard leaves scope.
+pub struct CliState {
+    state: AppState,
+    runtime: RuntimeOwner,
+}
+
+impl Deref for CliState {
+    type Target = AppState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl Drop for CliState {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
 
 pub struct CliContext {
     pub config: AppConfig,
@@ -45,10 +72,14 @@ impl CliContext {
         })
     }
 
-    /// Construct full AppState with providers registry and transfer manager
-    pub async fn state(&self) -> Result<AppState, CliError> {
+    /// Construct the full application for a one-shot CLI command while retaining
+    /// ownership of all runtime tasks and cancellation handles for the guard lifetime.
+    pub async fn state(&self) -> Result<CliState, CliError> {
         let pool = self.db().await?;
-        let state = AppState::new_with_db(self.config.clone(), pool).await;
-        Ok(state)
+        let built = build_application(self.config.clone(), pool).await;
+        Ok(CliState {
+            state: built.state,
+            runtime: built.runtime,
+        })
     }
 }
