@@ -42,5 +42,8 @@ pub use share_service::ShareService;
 pub use sync_service::SyncService;
 pub use transfer_service::TransferService;
 pub use trash_service::TrashService;
-pub use upload_lock::{UploadGuard, UploadLockManager, UploadSession};
+pub use upload_lock::{UploadGuard, UploadLockManager};
 pub use user_service::UserService;
+
+// Compatibility re-export while callers migrate to the application-owned port contract.
+pub use crate::ports::upload::UploadSession;
