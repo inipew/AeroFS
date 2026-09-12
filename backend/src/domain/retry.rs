@@ -135,7 +135,9 @@ impl RetryPolicy {
             || msg.contains("forbidden")
             || msg.contains("unsupported")
             || msg.contains("invalid path")
-            || msg.contains("already exists"))
+            || msg.contains("already exists")
+            || msg.contains("mutation committed")
+            || msg.contains("recovery required"))
     }
 
     pub fn compute_backoff(&self, attempt: usize) -> Duration {
