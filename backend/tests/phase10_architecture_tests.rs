@@ -75,7 +75,9 @@ fn application_layer_does_not_depend_on_http_state_or_concrete_storage() {
 #[test]
 fn server_startup_delegates_to_bootstrap() {
     let serve = source("src/cli/commands/serve.rs");
-    assert!(serve.contains("build_app_state(config, db).await"));
+    assert!(serve.contains("build_application(config, db).await"));
+    assert!(serve.contains("let runtime = built.runtime"));
+    assert!(!serve.contains("state.runtime"));
     assert!(!serve.contains("SqliteAuthorization"));
     assert!(!serve.contains("SyncEventSubscriber"));
     assert!(!serve.contains("DELETE FROM sessions"));
