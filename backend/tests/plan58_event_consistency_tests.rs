@@ -3,9 +3,9 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
+use backend::domain::{Actor, ConnectionId};
 use backend::events::{DomainEvent, ReplayOutcome};
-use backend::services::FileService;
-use backend::state::{RealtimeState, RuntimeOwner, ShutdownReason};
+use backend::state::{FileApiState, RealtimeState, RuntimeOwner, ShutdownReason};
 use backend::AppState;
 use tempfile::tempdir;
 
@@ -55,17 +55,37 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, TestRuntimeDir) {
     )
 }
 
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
 #[tokio::test]
 async fn test_chmod_emits_file_change_event() {
     let (state, admin, temp) = setup_test_context().await;
     let realtime = RealtimeState::from_ref(&state);
+    let file_api = FileApiState::from_ref(&state);
 
     let file_path = temp.path().join("storage").join("test_chmod.txt");
     std::fs::write(&file_path, b"test chmod").unwrap();
 
     let mut rx = realtime.service.subscribe();
 
-    let res = FileService::chmod(&state, &admin, "local", "/test_chmod.txt", 0o755).await;
+    let res = file_api
+        .files
+        .chmod_entry
+        .execute(
+            &actor(&admin),
+            backend::application::files::ChmodEntryCommand {
+                connection: ConnectionId::local(),
+                path: "/test_chmod.txt".to_string(),
+                mode: 0o755,
+            },
+        )
+        .await;
     assert!(res.is_ok(), "chmod should succeed");
 
     let envelope = rx.recv().await.expect("expected file-change event");
@@ -92,6 +112,7 @@ async fn test_chmod_emits_file_change_event() {
 async fn test_rename_emits_source_and_destination_paths() {
     let (state, admin, temp) = setup_test_context().await;
     let realtime = RealtimeState::from_ref(&state);
+    let file_api = FileApiState::from_ref(&state);
 
     let storage = temp.path().join("storage");
     std::fs::create_dir_all(storage.join("folder_a")).unwrap();
@@ -104,14 +125,18 @@ async fn test_rename_emits_source_and_destination_paths() {
 
     let mut rx = realtime.service.subscribe();
 
-    let res = FileService::rename_entry(
-        &state,
-        &admin,
-        "local",
-        "/folder_a/source.txt",
-        "/folder_b/dest.txt",
-    )
-    .await;
+    let res = file_api
+        .files
+        .rename_entry
+        .execute(
+            &actor(&admin),
+            backend::application::files::RenameEntryCommand {
+                connection: ConnectionId::local(),
+                from: "/folder_a/source.txt".to_string(),
+                to: "/folder_b/dest.txt".to_string(),
+            },
+        )
+        .await;
     assert!(res.is_ok(), "rename should succeed");
 
     let envelope = rx.recv().await.expect("expected rename event");
@@ -139,21 +164,26 @@ async fn test_rename_emits_source_and_destination_paths() {
 async fn test_event_replay_includes_rich_metadata() {
     let (state, admin, temp) = setup_test_context().await;
     let realtime = RealtimeState::from_ref(&state);
+    let file_api = FileApiState::from_ref(&state);
 
     let storage = temp.path().join("storage");
     std::fs::create_dir_all(storage.join("src")).unwrap();
     std::fs::create_dir_all(storage.join("archive")).unwrap();
     std::fs::write(storage.join("src").join("doc.pdf"), b"document").unwrap();
 
-    FileService::rename_entry(
-        &state,
-        &admin,
-        "local",
-        "/src/doc.pdf",
-        "/archive/doc.pdf",
-    )
-    .await
-    .unwrap();
+    file_api
+        .files
+        .rename_entry
+        .execute(
+            &actor(&admin),
+            backend::application::files::RenameEntryCommand {
+                connection: ConnectionId::local(),
+                from: "/src/doc.pdf".to_string(),
+                to: "/archive/doc.pdf".to_string(),
+            },
+        )
+        .await
+        .unwrap();
 
     let epoch = realtime.service.epoch_info().epoch;
     let replay = realtime.service.replay(Some(&epoch), 0, 100).await.unwrap();
