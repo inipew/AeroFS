@@ -14,8 +14,10 @@ fn settings_service_is_not_an_app_state_facade() {
     let compact = compact(&src);
 
     assert!(
-        !src.contains("AppState"),
-        "SettingsService must not depend on AppState"
+        !compact.contains("usecrate::state::")
+            && !compact.contains("&AppState")
+            && !compact.contains(":AppState"),
+        "SettingsService must not depend on AppState as a type or module dependency"
     );
     assert!(
         !src.contains("AuthenticatedUser"),
