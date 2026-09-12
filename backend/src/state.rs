@@ -7,7 +7,8 @@ use crate::events::EventJournal;
 use crate::infrastructure::CredentialStore;
 use crate::runtime::{ResourceBudget, TaskSupervisor};
 use crate::services::{
-    ArchiveService, HealthService, RealtimeService, SearchService, SettingsService, SyncService,
+    ArchiveService, FileApiService, HealthService, RealtimeService, SearchService, SettingsService,
+    SyncService,
 };
 use crate::sync::SyncManager;
 use crate::transfer::{TransferEngine, TransferManager};
@@ -242,6 +243,27 @@ impl SettingsState {
     }
 }
 
+#[derive(Clone)]
+pub struct FileApiState {
+    pub files: FileUseCases,
+    pub uploads: UploadApplicationService,
+    pub service: FileApiService,
+}
+
+impl FileApiState {
+    pub fn new(
+        files: FileUseCases,
+        uploads: UploadApplicationService,
+        service: FileApiService,
+    ) -> Self {
+        Self {
+            files,
+            uploads,
+            service,
+        }
+    }
+}
+
 /// Runtime container handed to adapters.
 /// Concrete dependency construction belongs in `crate::bootstrap`.
 #[derive(Clone)]
@@ -268,6 +290,7 @@ pub struct AppState {
     pub(crate) sync: SyncState,
     pub(crate) archive: ArchiveState,
     pub(crate) settings: SettingsState,
+    pub(crate) file_api: FileApiState,
 }
 
 impl axum::extract::FromRef<AppState> for SearchState {
@@ -306,9 +329,9 @@ impl axum::extract::FromRef<AppState> for SettingsState {
     }
 }
 
-impl crate::services::settings_service::SystemSettingsSource for AppState {
-    fn settings_db(&self) -> &DbPool {
-        &self.db
+impl axum::extract::FromRef<AppState> for FileApiState {
+    fn from_ref(state: &AppState) -> Self {
+        state.file_api.clone()
     }
 }
 
