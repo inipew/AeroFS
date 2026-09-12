@@ -1,11 +1,20 @@
 use crate::api::extractors::Json;
 use crate::auth::AuthenticatedUser;
+use crate::domain::Actor;
 use crate::errors::{AppError, ErrorResponse};
-use crate::services::settings_service::{SettingsResponse, SettingsService, UpdateSettingsRequest};
-use crate::state::AppState;
+use crate::services::settings_service::{SettingsResponse, UpdateSettingsRequest};
+use crate::state::SettingsState;
 use axum::{extract::State, response::IntoResponse};
 use serde::Serialize;
 use utoipa::ToSchema;
+
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
+}
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UpdateSettingsResponse {
@@ -30,10 +39,10 @@ pub struct UpdateSettingsResponse {
     tag = "settings"
 )]
 pub async fn get_settings(
-    State(state): State<AppState>,
+    State(state): State<SettingsState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let settings = SettingsService::get_settings(&state, &user).await?;
+    let settings = state.service.get_settings(&actor(&user)).await?;
     Ok(Json(settings))
 }
 
@@ -56,11 +65,14 @@ pub async fn get_settings(
     tag = "settings"
 )]
 pub async fn update_settings(
-    State(state): State<AppState>,
+    State(state): State<SettingsState>,
     user: AuthenticatedUser,
     Json(payload): Json<UpdateSettingsRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    SettingsService::update_settings(&state, &user, payload).await?;
+    state
+        .service
+        .update_settings(&actor(&user), payload)
+        .await?;
 
     Ok(Json(UpdateSettingsResponse {
         success: true,
