@@ -4,7 +4,7 @@ use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
-use backend::services::{EditorService, FileService};
+use backend::services::EditorService;
 use backend::state::{AppState, ArchiveState, RuntimeOwner, ShutdownReason};
 use backend::vfs::factory::ProviderFactory;
 use backend::vfs::registry::ProviderRegistry;
@@ -60,6 +60,58 @@ fn actor_from_user(user: &AuthenticatedUser) -> Actor {
     }
 }
 
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) -> backend::domain::FileMetadata {
+    state
+        .file_api
+        .files
+        .write_file
+        .execute(
+            &actor_from_user(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap()
+}
+
+async fn stat_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+) -> Result<backend::domain::FileMetadata, backend::errors::AppError> {
+    if let Some(metadata) = state.file_api.service.cached_metadata("local", path).await {
+        return Ok(metadata);
+    }
+    let metadata = state
+        .file_api
+        .files
+        .stat_file
+        .execute(
+            &actor_from_user(user),
+            backend::application::files::StatFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+            },
+        )
+        .await?;
+    state
+        .file_api
+        .service
+        .cache_metadata("local", path, metadata.clone())
+        .await;
+    Ok(metadata)
+}
+
 #[tokio::test]
 async fn test_archive_targz_streaming_zero_ram_buffering() {
     let (state, admin, _temp) = setup_test_context().await;
@@ -69,27 +121,21 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
 
     let f1_data = b"Hello Plan 52 TAR.GZ Streaming Compression!";
     let f2_data = b"Second file to be archived inside the streaming archive";
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/src_archive/file1.txt",
         f1_data.to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/src_archive/file2.txt",
         f2_data.to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let compress_res = archive
         .service
@@ -160,51 +206,65 @@ async fn test_storage_runtime_shared_concurrency() {
 #[tokio::test]
 async fn test_presigned_upload_complete_validation() {
     let (state, admin, _temp) = setup_test_context().await;
+    let actor = actor_from_user(&admin);
+    let connection = ConnectionId::local();
 
     let content = b"PRESIGNED PAYLOAD FOR VALIDATION TEST";
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/presigned_valid.dat",
         content.to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let meta = FileService::complete_presigned_upload(
-        &state,
-        &admin,
-        "local",
-        "/presigned_valid.dat",
-        Some(content.len() as u64),
-        None,
-    )
-    .await
-    .unwrap();
+    let meta = state
+        .file_api
+        .files
+        .complete_presigned
+        .execute(
+            &actor,
+            backend::application::files::CompletePresignedCommand {
+                connection: connection.clone(),
+                path: "/presigned_valid.dat".to_string(),
+                expected_size: Some(content.len() as u64),
+                expected_checksum: None,
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(meta.size, content.len() as u64);
 
-    let err_size = FileService::complete_presigned_upload(
-        &state,
-        &admin,
-        "local",
-        "/presigned_valid.dat",
-        Some(99999),
-        None,
-    )
-    .await;
+    let err_size = state
+        .file_api
+        .files
+        .complete_presigned
+        .execute(
+            &actor,
+            backend::application::files::CompletePresignedCommand {
+                connection: connection.clone(),
+                path: "/presigned_valid.dat".to_string(),
+                expected_size: Some(99999),
+                expected_checksum: None,
+            },
+        )
+        .await;
     assert!(err_size.is_err(), "Size mismatch must fail verification");
 
-    let err_nf = FileService::complete_presigned_upload(
-        &state,
-        &admin,
-        "local",
-        "/non_existent.dat",
-        None,
-        None,
-    )
-    .await;
+    let err_nf = state
+        .file_api
+        .files
+        .complete_presigned
+        .execute(
+            &actor,
+            backend::application::files::CompletePresignedCommand {
+                connection,
+                path: "/non_existent.dat".to_string(),
+                expected_size: None,
+                expected_checksum: None,
+            },
+        )
+        .await;
     assert!(err_nf.is_err(), "Non-existent path must fail");
 }
 
@@ -213,50 +273,50 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
     let (state, admin, _temp) = setup_test_context().await;
 
     let content1 = b"Original Content v1";
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/cached_file.txt",
         content1.to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let stat1 = FileService::stat_file(&state, &admin, "local", "/cached_file.txt")
-        .await
-        .unwrap();
+    let stat1 = stat_file(&state, &admin, "/cached_file.txt").await.unwrap();
     assert_eq!(stat1.size, content1.len() as u64);
 
     let content2 = b"Updated Content v2 with different size";
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/cached_file.txt",
         content2.to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let stat2 = FileService::stat_file(&state, &admin, "local", "/cached_file.txt")
-        .await
-        .unwrap();
+    let stat2 = stat_file(&state, &admin, "/cached_file.txt").await.unwrap();
     assert_eq!(
         stat2.size,
         content2.len() as u64,
         "stat after write must not return stale cached metadata"
     );
 
-    FileService::delete_entry(&state, &admin, "local", "/cached_file.txt")
+    let delete_result = state
+        .file_api
+        .files
+        .delete_entries
+        .execute(
+            &actor_from_user(&admin),
+            backend::application::files::DeleteEntriesCommand {
+                connection: ConnectionId::local(),
+                paths: vec!["/cached_file.txt".to_string()],
+            },
+        )
         .await
         .unwrap();
+    assert!(delete_result.failed.is_empty());
+    assert!(!delete_result.succeeded.is_empty());
     assert!(
-        FileService::stat_file(&state, &admin, "local", "/cached_file.txt")
-            .await
-            .is_err(),
+        stat_file(&state, &admin, "/cached_file.txt").await.is_err(),
         "stat after delete must not return stale cached metadata"
     );
 }
@@ -266,31 +326,33 @@ async fn test_directory_paged_listing_has_more_and_total_count() {
     let (state, admin, _temp) = setup_test_context().await;
 
     for i in 0..10 {
-        FileService::create_or_write_file(
+        write_file(
             &state,
             &admin,
-            "local",
             &format!("/paged_dir/file_{i:02}.txt"),
             format!("data {i}").into_bytes(),
-            None,
+        )
+        .await;
+    }
+
+    let listing = state
+        .file_api
+        .files
+        .list_directory
+        .execute(
+            &actor_from_user(&admin),
+            backend::application::files::ListDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: Some("/paged_dir".into()),
+                show_hidden: None,
+                sort: Some(backend::domain::SortField::Name),
+                order: Some(backend::domain::SortOrder::Asc),
+                cursor: None,
+                limit: Some(4),
+            },
         )
         .await
         .unwrap();
-    }
-
-    let listing = FileService::list_directory_paged(
-        &state,
-        &admin,
-        "local",
-        Some("/paged_dir".into()),
-        None,
-        Some("name"),
-        Some("asc"),
-        None,
-        Some(4),
-    )
-    .await
-    .unwrap();
 
     assert_eq!(listing.entries.len(), 4);
     assert!(listing.has_more, "Must indicate has_more = true");
