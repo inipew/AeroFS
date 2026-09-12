@@ -223,6 +223,18 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         )),
     );
 
+    // Connection lifecycle is a dedicated capability. Startup provider loading
+    // uses the same explicit dependency graph as request-time connection actions.
+    let connections = ConnectionService::new(
+        db.clone(),
+        config.clone(),
+        registry.clone(),
+        credentials.clone(),
+        metadata_cache.clone(),
+        transfer_manager.clone(),
+    );
+    connections.load_all_providers_from_db().await;
+
     let state = AppState {
         config,
         db,
@@ -247,7 +259,6 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         archive,
     };
 
-    ConnectionService::load_all_providers_from_db(&state).await;
     spawn_runtime_tasks(&state);
     state
 }
