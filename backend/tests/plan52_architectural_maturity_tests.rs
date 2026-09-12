@@ -1,13 +1,18 @@
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::VfsPath;
+use backend::domain::{Actor, ConnectionId, VfsPath};
+use backend::infrastructure::{
+    archive::SqliteArchiveEffects,
+    files::{RegistryFileSystemResolver, SqliteAuthorization},
+};
 use backend::services::{ArchiveService, FileService};
 use backend::state::AppState;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 
 async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
     let temp = tempdir().unwrap();
@@ -31,9 +36,32 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     (state, admin, temp)
 }
 
+fn archive_service(state: &AppState) -> ArchiveService {
+    ArchiveService::new(
+        Arc::new(SqliteAuthorization::new(state.db.clone())),
+        Arc::new(RegistryFileSystemResolver::new(state.registry.clone())),
+        Arc::new(SqliteArchiveEffects::new(
+            state.db.clone(),
+            state.transfer_manager.clone(),
+        )),
+        Arc::new(Semaphore::new(state.config.limits.archive_concurrency)),
+    )
+}
+
+fn actor_from_user(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
+}
+
 #[tokio::test]
 async fn test_archive_targz_streaming_zero_ram_buffering() {
     let (state, admin, _temp) = setup_test_context().await;
+    let archive = archive_service(&state);
+    let actor = actor_from_user(&admin);
+    let connection = ConnectionId::local();
 
     // 1. Create source files
     let f1_data = b"Hello Plan 52 TAR.GZ Streaming Compression!";
@@ -61,32 +89,32 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
     .unwrap();
 
     // 2. Compress via ArchiveService (TarGz)
-    let compress_res = ArchiveService::compress(
-        &state,
-        &admin,
-        "local",
-        "/src_archive",
-        &["file1.txt".into(), "file2.txt".into()],
-        "/packed_archive.tar.gz",
-        Some("targz"),
-    )
-    .await
-    .unwrap();
+    let compress_res = archive
+        .compress(
+            &actor,
+            &connection,
+            "/src_archive",
+            &["file1.txt".into(), "file2.txt".into()],
+            "/packed_archive.tar.gz",
+            Some("targz"),
+        )
+        .await
+        .unwrap();
 
     assert!(compress_res.success);
 
     // 3. Extract the archive
-    let extract_res = ArchiveService::extract(
-        &state,
-        &admin,
-        "local",
-        "/packed_archive.tar.gz",
-        "/extracted_dest",
-        Some("targz"),
-        backend::filesystem::archive::ArchiveOverwriteMode::Overwrite,
-    )
-    .await
-    .unwrap();
+    let extract_res = archive
+        .extract(
+            &actor,
+            &connection,
+            "/packed_archive.tar.gz",
+            "/extracted_dest",
+            Some("targz"),
+            backend::filesystem::archive::ArchiveOverwriteMode::Overwrite,
+        )
+        .await
+        .unwrap();
 
     assert!(extract_res.success);
 
