@@ -59,7 +59,7 @@ fn app_state_exposes_archive_substate_without_raw_archive_limiter() {
     let src = source("src/state.rs");
     assert!(src.contains("pub struct ArchiveState"));
     assert!(src.contains("pub(crate) archive: ArchiveState"));
-    assert!(src.contains("FromRef<AppState> for ArchiveState"));
+    assert!(src.contains("impl_from_ref!(ArchiveState, archive)"));
     assert!(!src.contains("archive_semaphore"));
 }
 
