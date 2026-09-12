@@ -3,20 +3,14 @@ use crate::application::{
 };
 use crate::config::AppConfig;
 use crate::db::DbPool;
-use crate::events::EventJournal;
-use crate::infrastructure::CredentialStore;
-use crate::runtime::{ResourceBudget, TaskSupervisor};
+use crate::runtime::TaskSupervisor;
 use crate::services::{
-    ArchiveService, FileApiService, HealthService, RealtimeService, SearchService, SettingsService,
-    SyncService,
+    ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
+    PreferencesService, RealtimeService, SearchService, SettingsService, ShareService, SyncService,
+    TrashService,
 };
-use crate::sync::SyncManager;
-use crate::transfer::{TransferEngine, TransferManager};
-use crate::vfs::registry::ProviderRegistry;
-use crate::vfs::FileSystem;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -192,6 +186,54 @@ impl RuntimeState {
 }
 
 #[derive(Clone)]
+pub struct RouterState {
+    pub is_dev: bool,
+    pub allowed_origins: Vec<String>,
+}
+
+impl RouterState {
+    pub fn new(is_dev: bool, allowed_origins: Vec<String>) -> Self {
+        Self {
+            is_dev,
+            allowed_origins,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AuthState {
+    pub service: AuthService,
+}
+
+impl AuthState {
+    pub fn new(service: AuthService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
+pub struct ConnectionState {
+    pub service: ConnectionService,
+}
+
+impl ConnectionState {
+    pub fn new(service: ConnectionService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
+pub struct TransferState {
+    pub use_cases: TransferUseCases,
+}
+
+impl TransferState {
+    pub fn new(use_cases: TransferUseCases) -> Self {
+        Self { use_cases }
+    }
+}
+
+#[derive(Clone)]
 pub struct SearchState {
     pub service: SearchService,
 }
@@ -258,6 +300,50 @@ impl SettingsState {
 }
 
 #[derive(Clone)]
+pub struct AuditState {
+    pub service: AuditService,
+}
+
+impl AuditState {
+    pub fn new(service: AuditService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
+pub struct PreferencesState {
+    pub service: PreferencesService,
+}
+
+impl PreferencesState {
+    pub fn new(service: PreferencesService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
+pub struct ShareState {
+    pub service: ShareService,
+}
+
+impl ShareState {
+    pub fn new(service: ShareService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
+pub struct TrashState {
+    pub service: TrashService,
+}
+
+impl TrashState {
+    pub fn new(service: TrashService) -> Self {
+        Self { service }
+    }
+}
+
+#[derive(Clone)]
 pub struct FileApiState {
     pub files: FileUseCases,
     pub uploads: UploadApplicationService,
@@ -278,172 +364,59 @@ impl FileApiState {
     }
 }
 
-/// Runtime container handed to request adapters.
-/// Process lifecycle ownership belongs to `crate::bootstrap::BuiltApplication`.
+/// Capability container handed to request adapters.
+/// Concrete infrastructure and process lifecycle ownership stay in bootstrap/services.
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<AppConfig>,
-    pub db: DbPool,
-    pub registry: Arc<ProviderRegistry>,
-    pub credentials: Arc<CredentialStore>,
-    pub transfer_manager: TransferManager,
-    pub transfer_engine: TransferEngine,
-    pub metadata_cache: Arc<crate::services::MetadataCache>,
-    pub upload_locks: Arc<crate::services::UploadLockManager>,
-    pub global_io_semaphore: Arc<Semaphore>,
-    pub resource_budget: Arc<ResourceBudget>,
-    pub event_journal: Arc<EventJournal>,
-    pub sync_manager: Arc<SyncManager>,
-    pub files: FileUseCases,
-    pub transfers: TransferUseCases,
-    pub uploads: UploadApplicationService,
+    pub(crate) router: RouterState,
     pub(crate) runtime: RuntimeState,
+    pub(crate) auth: AuthState,
+    pub(crate) connections: ConnectionState,
+    pub(crate) file_api: FileApiState,
+    pub(crate) transfers: TransferState,
     pub(crate) search: SearchState,
     pub(crate) health: HealthState,
     pub(crate) realtime: RealtimeState,
     pub(crate) sync: SyncState,
     pub(crate) archive: ArchiveState,
     pub(crate) settings: SettingsState,
-    pub(crate) file_api: FileApiState,
+    pub(crate) audit: AuditState,
+    pub(crate) preferences: PreferencesState,
+    pub(crate) shares: ShareState,
+    pub(crate) trash: TrashState,
 }
 
-impl axum::extract::FromRef<AppState> for RuntimeState {
-    fn from_ref(state: &AppState) -> Self {
-        state.runtime.clone()
-    }
+macro_rules! impl_from_ref {
+    ($state:ty, $field:ident) => {
+        impl axum::extract::FromRef<AppState> for $state {
+            fn from_ref(state: &AppState) -> Self {
+                state.$field.clone()
+            }
+        }
+    };
 }
 
-impl axum::extract::FromRef<AppState> for SearchState {
-    fn from_ref(state: &AppState) -> Self {
-        state.search.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for HealthState {
-    fn from_ref(state: &AppState) -> Self {
-        state.health.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for RealtimeState {
-    fn from_ref(state: &AppState) -> Self {
-        state.realtime.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for SyncState {
-    fn from_ref(state: &AppState) -> Self {
-        state.sync.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for ArchiveState {
-    fn from_ref(state: &AppState) -> Self {
-        state.archive.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for SettingsState {
-    fn from_ref(state: &AppState) -> Self {
-        state.settings.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for FileApiState {
-    fn from_ref(state: &AppState) -> Self {
-        state.file_api.clone()
-    }
-}
+impl_from_ref!(RouterState, router);
+impl_from_ref!(RuntimeState, runtime);
+impl_from_ref!(AuthState, auth);
+impl_from_ref!(ConnectionState, connections);
+impl_from_ref!(FileApiState, file_api);
+impl_from_ref!(TransferState, transfers);
+impl_from_ref!(SearchState, search);
+impl_from_ref!(HealthState, health);
+impl_from_ref!(RealtimeState, realtime);
+impl_from_ref!(SyncState, sync);
+impl_from_ref!(ArchiveState, archive);
+impl_from_ref!(SettingsState, settings);
+impl_from_ref!(AuditState, audit);
+impl_from_ref!(PreferencesState, preferences);
+impl_from_ref!(ShareState, shares);
+impl_from_ref!(TrashState, trash);
 
 impl AppState {
     /// Compatibility constructor for tests and non-server callers.
     /// Production startup should use `bootstrap::build_application`.
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
         crate::bootstrap::build_app_state(config, db).await
-    }
-
-    pub async fn get_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
-        self.registry.get(connection_id).await
-    }
-
-    pub async fn get_provider_result(
-        &self,
-        connection_id: &str,
-    ) -> Result<Arc<dyn FileSystem>, crate::errors::VfsError> {
-        if let Some(p) = self.registry.get(connection_id).await {
-            return Ok(p);
-        }
-        if connection_id == crate::domain::ConnectionId::LOCAL {
-            return Err(crate::errors::VfsError::ConnectionError(
-                "Local provider not initialized; call ensure_provider".into(),
-            ));
-        }
-        Err(crate::errors::VfsError::ConnectionError(format!(
-            "Connection '{}' not found or provider not initialized",
-            connection_id
-        )))
-    }
-
-    pub async fn ensure_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
-        if let Some(p) = self.registry.get(connection_id).await {
-            return Some(p);
-        }
-        if connection_id == crate::domain::ConnectionId::LOCAL {
-            let local_root = self.config.filesystem.default_local_root.clone();
-            if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
-                tracing::warn!(
-                    "ensure_provider: create_dir_all {:?} failed: {}",
-                    local_root,
-                    e
-                );
-            }
-            let local_cfg = self.config.storage.get_provider_config("local");
-            if let Ok(local_fs) = crate::vfs::factory::ProviderFactory::build_local_with_config(
-                "local",
-                local_root,
-                Some(&local_cfg),
-            ) {
-                self.registry
-                    .register("local".to_string(), local_fs.clone())
-                    .await;
-                return Some(local_fs);
-            }
-        }
-        None
-    }
-
-    pub async fn get_storage_runtime(
-        &self,
-        connection_id: &str,
-    ) -> Option<Arc<crate::vfs::runtime::StorageRuntime>> {
-        if let Some(rt) = self.registry.get_runtime(connection_id).await {
-            return Some(rt);
-        }
-        if self.ensure_provider(connection_id).await.is_some() {
-            return self.registry.get_runtime(connection_id).await;
-        }
-        None
-    }
-
-    pub async fn register_provider(&self, connection_id: String, provider: Arc<dyn FileSystem>) {
-        self.registry.register(connection_id, provider).await;
-    }
-
-    pub async fn remove_provider(&self, connection_id: &str) {
-        self.registry.remove(connection_id).await;
-    }
-
-    pub async fn set_connection_error(&self, connection_id: &str, error: &str) {
-        self.registry
-            .set_connection_error(connection_id, error)
-            .await;
-    }
-
-    pub async fn get_connection_error(&self, connection_id: &str) -> Option<String> {
-        self.registry.get_connection_error(connection_id).await
-    }
-
-    pub async fn clear_connection_error(&self, connection_id: &str) {
-        self.registry.clear_connection_error(connection_id).await;
     }
 }
