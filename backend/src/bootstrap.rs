@@ -18,8 +18,8 @@ use crate::infrastructure::{
     CredentialStore,
 };
 use crate::runtime::ResourceBudget;
-use crate::services::connection_service::ConnectionService;
-use crate::state::{AppRuntime, AppState};
+use crate::services::{connection_service::ConnectionService, HealthService, SearchService};
+use crate::state::{AppRuntime, AppState, HealthState, SearchState};
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
@@ -164,10 +164,23 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         file_effects.clone(),
         transfer_manager.clone(),
         upload_locks.clone(),
-        local_root,
+        local_root.clone(),
         max_editable_size,
         max_upload_size,
     );
+
+    let search = SearchState::new(SearchService::new(
+        file_authorization.clone(),
+        file_filesystem.clone(),
+        Arc::new(Semaphore::new(cfg_limits_search)),
+    ));
+
+    let health = HealthState::new(HealthService::new(
+        db.clone(),
+        local_root,
+        registry.clone(),
+        runtime.view(),
+    ));
 
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
@@ -194,7 +207,6 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         upload_locks,
         global_io_semaphore: Arc::new(Semaphore::new(cfg_limits_global)),
         archive_semaphore: Arc::new(Semaphore::new(cfg_limits_archive)),
-        search_semaphore: Arc::new(Semaphore::new(cfg_limits_search)),
         resource_budget,
         event_journal,
         sync_manager,
@@ -202,6 +214,8 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         files,
         transfers,
         uploads,
+        search,
+        health,
     };
 
     ConnectionService::load_all_providers_from_db(&state).await;
