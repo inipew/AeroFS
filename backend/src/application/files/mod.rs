@@ -1,5 +1,6 @@
-//! File application service — typed boundary (§3-4, §85).
-//! Replaces universal `&AppState` DI with explicit ports.
+//! File application use-cases.
+//! Application depends on domain contracts and ports only; concrete adapters are
+//! assembled by `crate::bootstrap`.
 
 mod chmod;
 mod list_directory;
@@ -26,20 +27,6 @@ pub use read_file::{ReadFile, ReadFileCommand, ReadFileResult};
 pub use stat::{StatFile, StatFileCommand};
 pub use write::{WriteFile, WriteFileCommand};
 
-use crate::events::EventJournal;
-use crate::infrastructure::files::{
-    RegistryFileSystemResolver, SqliteAuthorization, SqliteFileMutationEffects, SqliteFileSettings,
-};
-use crate::ports::{
-    authorization::Authorization, effects::FileMutationEffects, filesystem::FileSystemResolver,
-    settings::FileSettings,
-};
-use crate::services::cache::MetadataCache;
-use crate::state::AppState;
-use crate::vfs::registry::ProviderRegistry;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
-
 #[derive(Clone)]
 pub struct FileUseCases {
     pub list_directory: ListDirectory,
@@ -54,72 +41,4 @@ pub struct FileUseCases {
     pub presign_upload: PresignUpload,
     pub complete_presigned: CompletePresigned,
     pub chmod_entry: ChmodEntry,
-}
-
-/// Transitional compatibility facade retained for non-HTTP callers. Phase 9
-/// routes HTTP file operations through `FileUseCases`; Phase 10 removes this
-/// facade from the composition root entirely.
-#[derive(Clone)]
-pub struct FileApplicationService {
-    pub registry: Arc<ProviderRegistry>,
-    pub db: crate::db::DbPool,
-    pub config: Arc<crate::config::AppConfig>,
-    pub metadata_cache: Arc<MetadataCache>,
-    pub event_journal: Arc<EventJournal>,
-    pub global_io: Arc<Semaphore>,
-    pub(crate) authorization: Arc<dyn Authorization>,
-    pub(crate) filesystem: Arc<dyn FileSystemResolver>,
-    pub(crate) effects: Arc<dyn FileMutationEffects>,
-    pub(crate) write_file: WriteFile,
-}
-
-impl FileApplicationService {
-    pub fn from_state(state: &AppState) -> Self {
-        Self::new(
-            Arc::clone(&state.registry),
-            state.db.clone(),
-            Arc::clone(&state.config),
-            Arc::clone(&state.metadata_cache),
-            Arc::clone(&state.event_journal),
-            Arc::clone(&state.global_io_semaphore),
-        )
-    }
-
-    pub fn new(
-        registry: Arc<ProviderRegistry>,
-        db: crate::db::DbPool,
-        config: Arc<crate::config::AppConfig>,
-        metadata_cache: Arc<MetadataCache>,
-        event_journal: Arc<EventJournal>,
-        global_io: Arc<Semaphore>,
-    ) -> Self {
-        let authorization: Arc<dyn Authorization> = Arc::new(SqliteAuthorization::new(db.clone()));
-        let filesystem: Arc<dyn FileSystemResolver> =
-            Arc::new(RegistryFileSystemResolver::new(registry.clone()));
-        let settings: Arc<dyn FileSettings> =
-            Arc::new(SqliteFileSettings::new(db.clone(), config.clone()));
-        let effects: Arc<dyn FileMutationEffects> = Arc::new(SqliteFileMutationEffects::new(
-            db.clone(),
-            metadata_cache.clone(),
-            event_journal.clone(),
-        ));
-        let write_file = WriteFile::new(
-            authorization.clone(),
-            filesystem.clone(),
-            settings,
-            effects.clone(),
-        );
-        Self {
-            registry,
-            db,
-            config,
-            metadata_cache,
-            event_journal,
-            global_io,
-            authorization,
-            filesystem,
-            effects,
-            write_file,
-        }
-    }
 }
