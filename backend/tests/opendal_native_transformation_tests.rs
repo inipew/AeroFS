@@ -86,7 +86,7 @@ async fn list_page(
     state: &AppState,
     user: &AuthenticatedUser,
     cursor: Option<String>,
-) -> backend::application::files::DirectoryListing {
+) -> backend::domain::DirectoryListing {
     let file_api = FileApiState::from_ref(state);
     file_api
         .files
