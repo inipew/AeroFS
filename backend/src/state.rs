@@ -11,7 +11,7 @@ use crate::vfs::FileSystem;
 use crate::{
     application::{
         files::{
-            CompletePresigned, CopyEntry, CreateDirectory, DeleteEntries, FileUseCases,
+            ChmodEntry, CompletePresigned, CopyEntry, CreateDirectory, DeleteEntries, FileUseCases,
             ListDirectory, PresignDownload, PresignUpload, ReadFile, RenameEntry, StatFile,
             WriteFile,
         },
@@ -297,6 +297,11 @@ impl AppState {
                 file_effects.clone(),
             ),
             complete_presigned: CompletePresigned::new(
+                file_authorization.clone(),
+                file_filesystem.clone(),
+                file_effects.clone(),
+            ),
+            chmod_entry: ChmodEntry::new(
                 file_authorization,
                 file_filesystem,
                 file_effects,
