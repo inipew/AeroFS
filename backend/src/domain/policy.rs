@@ -14,24 +14,6 @@ pub enum PermissionInheritanceMode {
     ProviderDefault,
 }
 
-/// Compatibility resolver for mutation flows that have not yet adopted strict
-/// permission failure semantics. Provider failures are treated as no resolved
-/// permission. New mutation code should use `resolve_destination_permissions_strict`.
-pub async fn resolve_destination_permissions(
-    dst_fs: &Arc<dyn FileSystem>,
-    dst_vfs: &VfsPath,
-    is_dir: bool,
-    mode: PermissionInheritanceMode,
-) -> Option<String> {
-    match resolve_destination_permissions_strict(dst_fs, dst_vfs, is_dir, mode).await {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::warn!(path = %dst_vfs.path, ?error, "permission inheritance lookup failed");
-            None
-        }
-    }
-}
-
 /// Strict permission resolver used by mutation paths where a provider lookup
 /// failure must not be mistaken for an absent permission value.
 pub async fn resolve_destination_permissions_strict(
@@ -70,9 +52,6 @@ async fn inherit_from_parent_strict(
     };
     let parent_meta = match dst_fs.stat(&parent).await {
         Ok(metadata) => metadata,
-        // `create_dir` may create missing ancestors. A missing parent therefore
-        // means there is currently nothing to inherit, not that the provider is
-        // unhealthy. Other stat failures remain observable to the caller.
         Err(VfsError::NotFound(_)) => return Ok(None),
         Err(error) => return Err(error),
     };
