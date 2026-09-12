@@ -16,6 +16,7 @@ use crate::infrastructure::{
         SqliteFileSettings,
     },
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
+    uploads::TransferUploadExecution,
     CredentialStore,
 };
 use crate::services::{
@@ -82,6 +83,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     )
     .await;
     let transfer_engine = TransferEngine::new(transfer_manager.clone());
+    let upload_execution = Arc::new(TransferUploadExecution::new(transfer_manager.clone()));
 
     let sync_manager = Arc::new(SyncManager::new(
         db.clone(),
@@ -187,8 +189,9 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         file_authorization.clone(),
         file_filesystem.clone(),
         file_effects.clone(),
-        transfer_manager.clone(),
         upload_locks.clone(),
+        upload_locks.clone(),
+        upload_execution,
         local_root.clone(),
         max_editable_size,
         max_upload_size,

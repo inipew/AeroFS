@@ -6,3 +6,4 @@ pub mod filesystem;
 pub mod mutation;
 pub mod settings;
 pub mod transfer;
+pub mod upload;

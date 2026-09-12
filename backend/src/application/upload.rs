@@ -1,6 +1,6 @@
 //! Upload application orchestration.
-//! HTTP adapts request bodies into byte streams; this module owns upload
-//! admission, locking, transfer lifecycle and post-commit effects.
+//! HTTP adapts request bodies into byte streams; this module owns admission,
+//! mutation ownership and post-commit effects through application ports.
 
 use crate::domain::{Actor, ConnectionId, PermissionInheritanceMode, VfsPath};
 use crate::errors::{AppError, VfsError};
@@ -8,9 +8,12 @@ use crate::ports::{
     authorization::{Authorization, FileAction},
     effects::FileMutationEffects,
     filesystem::FileSystemResolver,
+    mutation::MutationCoordinator,
+    upload::{
+        CreateInlineUploadJob, InlineUploadContext, UploadExecution, UploadReservationStore,
+        UploadSession,
+    },
 };
-use crate::services::{UploadLockManager, UploadSession};
-use crate::transfer::{planner::TransferPlanner, planner::UploadConstraints, TransferManager};
 use bytes::Bytes;
 use futures::Stream;
 use std::path::PathBuf;
@@ -21,20 +24,23 @@ pub struct UploadApplicationService {
     authorization: Arc<dyn Authorization>,
     filesystem: Arc<dyn FileSystemResolver>,
     effects: Arc<dyn FileMutationEffects>,
-    transfer_manager: TransferManager,
-    upload_locks: Arc<UploadLockManager>,
+    mutations: Arc<dyn MutationCoordinator>,
+    reservations: Arc<dyn UploadReservationStore>,
+    execution: Arc<dyn UploadExecution>,
     local_root: PathBuf,
     max_editable_size: u64,
     max_upload_size: u64,
 }
 
 impl UploadApplicationService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         authorization: Arc<dyn Authorization>,
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
-        transfer_manager: TransferManager,
-        upload_locks: Arc<UploadLockManager>,
+        mutations: Arc<dyn MutationCoordinator>,
+        reservations: Arc<dyn UploadReservationStore>,
+        execution: Arc<dyn UploadExecution>,
         local_root: PathBuf,
         max_editable_size: u64,
         max_upload_size: u64,
@@ -43,8 +49,9 @@ impl UploadApplicationService {
             authorization,
             filesystem,
             effects,
-            transfer_manager,
-            upload_locks,
+            mutations,
+            reservations,
+            execution,
             local_root,
             max_editable_size,
             max_upload_size,
@@ -82,12 +89,6 @@ impl UploadApplicationService {
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
         let target_exists = Self::target_exists(&provider, &target).await?;
-        let plan = TransferPlanner::plan_upload(
-            &provider.capabilities(),
-            UploadConstraints::inline(total_bytes),
-            self.max_editable_size,
-            target_exists,
-        );
         let target_perms = crate::domain::resolve_destination_permissions(
             &provider,
             &target,
@@ -97,23 +98,27 @@ impl UploadApplicationService {
         .await;
         self.ensure_local_capacity(connection)?;
 
-        let guard = self
-            .upload_locks
-            .try_acquire(connection.as_str(), &target.path)
+        // Acquire destination ownership before creating the transfer job so a
+        // conflicting mutation cannot leave an orphaned job behind.
+        let lease = self
+            .mutations
+            .try_acquire(connection, &target.path)
             .await?;
-        let job = self
-            .transfer_manager
-            .create_inline_upload_job_with_plan(
-                Some(actor.id.clone()),
-                file_name.clone(),
-                connection.to_string(),
-                target.path.clone(),
+        let prepared = self
+            .execution
+            .create_inline_job(CreateInlineUploadJob {
+                user_id: Some(actor.id.clone()),
+                name: file_name.clone(),
+                destination_connection_id: connection.to_string(),
+                destination_path: target.path.clone(),
                 total_bytes,
-                plan.clone(),
-            )
-            .await;
+                inline_threshold: self.max_editable_size,
+                target_exists,
+                capabilities: provider.capabilities(),
+            })
+            .await?;
         let session = UploadSession {
-            job_id: job.id.clone(),
+            job_id: prepared.job_id.clone(),
             user_id: actor.id.clone(),
             connection_id: connection.to_string(),
             target,
@@ -122,11 +127,12 @@ impl UploadApplicationService {
             max_upload_bytes: self.max_upload_size,
             target_exists,
             target_perms,
-            plan,
+            plan: prepared.plan,
         };
-        self.upload_locks
-            .reserve_existing(session.clone(), guard)
-            .await?;
+        if let Err(error) = self.reservations.reserve(session.clone(), lease).await {
+            self.execution.cancel_inline_job(&prepared.job_id).await;
+            return Err(error);
+        }
         Ok(session)
     }
 
@@ -140,13 +146,13 @@ impl UploadApplicationService {
     where
         S: Stream<Item = Result<Bytes, AppError>> + Send,
     {
-        // `claimed` is an RAII ownership token. Any early return or cancellation
-        // of this future drops it and synchronously releases the reserved path.
-        let claimed = self.upload_locks.claim(job_id, &actor.id).await?;
+        // `claimed` is an opaque RAII ownership token. Any early return or
+        // cancellation of this future drops it and releases the reservation.
+        let claimed = self.reservations.claim(job_id, &actor.id).await?;
         let session = claimed.session().clone();
 
         if session.connection_id != connection.as_str() {
-            self.transfer_manager.cancel_inline_job(job_id).await;
+            self.execution.cancel_inline_job(job_id).await;
             return Err(AppError::NotFound(format!(
                 "Upload session '{}' not found",
                 job_id
@@ -156,37 +162,25 @@ impl UploadApplicationService {
         let session_connection = ConnectionId::new(session.connection_id.clone())
             .map_err(|error| AppError::BadRequest(error.to_string()))?;
         let provider = self.filesystem.resolve(&session_connection).await?;
-        let cancel_token = match self.transfer_manager.cancel_token(&session.job_id) {
-            Some(token) => token,
-            None => {
-                self.transfer_manager
-                    .fail_inline_job(job_id, "transfer cancellation token missing".into())
-                    .await;
-                return Err(AppError::Internal(anyhow::anyhow!(
-                    "transfer cancellation token missing"
-                )));
-            }
-        };
+        let result = self
+            .execution
+            .execute_inline(
+                provider,
+                InlineUploadContext {
+                    target: session.target.clone(),
+                    job_id: session.job_id.clone(),
+                    plan: session.plan,
+                    total_hint: session.total_bytes,
+                    max_bytes: session.max_upload_bytes,
+                    target_exists: session.target_exists,
+                    target_perms: session.target_perms,
+                },
+                Box::pin(byte_stream),
+            )
+            .await;
 
-        let result = crate::transfer::executor::execute_inline_upload_stream(
-            &self.transfer_manager,
-            provider,
-            crate::transfer::executor::InlineUploadContext {
-                target: session.target.clone(),
-                job_id: session.job_id.clone(),
-                plan: session.plan,
-                total_hint: session.total_bytes,
-                max_bytes: session.max_upload_bytes,
-                target_exists: session.target_exists,
-                target_perms: session.target_perms,
-            },
-            cancel_token,
-            byte_stream,
-        )
-        .await;
-
-        // Match the old behavior: release the destination before post-commit
-        // audit/cache effects, while retaining cancellation safety during I/O.
+        // Preserve the existing commit boundary: the destination reservation is
+        // released once provider I/O is terminal, before cache/audit effects.
         drop(claimed);
         self.finish_upload(actor, &session_connection, &session.target, job_id, result)
             .await
@@ -209,12 +203,6 @@ impl UploadApplicationService {
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
         let target_exists = Self::target_exists(&provider, &target).await?;
-        let plan = TransferPlanner::plan_upload(
-            &provider.capabilities(),
-            UploadConstraints::inline(total_hint),
-            self.max_editable_size,
-            target_exists,
-        );
         let target_perms = crate::domain::resolve_destination_permissions(
             &provider,
             &target,
@@ -224,53 +212,40 @@ impl UploadApplicationService {
         .await;
         self.ensure_local_capacity(connection)?;
 
-        let _guard = self
-            .upload_locks
-            .try_acquire(connection.as_str(), &target.path)
+        let _lease = self
+            .mutations
+            .try_acquire(connection, &target.path)
             .await?;
-        let job = self
-            .transfer_manager
-            .create_inline_upload_job_with_plan(
-                Some(actor.id.clone()),
-                file_name.to_string(),
-                connection.to_string(),
-                target.path.clone(),
-                total_hint,
-                plan.clone(),
+        let prepared = self
+            .execution
+            .create_inline_job(CreateInlineUploadJob {
+                user_id: Some(actor.id.clone()),
+                name: file_name.to_string(),
+                destination_connection_id: connection.to_string(),
+                destination_path: target.path.clone(),
+                total_bytes: total_hint,
+                inline_threshold: self.max_editable_size,
+                target_exists,
+                capabilities: provider.capabilities(),
+            })
+            .await?;
+        let job_id = prepared.job_id;
+        let result = self
+            .execution
+            .execute_inline(
+                provider,
+                InlineUploadContext {
+                    target: target.clone(),
+                    job_id: job_id.clone(),
+                    plan: prepared.plan,
+                    total_hint,
+                    max_bytes: self.max_upload_size,
+                    target_exists,
+                    target_perms,
+                },
+                Box::pin(byte_stream),
             )
             .await;
-        let job_id = job.id.clone();
-        let cancel_token = match self.transfer_manager.cancel_token(&job_id) {
-            Some(token) => token,
-            None => {
-                let error = "transfer cancellation token missing".to_string();
-                self.transfer_manager
-                    .fail_inline_job(&job_id, error.clone())
-                    .await;
-                return Err(AppError::Internal(anyhow::anyhow!(error)));
-            }
-        };
-        if cancel_token.is_cancelled() {
-            self.transfer_manager.cancel_inline_job(&job_id).await;
-            return Err(AppError::Cancelled("upload cancelled before start".into()));
-        }
-
-        let result = crate::transfer::executor::execute_inline_upload_stream(
-            &self.transfer_manager,
-            provider,
-            crate::transfer::executor::InlineUploadContext {
-                target: target.clone(),
-                job_id: job_id.clone(),
-                plan,
-                total_hint,
-                max_bytes: self.max_upload_size,
-                target_exists,
-                target_perms,
-            },
-            cancel_token,
-            byte_stream,
-        )
-        .await;
         self.finish_upload(actor, connection, &target, &job_id, result)
             .await
     }
@@ -296,16 +271,14 @@ impl UploadApplicationService {
                         Some(format!("Uploaded: {} via Transfer {}", target.path, job_id)),
                     )
                     .await;
-                self.transfer_manager
-                    .complete_inline_job(job_id, None)
-                    .await;
+                self.execution.complete_inline_job(job_id).await;
                 Ok(target.path.clone())
             }
             Err(error) => {
                 if matches!(error, AppError::Cancelled(_)) {
-                    self.transfer_manager.cancel_inline_job(job_id).await;
+                    self.execution.cancel_inline_job(job_id).await;
                 } else {
-                    self.transfer_manager
+                    self.execution
                         .fail_inline_job(job_id, error.to_string())
                         .await;
                 }
