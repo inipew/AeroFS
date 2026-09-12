@@ -214,12 +214,34 @@ async fn test_orphan_staging_cleanup() {
     std::fs::write(&stale_part2, b"incomplete payload 2").unwrap();
     std::fs::write(&valid_file, b"permanent content").unwrap();
 
-    let cleaned = cleanup_stale_staging_files(&root, Duration::from_secs(0)).await;
+    let cleaned = cleanup_stale_staging_files(&root, Duration::from_secs(0))
+        .await
+        .expect("staging cleanup should succeed for a readable storage root");
     assert_eq!(cleaned, 2, "Must delete exactly 2 orphan staging files");
 
     assert!(!stale_part1.exists());
     assert!(!stale_part2.exists());
     assert!(valid_file.exists(), "Regular non-staging file must be preserved");
+}
+
+#[tokio::test]
+async fn test_orphan_staging_cleanup_propagates_io_errors() {
+    let temp = tempdir().unwrap();
+    let not_a_directory = temp.path().join("storage_root_file");
+    std::fs::write(&not_a_directory, b"not a directory").unwrap();
+
+    let error = cleanup_stale_staging_files(&not_a_directory, Duration::from_secs(0))
+        .await
+        .expect_err("cleanup must expose filesystem scan errors to supervisor health tracking");
+
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotADirectory | std::io::ErrorKind::Other
+        ),
+        "unexpected cleanup error kind: {:?}",
+        error.kind()
+    );
 }
 
 #[tokio::test]
