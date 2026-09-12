@@ -1,7 +1,7 @@
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::ProviderKind;
+use backend::domain::{Actor, ProviderKind};
 use backend::services::{
     ConnectionService, CreateConnectionRequest, EditorService, FileService, TransferService,
 };
@@ -30,6 +30,25 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     });
 
     (state, admin, temp)
+}
+
+fn connection_service(state: &AppState) -> ConnectionService {
+    ConnectionService::new(
+        state.db.clone(),
+        state.config.clone(),
+        state.registry.clone(),
+        state.credentials.clone(),
+        state.metadata_cache.clone(),
+        state.transfer_manager.clone(),
+    )
+}
+
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
 }
 
 #[tokio::test]
@@ -173,27 +192,29 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
 #[tokio::test]
 async fn test_connection_deletion_drains_active_transfers() {
     let (state, admin, temp) = setup_test_context().await;
+    let service = connection_service(&state);
+    let admin_actor = actor(&admin);
 
     // 1. Create a dummy secondary local connection
     let remote_dir = temp.path().join("dummy_remote");
     std::fs::create_dir_all(&remote_dir).unwrap();
 
-    let conn_id = ConnectionService::create_connection(
-        &state,
-        &admin,
-        CreateConnectionRequest {
-            name: "Dummy Remote".to_string(),
-            provider: ProviderKind::Local,
-            host: None,
-            port: None,
-            username: None,
-            secret: None,
-            base_path: Some(remote_dir.to_str().unwrap().to_string()),
-            read_only: None,
-        },
-    )
-    .await
-    .unwrap();
+    let conn_id = service
+        .create_connection(
+            &admin_actor,
+            CreateConnectionRequest {
+                name: "Dummy Remote".to_string(),
+                provider: ProviderKind::Local,
+                host: None,
+                port: None,
+                username: None,
+                secret: None,
+                base_path: Some(remote_dir.to_str().unwrap().to_string()),
+                read_only: None,
+            },
+        )
+        .await
+        .unwrap();
 
     // 2. Create large file in local
     let test_data = vec![b'Z'; 5 * 1024 * 1024];
@@ -223,7 +244,8 @@ async fn test_connection_deletion_drains_active_transfers() {
     .unwrap();
 
     // 4. Delete the connection (should cancel all queued/active transfers for this connection)
-    ConnectionService::delete_connection(&state, &admin, &conn_id)
+    service
+        .delete_connection(&admin_actor, &conn_id)
         .await
         .unwrap();
 
