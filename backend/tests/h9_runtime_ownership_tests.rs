@@ -40,6 +40,18 @@ fn runtime_owner_cannot_be_silently_discarded_by_compatibility_builders() {
 }
 
 #[test]
+fn cli_state_retains_and_cancels_runtime_owner() {
+    let context = source("src/cli/context.rs");
+    assert!(context.contains("pub struct CliState"));
+    assert!(context.contains("runtime: RuntimeOwner"));
+    assert!(context.contains("impl Deref for CliState"));
+    assert!(context.contains("impl Drop for CliState"));
+    assert!(context.contains("request_shutdown(ShutdownReason::Manual)"));
+    assert!(context.contains("let built = build_application(self.config.clone(), pool).await"));
+    assert!(!context.contains("AppState::new_with_db"));
+}
+
+#[test]
 fn runtime_tasks_are_owned_outside_app_state() {
     let bootstrap = source("src/bootstrap.rs");
     assert!(bootstrap.contains("runtime: &RuntimeOwner"));
