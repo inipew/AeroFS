@@ -1,14 +1,14 @@
-use crate::domain::VfsPath;
+use crate::domain::{ConnectionId, VfsPath};
 use crate::errors::AppError;
+use crate::ports::mutation::{MutationCoordinator, MutationLease};
 use crate::transfer::TransferPlan;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use async_trait::async_trait;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Default)]
 pub struct UploadLockManager {
-    active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    active_paths: Arc<Mutex<HashSet<String>>>,
     sessions: Arc<Mutex<HashMap<String, ReservedUpload>>>,
 }
 
@@ -37,6 +37,32 @@ struct ReservedUpload {
     _guard: UploadGuard,
 }
 
+/// Cancellation-safe ownership token for an executing reserved upload.
+///
+/// The reservation remains in the manager while this token is alive. Dropping
+/// the request future also drops this token, synchronously removing the session
+/// and releasing the destination `UploadGuard`. This prevents claimed sessions
+/// from pinning a destination forever when execution returns early or is
+/// cancelled by a disconnected client.
+#[derive(Debug)]
+pub struct ClaimedUpload {
+    job_id: String,
+    session: UploadSession,
+    manager: UploadLockManager,
+}
+
+impl ClaimedUpload {
+    pub fn session(&self) -> &UploadSession {
+        &self.session
+    }
+}
+
+impl Drop for ClaimedUpload {
+    fn drop(&mut self) {
+        self.manager.release_sync(&self.job_id);
+    }
+}
+
 #[derive(Debug)]
 pub struct UploadGuard {
     key: String,
@@ -58,12 +84,22 @@ impl UploadLockManager {
         Self::default()
     }
 
-    pub async fn prune_stale(&self) {
-        let mut sessions = self.sessions.lock().await;
+    fn prune_stale_sync(&self) -> Result<(), AppError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("upload session manager poisoned")))?;
         let now = std::time::Instant::now();
         sessions.retain(|_, res| {
             res.claimed || now.duration_since(res.created_at) <= std::time::Duration::from_secs(60)
         });
+        Ok(())
+    }
+
+    pub async fn prune_stale(&self) {
+        if let Err(error) = self.prune_stale_sync() {
+            tracing::error!(?error, "failed to prune stale upload reservations");
+        }
     }
 
     pub async fn try_acquire(
@@ -71,7 +107,7 @@ impl UploadLockManager {
         connection_id: &str,
         path: &str,
     ) -> Result<UploadGuard, AppError> {
-        self.prune_stale().await;
+        self.prune_stale_sync()?;
         let normalized = format!("{}:{}", connection_id, path.trim_start_matches('/'));
         let mut lock = self
             .active_paths
@@ -79,7 +115,7 @@ impl UploadLockManager {
             .map_err(|_| AppError::Internal(anyhow::anyhow!("upload lock manager poisoned")))?;
         if lock.contains(&normalized) {
             return Err(AppError::Conflict(format!(
-                "An upload is already in progress for destination path '{}'",
+                "A mutation is already in progress for destination path '{}'",
                 path
             )));
         }
@@ -94,54 +130,86 @@ impl UploadLockManager {
         let guard = self
             .try_acquire(&session.connection_id, &session.target.path)
             .await?;
-        self.sessions.lock().await.insert(
-            session.job_id.clone(),
-            ReservedUpload {
-                session,
-                claimed: false,
-                created_at: std::time::Instant::now(),
-                _guard: guard,
-            },
-        );
-        Ok(())
+        self.reserve_existing(session, guard).await
     }
 
     /// Store a reservation after a caller has already acquired the path lock.
-    pub async fn reserve_existing(&self, session: UploadSession, guard: UploadGuard) {
-        self.sessions.lock().await.insert(
-            session.job_id.clone(),
-            ReservedUpload {
-                session,
-                claimed: false,
-                created_at: std::time::Instant::now(),
-                _guard: guard,
-            },
-        );
+    pub async fn reserve_existing(
+        &self,
+        session: UploadSession,
+        guard: UploadGuard,
+    ) -> Result<(), AppError> {
+        self.sessions
+            .lock()
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("upload session manager poisoned")))?
+            .insert(
+                session.job_id.clone(),
+                ReservedUpload {
+                    session,
+                    claimed: false,
+                    created_at: std::time::Instant::now(),
+                    _guard: guard,
+                },
+            );
+        Ok(())
     }
 
-    /// Claims a session once. The reservation remains held while its body is
-    /// executing, preventing duplicate PUTs or a competing destination write.
-    pub async fn claim(&self, job_id: &str, user_id: &str) -> Result<UploadSession, AppError> {
-        let mut sessions = self.sessions.lock().await;
-        let reserved = sessions
-            .get_mut(job_id)
-            .ok_or_else(|| AppError::NotFound(format!("Upload session '{}' not found", job_id)))?;
-        if reserved.session.user_id != user_id {
-            return Err(AppError::Forbidden(
-                "Cannot upload to another user's session".into(),
-            ));
+    /// Claims a session once and returns a cancellation-safe ownership token.
+    /// The destination remains reserved until the returned token is dropped.
+    pub async fn claim(&self, job_id: &str, user_id: &str) -> Result<ClaimedUpload, AppError> {
+        let session = {
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                AppError::Internal(anyhow::anyhow!("upload session manager poisoned"))
+            })?;
+            let reserved = sessions.get_mut(job_id).ok_or_else(|| {
+                AppError::NotFound(format!("Upload session '{}' not found", job_id))
+            })?;
+            if reserved.session.user_id != user_id {
+                return Err(AppError::Forbidden(
+                    "Cannot upload to another user's session".into(),
+                ));
+            }
+            if reserved.claimed {
+                return Err(AppError::Conflict(
+                    "Upload session body has already been claimed".into(),
+                ));
+            }
+            reserved.claimed = true;
+            reserved.session.clone()
+        };
+
+        Ok(ClaimedUpload {
+            job_id: job_id.to_string(),
+            session,
+            manager: self.clone(),
+        })
+    }
+
+    fn release_sync(&self, job_id: &str) {
+        match self.sessions.lock() {
+            Ok(mut sessions) => {
+                sessions.remove(job_id);
+            }
+            Err(_) => {
+                tracing::error!(job_id, "upload session manager poisoned while releasing reservation");
+            }
         }
-        if reserved.claimed {
-            return Err(AppError::Conflict(
-                "Upload session body has already been claimed".into(),
-            ));
-        }
-        reserved.claimed = true;
-        Ok(reserved.session.clone())
     }
 
     pub async fn release(&self, job_id: &str) {
-        self.sessions.lock().await.remove(job_id);
+        self.release_sync(job_id);
+    }
+}
+
+#[async_trait]
+impl MutationCoordinator for UploadLockManager {
+    async fn try_acquire(
+        &self,
+        connection: &ConnectionId,
+        path: &str,
+    ) -> Result<Box<dyn MutationLease>, AppError> {
+        let guard = UploadLockManager::try_acquire(self, connection.as_str(), path).await?;
+        Ok(Box::new(guard))
     }
 }
 
@@ -179,16 +247,36 @@ mod tests {
             manager.claim("job_session", "bob").await,
             Err(AppError::Forbidden(_))
         ));
-        assert_eq!(
-            manager.claim("job_session", "alice").await.unwrap().job_id,
-            "job_session"
-        );
+
+        let claimed = manager.claim("job_session", "alice").await.unwrap();
+        assert_eq!(claimed.session().job_id, "job_session");
         assert!(matches!(
             manager.claim("job_session", "alice").await,
             Err(AppError::Conflict(_))
         ));
-        manager.release("job_session").await;
+
+        drop(claimed);
         assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dropping_claimed_upload_releases_destination_without_explicit_release() {
+        let manager = UploadLockManager::new();
+        manager
+            .reserve(session("job_cancelled", "alice"))
+            .await
+            .unwrap();
+
+        let claimed = manager.claim("job_cancelled", "alice").await.unwrap();
+        assert!(manager.try_acquire("local", "/session.bin").await.is_err());
+
+        drop(claimed);
+
+        assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
+        assert!(matches!(
+            manager.claim("job_cancelled", "alice").await,
+            Err(AppError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -196,17 +284,20 @@ mod tests {
         let manager = UploadLockManager::new();
         let session = session("job_stale", "alice");
         let guard = manager.try_acquire("local", "/session.bin").await.unwrap();
-        // Insert with created_at set to 70 seconds ago
-        manager.sessions.lock().await.insert(
-            "job_stale".to_string(),
-            ReservedUpload {
-                session,
-                claimed: false,
-                created_at: std::time::Instant::now() - std::time::Duration::from_secs(70),
-                _guard: guard,
-            },
-        );
-        // Next try_acquire should prune the stale session and succeed
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(
+                "job_stale".to_string(),
+                ReservedUpload {
+                    session,
+                    claimed: false,
+                    created_at: std::time::Instant::now()
+                        - std::time::Duration::from_secs(70),
+                    _guard: guard,
+                },
+            );
         assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
     }
 }

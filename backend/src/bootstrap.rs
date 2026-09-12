@@ -139,6 +139,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             file_filesystem.clone(),
             file_settings,
             file_effects.clone(),
+            upload_locks.clone(),
         ),
         create_directory: CreateDirectory::new(
             file_authorization.clone(),

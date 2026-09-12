@@ -115,7 +115,7 @@ impl UploadApplicationService {
         };
         self.upload_locks
             .reserve_existing(session.clone(), guard)
-            .await;
+            .await?;
         Ok(session)
     }
 
@@ -129,9 +129,12 @@ impl UploadApplicationService {
     where
         S: Stream<Item = Result<Bytes, AppError>> + Send,
     {
-        let session = self.upload_locks.claim(job_id, &actor.id).await?;
+        // `claimed` is an RAII ownership token. Any early return or cancellation
+        // of this future drops it and synchronously releases the reserved path.
+        let claimed = self.upload_locks.claim(job_id, &actor.id).await?;
+        let session = claimed.session().clone();
+
         if session.connection_id != connection.as_str() {
-            self.upload_locks.release(job_id).await;
             self.transfer_manager.cancel_inline_job(job_id).await;
             return Err(AppError::NotFound(format!(
                 "Upload session '{}' not found",
@@ -145,7 +148,6 @@ impl UploadApplicationService {
         let cancel_token = match self.transfer_manager.cancel_token(&session.job_id) {
             Some(token) => token,
             None => {
-                self.upload_locks.release(job_id).await;
                 self.transfer_manager
                     .fail_inline_job(job_id, "transfer cancellation token missing".into())
                     .await;
@@ -171,7 +173,10 @@ impl UploadApplicationService {
             byte_stream,
         )
         .await;
-        self.upload_locks.release(job_id).await;
+
+        // Match the old behavior: release the destination before post-commit
+        // audit/cache effects, while retaining cancellation safety during I/O.
+        drop(claimed);
         self.finish_upload(actor, &session_connection, &session.target, job_id, result)
             .await
     }
