@@ -1,9 +1,8 @@
 use crate::auth::AuthenticatedUser;
-use crate::domain::FileMetadata;
+use crate::domain::{Actor, ConnectionId, FileMetadata};
 use crate::errors::AppError;
 use crate::services::file_service::FileService;
 use crate::state::AppState;
-use tokio::io::AsyncReadExt;
 
 pub struct EditorService;
 
@@ -15,29 +14,13 @@ impl EditorService {
         path: &str,
     ) -> Result<(String, Option<String>), AppError> {
         let meta = FileService::stat_file(state, user, connection_id, path).await?;
-        let max_size = state.config.limits.max_editable_size;
-        if meta.size > max_size {
-            return Err(AppError::PayloadTooLarge(format!(
-                "File size ({} bytes) exceeds maximum editable size ({} bytes)",
-                meta.size, max_size
-            )));
-        }
-
-        let provider = state.registry.get(connection_id).await.ok_or_else(|| {
-            AppError::NotFound(format!("Connection '{}' not found", connection_id))
-        })?;
-
-        let vfs_path = crate::domain::VfsPath::new(connection_id, path)?;
-        let mut stream = provider.read_stream(&vfs_path).await?;
-        let mut data = Vec::new();
-        stream
-            .read_to_end(&mut data)
-            .await
-            .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
-
-        let content = String::from_utf8(data)
-            .map_err(|_| AppError::BadRequest("File contains non-UTF8 binary data".into()))?;
-
+        let connection = ConnectionId::new(connection_id.to_string())
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        let content = state
+            .file_api
+            .service
+            .read_text_for_editing(&connection, path, meta.size)
+            .await?;
         Ok((content, Some(meta.etag)))
     }
 
@@ -49,6 +32,11 @@ impl EditorService {
         content: &str,
         expected_etag: Option<&str>,
     ) -> Result<FileMetadata, AppError> {
+        let _actor = Actor {
+            id: user.id.clone(),
+            username: user.username.clone(),
+            is_admin: user.is_admin,
+        };
         FileService::create_or_write_file(
             state,
             user,
