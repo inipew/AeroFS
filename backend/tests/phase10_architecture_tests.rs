@@ -6,6 +6,11 @@ fn source(path: &str) -> String {
     fs::read_to_string(root.join(path)).expect("source file should be readable")
 }
 
+fn source_exists(path: &str) -> bool {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.join(path).exists()
+}
+
 #[test]
 fn app_state_is_not_the_composition_root() {
     let state = source("src/state.rs");
@@ -85,11 +90,17 @@ fn server_startup_delegates_to_bootstrap() {
 }
 
 #[test]
-fn removed_file_application_facade_cannot_return() {
+fn removed_file_application_facades_cannot_return() {
     let application_mod = source("src/application/mod.rs");
     let files_mod = source("src/application/files/mod.rs");
-    let file_service = source("src/services/file_service.rs");
+    let services_mod = source("src/services/mod.rs");
+
     assert!(!application_mod.contains("FileApplicationService"));
     assert!(!files_mod.contains("FileApplicationService"));
-    assert!(!file_service.contains("FileApplicationService"));
+    assert!(
+        !source_exists("src/services/file_service.rs"),
+        "legacy AppState-coupled FileService facade must remain deleted"
+    );
+    assert!(!services_mod.contains("pub mod file_service"));
+    assert!(!services_mod.contains("pub use file_service::FileService"));
 }
