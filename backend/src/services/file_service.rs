@@ -1,5 +1,5 @@
 //! FileService — compatibility facade for older non-HTTP callers.
-//! Delegates to application use-cases already composed in `AppState`.
+//! Delegates to application use-cases already composed in the file capability.
 
 use crate::auth::AuthenticatedUser;
 use crate::domain::{Actor, ConnectionId, DirectoryListing, FileMetadata};
@@ -40,6 +40,7 @@ impl FileService {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_directory_paged(
         state: &AppState,
         user: &AuthenticatedUser,
@@ -66,6 +67,7 @@ impl FileService {
             }
         });
         state
+            .file_api
             .files
             .list_directory
             .execute(
@@ -93,6 +95,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .presign_download
             .execute(
@@ -116,6 +119,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .presign_upload
             .execute(
@@ -140,6 +144,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .complete_presigned
             .execute(
@@ -160,13 +165,19 @@ impl FileService {
         connection_id: &str,
         raw_path: &str,
     ) -> Result<FileMetadata, AppError> {
-        if let Some(metadata) = state.metadata_cache.get(connection_id, raw_path).await {
+        if let Some(metadata) = state
+            .file_api
+            .service
+            .cached_metadata(connection_id, raw_path)
+            .await
+        {
             return Ok(metadata);
         }
 
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         let metadata = state
+            .file_api
             .files
             .stat_file
             .execute(
@@ -178,8 +189,9 @@ impl FileService {
             )
             .await?;
         state
-            .metadata_cache
-            .put(connection_id, raw_path, metadata.clone())
+            .file_api
+            .service
+            .cache_metadata(connection_id, raw_path, metadata.clone())
             .await;
         Ok(metadata)
     }
@@ -195,6 +207,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .write_file
             .execute(
@@ -219,6 +232,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .create_directory
             .execute(
@@ -240,6 +254,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         let result = state
+            .file_api
             .files
             .delete_entries
             .execute(
@@ -277,6 +292,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .rename_entry
             .execute(
@@ -300,6 +316,7 @@ impl FileService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
+            .file_api
             .files
             .chmod_entry
             .execute(
