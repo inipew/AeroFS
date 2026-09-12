@@ -14,11 +14,27 @@ pub enum PermissionInheritanceMode {
     ProviderDefault,
 }
 
-/// Resolves permission string for a destination path according to inheritance policy.
-///
-/// `Ok(None)` means the provider/policy has no permission value to apply. Provider
-/// failures are propagated instead of being mistaken for an absent permission value.
+/// Compatibility resolver for mutation flows that have not yet adopted strict
+/// permission failure semantics. Provider failures are treated as no resolved
+/// permission. New mutation code should use `resolve_destination_permissions_strict`.
 pub async fn resolve_destination_permissions(
+    dst_fs: &Arc<dyn FileSystem>,
+    dst_vfs: &VfsPath,
+    is_dir: bool,
+    mode: PermissionInheritanceMode,
+) -> Option<String> {
+    match resolve_destination_permissions_strict(dst_fs, dst_vfs, is_dir, mode).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(path = %dst_vfs.path, ?error, "permission inheritance lookup failed");
+            None
+        }
+    }
+}
+
+/// Strict permission resolver used by mutation paths where a provider lookup
+/// failure must not be mistaken for an absent permission value.
+pub async fn resolve_destination_permissions_strict(
     dst_fs: &Arc<dyn FileSystem>,
     dst_vfs: &VfsPath,
     is_dir: bool,
@@ -36,15 +52,15 @@ pub async fn resolve_destination_permissions(
                 Err(VfsError::NotFound(_)) => {}
                 Err(error) => return Err(error),
             }
-            inherit_from_parent(dst_fs, dst_vfs, is_dir).await
+            inherit_from_parent_strict(dst_fs, dst_vfs, is_dir).await
         }
         PermissionInheritanceMode::InheritParent => {
-            inherit_from_parent(dst_fs, dst_vfs, is_dir).await
+            inherit_from_parent_strict(dst_fs, dst_vfs, is_dir).await
         }
     }
 }
 
-async fn inherit_from_parent(
+async fn inherit_from_parent_strict(
     dst_fs: &Arc<dyn FileSystem>,
     dst_vfs: &VfsPath,
     is_dir: bool,
@@ -57,14 +73,12 @@ async fn inherit_from_parent(
         return Ok(None);
     };
 
-    // Parse unix octal if available (e.g. "0755", "755")
     let cleaned = parent_perms.trim_start_matches('0');
     if !cleaned.is_empty() {
         if let Ok(octal) = u32::from_str_radix(cleaned, 8) {
             if is_dir {
                 return Ok(Some(format!("{:04o}", octal)));
             } else {
-                // For files, mask out execute bit from directory mode (e.g. 0755 -> 0644)
                 let file_octal = octal & !0o111;
                 return Ok(Some(format!("{:04o}", file_octal)));
             }
