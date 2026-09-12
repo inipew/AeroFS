@@ -144,14 +144,16 @@ fn bootstrap_is_the_concrete_composition_root() {
 }
 
 #[test]
-fn directory_pagination_orders_before_slicing_and_reports_full_count() {
+fn directory_pagination_uses_bounded_keyset_selection_and_reports_full_count() {
     let src = source("src/application/files/list_directory.rs");
-    let sort = src.find("sort_entries(&mut entries").expect("global sort must exist");
-    let page_start = src.find("let page_start =").expect("page slicing must exist");
-    let total = src.find("let total_count = entries.len()").expect("full total count must exist");
 
-    assert!(total < sort, "total_count must describe the full filtered set");
-    assert!(sort < page_start, "pagination must slice only after global sort");
+    assert!(src.contains("BinaryHeap::with_capacity(limit.saturating_add(2))"));
+    assert!(src.contains("if page.len() > limit.saturating_add(1)"));
+    assert!(src.contains("compare_entry_to_key"));
+    assert!(src.contains("DirectoryCursor"));
+    assert!(src.contains("total_count = total_count.saturating_add(1)"));
     assert!(src.contains("total_count: Some(total_count)"));
-    assert!(!src.contains("total_count: Some(entries.len())"));
+
+    assert!(!src.contains("let page_start ="));
+    assert!(!src.contains("unwrap_or(0) as usize"));
 }
