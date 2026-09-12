@@ -1,4 +1,4 @@
-use crate::vfs::runtime::StorageRuntime;
+use crate::vfs::runtime::{BudgetedFileSystem, StorageRuntime};
 use crate::vfs::FileSystem;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,6 +14,8 @@ pub enum ConnectionStatus {
 
 #[derive(Clone)]
 pub struct ProviderHandle {
+    /// Budget-enforced provider surface. Use `runtime.provider()` only for
+    /// infrastructure code that explicitly needs the raw provider.
     pub provider: Arc<dyn FileSystem>,
     pub runtime: Arc<StorageRuntime>,
     pub status: ConnectionStatus,
@@ -21,6 +23,9 @@ pub struct ProviderHandle {
 
 #[derive(Default)]
 pub struct ProviderRegistry {
+    /// Application/transfer-facing providers. Every entry is wrapped by
+    /// `BudgetedFileSystem`, making the per-connection semaphore unavoidable for
+    /// normal registry consumers.
     providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
     runtimes: Arc<RwLock<HashMap<String, Arc<StorageRuntime>>>>,
     connection_errors: Arc<RwLock<HashMap<String, String>>>,
@@ -77,18 +82,24 @@ impl ProviderRegistry {
             Arc::clone(&provider),
             64,
         ));
+        let budgeted: Arc<dyn FileSystem> = Arc::new(BudgetedFileSystem::new(runtime.clone()));
         let mut providers = self.providers.write().await;
         let mut runtimes = self.runtimes.write().await;
-        providers.insert(connection_id.clone(), provider);
+        providers.insert(connection_id.clone(), budgeted);
         runtimes.insert(connection_id.clone(), runtime);
+        drop(runtimes);
+        drop(providers);
         self.clear_connection_error(&connection_id).await;
     }
 
     pub async fn register_runtime(&self, connection_id: String, runtime: Arc<StorageRuntime>) {
+        let budgeted: Arc<dyn FileSystem> = Arc::new(BudgetedFileSystem::new(runtime.clone()));
         let mut providers = self.providers.write().await;
         let mut runtimes = self.runtimes.write().await;
-        providers.insert(connection_id.clone(), Arc::clone(&runtime.provider));
+        providers.insert(connection_id.clone(), budgeted);
         runtimes.insert(connection_id.clone(), runtime);
+        drop(runtimes);
+        drop(providers);
         self.clear_connection_error(&connection_id).await;
     }
 
@@ -97,6 +108,8 @@ impl ProviderRegistry {
         let mut runtimes = self.runtimes.write().await;
         providers.remove(connection_id);
         runtimes.remove(connection_id);
+        drop(runtimes);
+        drop(providers);
         self.clear_connection_error(connection_id).await;
     }
 
