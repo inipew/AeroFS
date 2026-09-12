@@ -10,6 +10,7 @@ import { listFilesApi } from '../api/files';
 import { queryKeys, type DirectoryQueryKeyParams } from '../api/queryKeys';
 import { queryClient as singletonQueryClient } from '../queryClient';
 import type { DirectoryListing } from '../types/vfs';
+import { flattenDirectoryPages, getDirectoryTotalCount } from '../domain/directoryPagination';
 
 export type DirectoryQueryParams = DirectoryQueryKeyParams;
 
@@ -79,15 +80,11 @@ export function useDirectoryQuery(
     enabled: computed(() => !!connectionId.value && !!path.value),
   });
 
-  /** Flat array of all loaded entries across pages */
-  const entries = computed(() =>
-    query.data.value?.pages.flatMap((p) => p.entries) ?? []
-  );
+  /** Flat array of all loaded entries across pages, preserving backend order. */
+  const entries = computed(() => flattenDirectoryPages(query.data.value?.pages));
 
-  /** Total count from the most recent page (optional, backend may omit) */
-  const totalCount = computed(
-    () => query.data.value?.pages.at(-1)?.total_count
-  );
+  /** Total count belongs to the directory query, so page 1 is authoritative. */
+  const totalCount = computed(() => getDirectoryTotalCount(query.data.value?.pages));
 
   const hasMore = computed(() => query.hasNextPage.value);
   const isFetching = computed(() => query.isFetching.value);

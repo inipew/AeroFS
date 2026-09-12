@@ -1,7 +1,7 @@
 <template>
   <div class="h-8 border-t border-gray-200/80 dark:border-slate-800/80 px-3.5 sm:px-4 flex items-center justify-between text-[11px] font-medium text-gray-500 dark:text-slate-400 bg-gray-50/80 dark:bg-[#090d18]/90 shrink-0 select-none backdrop-blur-md">
     <div class="flex items-center space-x-2 truncate">
-      <span class="font-semibold text-gray-700 dark:text-slate-300">{{ displayedCount }} {{ displayedCount === 1 ? 'item' : 'items' }}</span>
+      <span class="font-semibold text-gray-700 dark:text-slate-300">{{ countLabel }}</span>
       <span class="text-gray-300 dark:text-slate-700">•</span>
       <span v-if="selectedCount > 0" class="text-blue-600 dark:text-blue-400 font-semibold flex items-center space-x-1">
         <span>{{ selectedCount }} selected</span>
@@ -35,8 +35,12 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue';
+import { directoryCountLabel } from '../../domain/directoryPagination';
+
+const props = defineProps<{
   displayedCount: number;
+  totalCount?: number | null;
   selectedCount: number;
   selectedSize: number;
   totalFolderSize: number;
@@ -46,6 +50,8 @@ defineProps<{
   currentConnName: string;
   isReadOnly: boolean;
 }>();
+
+const countLabel = computed(() => directoryCountLabel(props.displayedCount, props.totalCount));
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';

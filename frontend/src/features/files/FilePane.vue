@@ -19,7 +19,6 @@
         : ''
     ]"
   >
-    <!-- Glassmorphic Dropzone Overlay (Full Panel) -->
     <Transition name="drag-overlay">
       <div
         v-if="dragDrop.isDragOver.value && !dragDrop.hoveredFolderDrop.value"
@@ -41,7 +40,6 @@
       </div>
     </Transition>
 
-    <!-- Subheader: Navigation and Contextual Action Toolbar -->
     <div
       class="h-11 sm:h-12 border-b px-3 sm:px-4 flex items-center justify-between transition-colors text-xs shrink-0 backdrop-blur-md relative z-20"
       :class="[
@@ -51,7 +49,6 @@
       ]"
     >
       <Transition name="header-morph" mode="out-in">
-        <!-- SELECTION MODE TOOLBAR -->
         <SelectionToolbar
           v-if="selection.selectedCount.value > 0"
           :selected-count="selection.selectedCount.value"
@@ -64,8 +61,6 @@
           @cut="workspaceStore.cutSelection(panelId)"
           @delete="handleDelete"
         />
-
-        <!-- NORMAL NAVIGATION & ACTION TOOLBAR -->
         <div v-else class="flex items-center justify-between w-full h-full min-w-0">
           <PaneNavigation
             ref="paneNavRef"
@@ -81,7 +76,6 @@
             @navigate="pane.navigate"
             @refresh="pane.refresh"
           />
-
           <FileToolbar
             :view-mode="panel.view.viewMode"
             :show-hidden="panel.view.showHidden"
@@ -107,7 +101,6 @@
       </Transition>
     </div>
 
-    <!-- Orphaned / Unavailable Connection Banner -->
     <div
       v-if="connectionStatus === 'orphaned'"
       class="mx-3 sm:mx-4 mt-2 px-3 sm:px-4 py-2.5 sm:py-3 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-800 dark:text-red-300 flex items-center justify-between text-xs shrink-0 animate-in fade-in"
@@ -120,25 +113,11 @@
         </div>
       </div>
       <div class="flex items-center space-x-1.5 shrink-0">
-        <button
-          type="button"
-          @click.stop="workspaceStore.switchPanelConnection(panelId, 'local', '/')"
-          class="px-2.5 py-1 bg-gray-200 dark:bg-slate-800 hover:bg-gray-300 dark:hover:bg-slate-700 text-gray-800 dark:text-slate-200 font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition"
-        >
-          Switch to Local
-        </button>
-        <button
-          v-if="workspaceStore.isDualPane"
-          type="button"
-          @click.stop="workspaceStore.closePanel(panelId)"
-          class="px-2.5 py-1 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition"
-        >
-          Close
-        </button>
+        <button type="button" @click.stop="workspaceStore.switchPanelConnection(panelId, 'local', '/')" class="px-2.5 py-1 bg-gray-200 dark:bg-slate-800 hover:bg-gray-300 dark:hover:bg-slate-700 text-gray-800 dark:text-slate-200 font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition">Switch to Local</button>
+        <button v-if="workspaceStore.isDualPane" type="button" @click.stop="workspaceStore.closePanel(panelId)" class="px-2.5 py-1 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl text-[10px] shrink-0 cursor-pointer shadow-xs transition">Close</button>
       </div>
     </div>
 
-    <!-- Main Content Container with Virtual Scroll & Pull to Refresh -->
     <div
       ref="panelContentRef"
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative flex flex-col focus:outline-none"
@@ -149,44 +128,21 @@
       @touchend="handleTouchEnd"
       @touchcancel="handleTouchEnd"
     >
-
-      <!-- Mobile Pull to Refresh Indicator -->
-      <div
-        v-if="pullToRefresh.pullDistance.value > 0 || pullToRefresh.isRefreshing.value"
-        class="flex items-center justify-center py-2 transition-transform select-none"
-        :style="{ height: `${pullToRefresh.pullDistance.value}px` }"
-      >
+      <div v-if="pullToRefresh.pullDistance.value > 0 || pullToRefresh.isRefreshing.value" class="flex items-center justify-center py-2 transition-transform select-none" :style="{ height: `${pullToRefresh.pullDistance.value}px` }">
         <div class="flex items-center space-x-2 text-blue-600 dark:text-blue-400 text-xs font-semibold">
           <FbIcon name="refresh" size="14px" :class="{ 'animate-spin': pullToRefresh.isRefreshing.value }" />
           <span>{{ pullToRefresh.isRefreshing.value ? 'Refreshing...' : 'Pull down to refresh' }}</span>
         </div>
       </div>
 
-      <!-- Directional Spatial Navigation Transition Wrapper -->
       <Transition :name="navTransitionName" :mode="uiStore.isMobile ? undefined : 'out-in'">
         <div :key="panel.location.path + '-' + panel.view.viewMode" class="w-full flex-1 flex flex-col min-h-0">
-          <!-- Loading State Skeleton -->
-          <div
-            v-if="dirQuery.isLoading.value"
-            class="flex-1 flex flex-col items-center justify-center p-8 space-y-3"
-          >
+          <div v-if="dirQuery.isLoading.value" class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
             <div class="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin"></div>
             <span class="text-xs text-gray-500 dark:text-slate-400">Loading directory...</span>
           </div>
-
-          <!-- Empty View -->
-          <FileEmptyView
-            v-else-if="displayedEntries.length === 0"
-            :is-drag-over="dragDrop.isDragOver.value"
-            @upload="overlayStore.open({ type: 'upload', panelId })"
-            @new-folder="overlayStore.open({ type: 'create', initialType: 'directory', panelId })"
-          />
-
-          <!-- Grid View -->
-          <div
-            v-else-if="panel.view.viewMode === 'grid'"
-            class="p-3 sm:p-4 flex-1 min-h-0"
-          >
+          <FileEmptyView v-else-if="displayedEntries.length === 0" :is-drag-over="dragDrop.isDragOver.value" @upload="overlayStore.open({ type: 'upload', panelId })" @new-folder="overlayStore.open({ type: 'create', initialType: 'directory', panelId })" />
+          <div v-else-if="panel.view.viewMode === 'grid'" class="p-3 sm:p-4 flex-1 min-h-0">
             <FileGridView
               ref="gridViewRef"
               :entries="displayedEntries"
@@ -212,12 +168,7 @@
               @load-more="dirQuery.loadMore"
             />
           </div>
-
-          <!-- List View -->
-          <div
-            v-else
-            class="flex-1 min-h-0"
-          >
+          <div v-else class="flex-1 min-h-0">
             <FileListView
               ref="listViewRef"
               :entries="displayedEntries"
@@ -252,9 +203,9 @@
       </Transition>
     </div>
 
-    <!-- Status Bar -->
     <FilePanelStatusBar
       :displayed-count="displayedEntries.length"
+      :total-count="dirQuery.totalCount.value"
       :selected-count="selection.selectedCount.value"
       :selected-size="selection.selectedTotalSize.value"
       :total-folder-size="totalFolderSize"
@@ -276,7 +227,6 @@ import { useConnectionStore } from '../../stores/connectionStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useOverlayStore } from '../../overlays/overlayStore';
 import { useDirectoryQuery } from '../../composables/useDirectoryQuery';
-
 import PaneNavigation from './navigation/PaneNavigation.vue';
 import FileToolbar from './toolbar/FileToolbar.vue';
 import SelectionToolbar from './toolbar/SelectionToolbar.vue';
@@ -285,7 +235,6 @@ import FileGridView from './views/FileGridView.vue';
 import FileEmptyView from './views/FileEmptyView.vue';
 import FilePanelStatusBar from '../../components/browser/FilePanelStatusBar.vue';
 import FbIcon from '../../components/common/FbIcon.vue';
-
 import { usePane } from './composables/usePane';
 import { usePaneShortcuts } from './composables/usePaneShortcuts';
 import { useFileSelection } from './composables/useFileSelection';
@@ -296,94 +245,56 @@ import { usePullToRefresh } from './composables/usePullToRefresh';
 import { getFileExt } from '../../utils/fileTypes';
 import { getNavTransitionName } from '../../motion/tokens';
 
-const props = defineProps<{
-  panelId: PanelId;
-}>();
-
+const props = defineProps<{ panelId: PanelId }>();
 const workspaceStore = useWorkspaceStore();
 const connStore = useConnectionStore();
 const uiStore = useUiStore();
 const overlayStore = useOverlayStore();
-
 const pane = usePane(props.panelId);
 const panel = pane.panel;
-
 const paneRootRef = ref<HTMLElement | null>(null);
 const panelContentRef = ref<HTMLElement | null>(null);
 const paneNavRef = ref<InstanceType<typeof PaneNavigation> | null>(null);
 const listViewRef = ref<InstanceType<typeof FileListView> | null>(null);
 const gridViewRef = ref<InstanceType<typeof FileGridView> | null>(null);
 const containerWidth = ref(0);
-
-// Directory Query from TanStack Query
 const connectionIdRef = computed(() => panel.value.location.connectionId);
 const pathRef = computed(() => panel.value.location.path);
-const queryParamsRef = computed(() => ({
-  show_hidden: panel.value.view.showHidden,
-  sort: panel.value.view.sortField,
-  order: panel.value.view.sortOrder,
-  limit: 100,
-}));
-
+const queryParamsRef = computed(() => ({ show_hidden: panel.value.view.showHidden, sort: panel.value.view.sortField, order: panel.value.view.sortOrder, limit: 100 }));
 const dirQuery = useDirectoryQuery(connectionIdRef, pathRef, queryParamsRef);
 
-// Sync selection with valid directory entries
-watch(
-  () => dirQuery.entries.value,
-  (newEntries) => {
-    const validPaths = new Set((newEntries || []).map((e) => e.path));
-    panel.value.selectedEntries = panel.value.selectedEntries.filter((p) => validPaths.has(p));
-  },
-  { immediate: true, deep: true }
-);
+watch(() => dirQuery.entries.value, (newEntries) => {
+  const validPaths = new Set((newEntries || []).map((e) => e.path));
+  panel.value.selectedEntries = panel.value.selectedEntries.filter((p) => validPaths.has(p));
+}, { immediate: true, deep: true });
 
-// Connection state
-const currentConn = computed(() =>
-  connStore.connections.find((c) => c.id === panel.value.location.connectionId)
-);
+const currentConn = computed(() => connStore.connections.find((c) => c.id === panel.value.location.connectionId));
 const currentConnName = computed(() => currentConn.value?.name || (panel.value.location.connectionId === 'local' ? 'Local' : panel.value.location.connectionId));
 const connectionProvider = computed(() => currentConn.value?.provider || 'local');
 const connectionStatus = computed(() => (currentConn.value as any)?.status || 'connected');
 
-// Displayed entries calculation
 const displayedEntries = computed<FileEntry[]>(() => {
-  let list = [...(dirQuery.entries.value || [])];
-
+  const list = [...(dirQuery.entries.value || [])];
   const field = panel.value.view.sortField || 'name';
   const order = panel.value.view.sortOrder === 'desc' ? -1 : 1;
-
   list.sort((a, b) => {
     if (a.kind === 'directory' && b.kind !== 'directory') return -1;
     if (a.kind !== 'directory' && b.kind === 'directory') return 1;
-
-    if (field === 'size') {
-      return ((a.size || 0) - (b.size || 0)) * order;
-    } else if (field === 'modified') {
+    if (field === 'size') return ((a.size || 0) - (b.size || 0)) * order;
+    if (field === 'modified') {
       const dateA = a.modified_at ? new Date(a.modified_at).getTime() : 0;
       const dateB = b.modified_at ? new Date(b.modified_at).getTime() : 0;
       return (dateA - dateB) * order;
-    } else if (field === 'type') {
-      return getFileExt(a).localeCompare(getFileExt(b)) * order;
-    } else {
-      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * order;
     }
+    if (field === 'type') return getFileExt(a).localeCompare(getFileExt(b)) * order;
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * order;
   });
-
-  return list as FileEntry[];
+  return list;
 });
 
 const displayedFiles = computed(() => displayedEntries.value.filter((e) => e.kind !== 'directory'));
-const totalFolderSize = computed(() =>
-  displayedEntries.value.reduce((acc, curr) => acc + (curr.size || 0), 0)
-);
-
-const pathSuggestions = computed(() => {
-  return displayedEntries.value
-    .filter((e) => e.kind === 'directory')
-    .map((e) => e.path);
-});
-
-// Grid columns responsive calculation
+const totalFolderSize = computed(() => displayedEntries.value.reduce((acc, curr) => acc + (curr.size || 0), 0));
+const pathSuggestions = computed(() => displayedEntries.value.filter((e) => e.kind === 'directory').map((e) => e.path));
 const gridCols = computed(() => {
   const w = containerWidth.value;
   if (w >= 1280) return 8;
@@ -397,46 +308,15 @@ let resizeObserver: ResizeObserver | null = null;
 onMounted(() => {
   if (panelContentRef.value) {
     containerWidth.value = panelContentRef.value.offsetWidth;
-    resizeObserver = new ResizeObserver((entries) => {
-      containerWidth.value = entries[0]?.contentRect.width ?? 0;
-    });
+    resizeObserver = new ResizeObserver((entries) => { containerWidth.value = entries[0]?.contentRect.width ?? 0; });
     resizeObserver.observe(panelContentRef.value);
   }
 });
-onUnmounted(() => {
-  resizeObserver?.disconnect();
-});
-
-// Selected paths ref mapping
+onUnmounted(() => resizeObserver?.disconnect());
 const selectedPathsRef = computed(() => panel.value.selectedEntries);
-
-// Composables
-const selection = useFileSelection({
-  entries: displayedEntries,
-  selectedPaths: selectedPathsRef,
-  onSelect: (paths) => {
-    panel.value.selectedEntries = paths;
-  },
-});
-
-const activation = useEntryActivation({
-  connectionId: computed(() => panel.value.location.connectionId),
-  displayedFiles,
-  onNavigate: pane.navigate,
-});
-
-const dragDrop = useFileDragDrop({
-  panelId: props.panelId,
-  connectionId: computed(() => panel.value.location.connectionId),
-  currentPath: computed(() => panel.value.location.path),
-  entries: displayedEntries,
-  selectedPaths: selectedPathsRef,
-  containerRef: paneRootRef,
-  onSelect: (paths) => {
-    panel.value.selectedEntries = paths;
-  },
-});
-
+const selection = useFileSelection({ entries: displayedEntries, selectedPaths: selectedPathsRef, onSelect: (paths) => { panel.value.selectedEntries = paths; } });
+const activation = useEntryActivation({ connectionId: computed(() => panel.value.location.connectionId), displayedFiles, onNavigate: pane.navigate });
+const dragDrop = useFileDragDrop({ panelId: props.panelId, connectionId: computed(() => panel.value.location.connectionId), currentPath: computed(() => panel.value.location.path), entries: displayedEntries, selectedPaths: selectedPathsRef, containerRef: paneRootRef, onSelect: (paths) => { panel.value.selectedEntries = paths; } });
 const navTransitionName = computed(() => getNavTransitionName(panel.value.navigationDirection || 'replace'));
 
 usePaneShortcuts({
@@ -446,31 +326,16 @@ usePaneShortcuts({
   onForward: pane.goForward,
   onNavigateUp: pane.navigateUp,
   onRefresh: pane.refresh,
-  onOpenAddressBar: () => {
-    paneNavRef.value?.openAddressBar();
-  },
+  onOpenAddressBar: () => paneNavRef.value?.openAddressBar(),
   onSwapPanels: () => workspaceStore.swapPanels(),
-  onSwitchActivePanel: (target) => {
-    if (target) workspaceStore.setActivePanel(target);
-    else workspaceStore.setActivePanel(props.panelId === 'left' ? 'right' : 'left');
-  },
-  onCopy: () => {
-    workspaceStore.copySelection(props.panelId);
-    uiStore.showToast('Copied to clipboard', 'info');
-  },
-  onCut: () => {
-    workspaceStore.cutSelection(props.panelId);
-    uiStore.showToast('Cut to clipboard', 'info');
-  },
-  onPaste: () => {
-    void workspaceStore.paste(props.panelId);
-  },
+  onSwitchActivePanel: (target) => target ? workspaceStore.setActivePanel(target) : workspaceStore.setActivePanel(props.panelId === 'left' ? 'right' : 'left'),
+  onCopy: () => { workspaceStore.copySelection(props.panelId); uiStore.showToast('Copied to clipboard', 'info'); },
+  onCut: () => { workspaceStore.cutSelection(props.panelId); uiStore.showToast('Cut to clipboard', 'info'); },
+  onPaste: () => { void workspaceStore.paste(props.panelId); },
   onOpenInOtherPanel: () => {
     if (panel.value.selectedEntries.length === 1) {
       const selected = displayedEntries.value.find((e) => e.path === panel.value.selectedEntries[0]);
-      if (selected && selected.kind === 'directory') {
-        workspaceStore.openInOtherPanel(props.panelId, selected.path);
-      }
+      if (selected?.kind === 'directory') workspaceStore.openInOtherPanel(props.panelId, selected.path);
     }
   },
 });
@@ -486,17 +351,11 @@ useFileKeyboardNavigation({
     selection.selectIndex(idx, modifiers);
     const target = displayedEntries.value[idx];
     if (target) {
-      if (panel.value.view.viewMode === 'grid') {
-        gridViewRef.value?.scrollToIndex(idx);
-      } else {
-        listViewRef.value?.scrollToIndex(idx);
-      }
+      if (panel.value.view.viewMode === 'grid') gridViewRef.value?.scrollToIndex(idx); else listViewRef.value?.scrollToIndex(idx);
       nextTick(() => {
         const safePath = window.CSS?.escape ? window.CSS.escape(target.path) : target.path.replace(/"/g, '\\"');
         const el = panelContentRef.value?.querySelector(`[data-entry-path="${safePath}"]`);
-        if (el) {
-          (el as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
+        if (el) (el as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       });
     }
   },
@@ -508,229 +367,86 @@ useFileKeyboardNavigation({
   onClearSelection: selection.clearSelection,
 });
 
-const pullToRefresh = usePullToRefresh({
-  containerRef: panelContentRef,
-  enabled: computed(() => uiStore.isMobile),
-  onRefresh: pane.refresh,
-});
-
-// Handlers
-function handleEntrySelect(e: MouseEvent, entry: FileEntry) {
-  selection.handleEntrySelect(entry, {
-    shiftKey: e.shiftKey,
-    ctrlKey: e.ctrlKey,
-    metaKey: e.metaKey,
-  });
-}
-
+const pullToRefresh = usePullToRefresh({ containerRef: panelContentRef, enabled: computed(() => uiStore.isMobile), onRefresh: pane.refresh });
+function handleEntrySelect(e: MouseEvent, entry: FileEntry) { selection.handleEntrySelect(entry, { shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey }); }
 function handleContainerClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  if (
-    target.closest('[data-entry-item]') ||
-    target.closest('button') ||
-    target.closest('input') ||
-    target.closest('a') ||
-    target.closest('th')
-  ) {
-    return;
-  }
-  pane.setActive();
-  selection.clearSelection();
+  if (target.closest('[data-entry-item]') || target.closest('button') || target.closest('input') || target.closest('a') || target.closest('th')) return;
+  pane.setActive(); selection.clearSelection();
 }
-
-// Touch Gestures: Tap 2 Jari and Long-Press for Context Menu
 let touchStartTime = 0;
 let touchStartPos = { x: 0, y: 0 };
 let isTwoFingerTap = false;
 let longPressTimeout: ReturnType<typeof setTimeout> | null = null;
 let touchTargetEntry: FileEntry | null = null;
-
 function handleTouchStart(e: TouchEvent) {
-  // 1. Two-finger tap detection (Tap 2 Jari)
   if (e.touches.length === 2) {
-    isTwoFingerTap = true;
-    touchStartTime = Date.now();
-    touchStartPos = {
-      x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-      y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
-    };
+    isTwoFingerTap = true; touchStartTime = Date.now(); touchStartPos = { x: (e.touches[0].clientX + e.touches[1].clientX) / 2, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 };
     const targetEl = (e.target as HTMLElement | null)?.closest('[data-entry-path]') as HTMLElement | null;
-    const path = targetEl?.getAttribute('data-entry-path');
-    touchTargetEntry = path ? displayedEntries.value.find((x) => x.path === path) || null : null;
-    if (longPressTimeout) {
-      clearTimeout(longPressTimeout);
-      longPressTimeout = null;
-    }
+    const path = targetEl?.getAttribute('data-entry-path'); touchTargetEntry = path ? displayedEntries.value.find((x) => x.path === path) || null : null;
+    if (longPressTimeout) { clearTimeout(longPressTimeout); longPressTimeout = null; }
     return;
   }
-
-  // 2. Single-finger pull-to-refresh & long-press
   if (e.touches.length === 1) {
-    pullToRefresh.onTouchStart(e);
-    isTwoFingerTap = false;
-    touchStartTime = Date.now();
-    touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    pullToRefresh.onTouchStart(e); isTwoFingerTap = false; touchStartTime = Date.now(); touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     const targetEl = (e.target as HTMLElement | null)?.closest('[data-entry-path]') as HTMLElement | null;
-    const path = targetEl?.getAttribute('data-entry-path');
-    touchTargetEntry = path ? displayedEntries.value.find((x) => x.path === path) || null : null;
-
+    const path = targetEl?.getAttribute('data-entry-path'); touchTargetEntry = path ? displayedEntries.value.find((x) => x.path === path) || null : null;
     if (touchTargetEntry) {
       if (longPressTimeout) clearTimeout(longPressTimeout);
       longPressTimeout = setTimeout(() => {
-        try {
-          navigator.vibrate?.(35);
-        } catch {}
-
+        try { navigator.vibrate?.(35); } catch {}
         pane.setActive();
         if (touchTargetEntry && !panel.value.selectedEntries.includes(touchTargetEntry.path)) {
           panel.value.selectedEntries = [touchTargetEntry.path];
           selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === touchTargetEntry!.path);
         }
-        uiStore.openContextMenu(
-          { clientX: touchStartPos.x, clientY: touchStartPos.y, preventDefault: () => {} } as MouseEvent,
-          touchTargetEntry as any,
-          panel.value.location.connectionId,
-          props.panelId
-        );
+        uiStore.openContextMenu({ clientX: touchStartPos.x, clientY: touchStartPos.y, preventDefault: () => {} } as MouseEvent, touchTargetEntry as any, panel.value.location.connectionId, props.panelId);
         longPressTimeout = null;
       }, 500);
     }
   }
 }
-
 function handleTouchMove(e: TouchEvent) {
   if (e.touches.length === 1) {
     pullToRefresh.onTouchMove(e);
     if (longPressTimeout) {
-      const dx = Math.abs(e.touches[0].clientX - touchStartPos.x);
-      const dy = Math.abs(e.touches[0].clientY - touchStartPos.y);
-      if (dx > 10 || dy > 10) {
-        clearTimeout(longPressTimeout);
-        longPressTimeout = null;
-      }
+      const dx = Math.abs(e.touches[0].clientX - touchStartPos.x); const dy = Math.abs(e.touches[0].clientY - touchStartPos.y);
+      if (dx > 10 || dy > 10) { clearTimeout(longPressTimeout); longPressTimeout = null; }
     }
   }
 }
-
 function handleTouchEnd(e: TouchEvent) {
   pullToRefresh.onTouchEnd();
-  if (longPressTimeout) {
-    clearTimeout(longPressTimeout);
-    longPressTimeout = null;
-  }
-
+  if (longPressTimeout) { clearTimeout(longPressTimeout); longPressTimeout = null; }
   if (isTwoFingerTap) {
     const elapsed = Date.now() - touchStartTime;
-    // Quick two-finger tap (< 400ms)
     if (elapsed < 400) {
-      e.preventDefault();
-      try {
-        navigator.vibrate?.(30);
-      } catch {}
-
+      e.preventDefault(); try { navigator.vibrate?.(30); } catch {}
       pane.setActive();
       if (touchTargetEntry) {
-        if (!panel.value.selectedEntries.includes(touchTargetEntry.path)) {
-          panel.value.selectedEntries = [touchTargetEntry.path];
-          selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === touchTargetEntry!.path);
-        }
-      } else {
-        selection.clearSelection();
-      }
-
-      uiStore.openContextMenu(
-        { clientX: touchStartPos.x, clientY: touchStartPos.y, preventDefault: () => {} } as MouseEvent,
-        touchTargetEntry as any,
-        panel.value.location.connectionId,
-        props.panelId
-      );
+        if (!panel.value.selectedEntries.includes(touchTargetEntry.path)) { panel.value.selectedEntries = [touchTargetEntry.path]; selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === touchTargetEntry!.path); }
+      } else selection.clearSelection();
+      uiStore.openContextMenu({ clientX: touchStartPos.x, clientY: touchStartPos.y, preventDefault: () => {} } as MouseEvent, touchTargetEntry as any, panel.value.location.connectionId, props.panelId);
     }
-    isTwoFingerTap = false;
-    touchTargetEntry = null;
+    isTwoFingerTap = false; touchTargetEntry = null;
   }
 }
-
 function handleEntryContextMenu(e: MouseEvent, entry: FileEntry) {
-  e.preventDefault();
-  e.stopPropagation();
-  pane.setActive();
-  if (!entry) {
-    handleBlankContextMenu(e);
-    return;
-  }
-  if (!panel.value.selectedEntries.includes(entry.path)) {
-    panel.value.selectedEntries = [entry.path];
-    selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === entry.path);
-  }
+  e.preventDefault(); e.stopPropagation(); pane.setActive();
+  if (!entry) { handleBlankContextMenu(e); return; }
+  if (!panel.value.selectedEntries.includes(entry.path)) { panel.value.selectedEntries = [entry.path]; selection.lastClickedIndex.value = displayedEntries.value.findIndex((x) => x.path === entry.path); }
   uiStore.openContextMenu(e, entry as any, panel.value.location.connectionId, props.panelId);
 }
-
 function handleBlankContextMenu(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  // If right-clicked on an input or textarea field, preserve native browser context menu
-  if (target?.closest('input, textarea, [contenteditable="true"]')) {
-    return;
-  }
-  // If right-clicked on an item card/row, let entry context menu take over
-  if (target?.closest('[data-entry-item]')) {
-    return;
-  }
-  e.preventDefault();
-  e.stopPropagation();
-  pane.setActive();
-  selection.clearSelection();
-  uiStore.openContextMenu(e, null, panel.value.location.connectionId, props.panelId);
+  if (target?.closest('input, textarea, [contenteditable="true"]') || target?.closest('[data-entry-item]')) return;
+  e.preventDefault(); e.stopPropagation(); pane.setActive(); selection.clearSelection(); uiStore.openContextMenu(e, null, panel.value.location.connectionId, props.panelId);
 }
-
-function handleCompress() {
-  overlayStore.open({
-    type: 'archive',
-    connectionId: panel.value.location.connectionId,
-    basePath: panel.value.location.path,
-    selectedPaths: panel.value.selectedEntries,
-  });
-}
-
-function handleRename() {
-  if (panel.value.selectedEntries.length === 1) {
-    overlayStore.open({
-      type: 'rename',
-      panelId: props.panelId,
-      path: panel.value.selectedEntries[0],
-    });
-  }
-}
-
-function handleDelete(permanent: boolean = false) {
-  overlayStore.open({
-    type: 'delete',
-    panelId: props.panelId,
-    paths: panel.value.selectedEntries,
-    permanent,
-  });
-}
-
-async function copyCurrentPath() {
-  try {
-    await navigator.clipboard.writeText(panel.value.location.path);
-    uiStore.showToast(`Copied path: ${panel.value.location.path}`, 'info');
-  } catch {
-    uiStore.showToast('Failed to copy path', 'error');
-  }
-}
-
-function onSelectAllEvent(e: Event) {
-  const custom = e as CustomEvent<{ panelId: string }>;
-  if (custom.detail?.panelId === props.panelId) {
-    selection.selectAll();
-  }
-}
-
-onMounted(() => {
-  window.addEventListener('pane-select-all', onSelectAllEvent);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('pane-select-all', onSelectAllEvent);
-});
+function handleCompress() { overlayStore.open({ type: 'archive', connectionId: panel.value.location.connectionId, basePath: panel.value.location.path, selectedPaths: panel.value.selectedEntries }); }
+function handleRename() { if (panel.value.selectedEntries.length === 1) overlayStore.open({ type: 'rename', panelId: props.panelId, path: panel.value.selectedEntries[0] }); }
+function handleDelete(permanent: boolean = false) { overlayStore.open({ type: 'delete', panelId: props.panelId, paths: panel.value.selectedEntries, permanent }); }
+async function copyCurrentPath() { try { await navigator.clipboard.writeText(panel.value.location.path); uiStore.showToast(`Copied path: ${panel.value.location.path}`, 'info'); } catch { uiStore.showToast('Failed to copy path', 'error'); } }
+function onSelectAllEvent(e: Event) { const custom = e as CustomEvent<{ panelId: string }>; if (custom.detail?.panelId === props.panelId) selection.selectAll(); }
+onMounted(() => window.addEventListener('pane-select-all', onSelectAllEvent));
+onUnmounted(() => window.removeEventListener('pane-select-all', onSelectAllEvent));
 </script>

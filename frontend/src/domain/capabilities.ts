@@ -16,6 +16,10 @@ export interface FileCapabilities {
   canChmod: boolean;
 }
 
+export function supportsRecursiveChmod(connectionId: string): boolean {
+  return connectionId === 'local';
+}
+
 export function isArchiveFile(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.endsWith('.zip') ||
