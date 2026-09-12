@@ -78,7 +78,7 @@ impl UploadExecution for TransferUploadExecution {
         &self,
         provider: Arc<dyn FileSystem>,
         context: InlineUploadContext,
-        stream: UploadByteStream,
+        stream: UploadByteStream<'_>,
     ) -> Result<u64, AppError> {
         let cancel_token = match self.manager.cancel_token(&context.job_id) {
             Some(token) => token,
