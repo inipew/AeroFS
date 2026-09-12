@@ -853,7 +853,8 @@ pub async fn create_upload_session(
     ))
 }
 
-/// Stream a previously admitted upload session.
+/// Stream a previously admitted upload session. The client must use the job id
+/// returned by `create_upload_session`; a second PUT is rejected.
 #[utoipa::path(
     put,
     path = "/api/v1/connections/{id}/uploads/{job_id}/content",
@@ -894,7 +895,10 @@ pub async fn upload_session_content(
     }))
 }
 
-/// Streaming multipart upload — owned by TransferEngine (Upload-as-Transfer).
+/// Streaming multipart upload — now owned by TransferEngine (Upload-as-Transfer)
+/// Wire contract unchanged: POST /connections/{id}/files/upload -> {success,message}
+/// Internally: HTTP handler (thin) → UploadApplicationService::execute_inline_stream → TransferEngine → VFS
+/// Handler no longer knows staging/duplex/write_stream/rename — all via TransferPlan + service.
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/upload",
