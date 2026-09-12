@@ -4,6 +4,7 @@ use crate::application::{
         ListDirectory, PresignDownload, PresignUpload, ReadFile, RenameEntry, StatFile, WriteFile,
     },
     transfers::{CreateTransfer, TransferUseCases},
+    UploadApplicationService,
 };
 use crate::config::AppConfig;
 use crate::db::DbPool;
@@ -26,9 +27,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 /// Build the full application graph once at process startup.
-///
-/// This is the only module that should know concrete infrastructure adapters
-/// and how they are wired to application use-cases.
+/// This is the composition root: concrete adapters are selected here and are
+/// injected into application use-cases through their ports.
 pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
     let cred_key = config
         .security
@@ -88,6 +88,9 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
     let cfg_limits_global = config.limits.global_io_concurrency;
     let cfg_limits_archive = config.limits.archive_concurrency;
     let cfg_limits_search = config.limits.search_concurrency;
+    let max_editable_size = config.limits.max_editable_size;
+    let max_upload_size = config.limits.max_upload_size;
+    let local_root = config.filesystem.default_local_root.clone();
     let config = Arc::new(config);
 
     let file_authorization = Arc::new(SqliteAuthorization::new(db.clone()));
@@ -149,16 +152,27 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
             file_effects.clone(),
         ),
         chmod_entry: ChmodEntry::new(
-            file_authorization,
-            file_filesystem,
-            file_effects,
+            file_authorization.clone(),
+            file_filesystem.clone(),
+            file_effects.clone(),
         ),
     };
 
+    let uploads = UploadApplicationService::new(
+        file_authorization.clone(),
+        file_filesystem.clone(),
+        file_effects.clone(),
+        transfer_manager.clone(),
+        upload_locks.clone(),
+        local_root,
+        max_editable_size,
+        max_upload_size,
+    );
+
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
-            Arc::new(SqliteAuthorization::new(db.clone())),
-            Arc::new(RegistryFileSystemResolver::new(registry.clone())),
+            file_authorization,
+            file_filesystem,
             Arc::new(TransferEngineQueue::new(transfer_engine.clone())),
             Arc::new(SqliteTransferEffects::new(db.clone())),
         ),
@@ -187,6 +201,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         runtime,
         files,
         transfers,
+        uploads,
     };
 
     ConnectionService::load_all_providers_from_db(&state).await;
