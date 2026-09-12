@@ -3,12 +3,12 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::{Actor, ProviderKind};
+use backend::domain::{Actor, ConnectionId, ProviderKind};
 use backend::events::DomainEvent;
 use backend::ports::transfer::{TransferJobResponse, TransferPhase, TransferStatus, TransferType};
-use backend::services::{CreateConnectionRequest, EditorService, FileService, TransferService};
+use backend::services::{CreateConnectionRequest, EditorService, TransferService};
 use backend::state::{
-    ConnectionState, RealtimeState, RuntimeOwner, ShutdownReason, TransferState,
+    ConnectionState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason, TransferState,
 };
 use backend::AppState;
 use std::time::Duration;
@@ -66,6 +66,30 @@ fn actor(user: &AuthenticatedUser) -> Actor {
         username: user.username().to_string(),
         is_admin: user.is_admin(),
     }
+}
+
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap();
 }
 
 async fn wait_for_status(
@@ -135,7 +159,18 @@ async fn test_realtime_cancellation_with_token() {
     assert!(cancelled, "transfer job should emit durable cancellation event");
 
     let part_path = format!("/.dest_cancel_test.dat.aerofs-part-{job_id}");
-    let part_stat = FileService::stat_file(&state, &admin, "local", &part_path).await;
+    let file_api = FileApiState::from_ref(&state);
+    let part_stat = file_api
+        .files
+        .stat_file
+        .execute(
+            &actor(&admin),
+            backend::application::files::StatFileCommand {
+                connection: ConnectionId::local(),
+                path: part_path,
+            },
+        )
+        .await;
     assert!(
         part_stat.is_err(),
         "Staging part file should be deleted on cancellation"
@@ -145,33 +180,46 @@ async fn test_realtime_cancellation_with_token() {
 #[tokio::test]
 async fn test_directory_transfer_bounded_limits_and_creation() {
     let (state, admin, _temp) = setup_test_context().await;
+    let file_api = FileApiState::from_ref(&state);
 
-    FileService::create_directory(&state, &admin, "local", "/dir_source")
+    file_api
+        .files
+        .create_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::CreateDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: "/dir_source".to_string(),
+            },
+        )
         .await
         .unwrap();
-    FileService::create_directory(&state, &admin, "local", "/dir_source/nested")
+    file_api
+        .files
+        .create_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::CreateDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: "/dir_source/nested".to_string(),
+            },
+        )
         .await
         .unwrap();
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/dir_source/file1.txt",
         b"Content 1".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
-    FileService::create_or_write_file(
+    .await;
+    write_file(
         &state,
         &admin,
-        "local",
         "/dir_source/nested/file2.txt",
         b"Content 2".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let job_id = TransferService::create_transfer(
         &state,
@@ -230,16 +278,13 @@ async fn test_connection_deletion_drains_active_transfers() {
         .unwrap();
 
     let test_data = vec![b'Z'; 5 * 1024 * 1024];
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/drain_source.dat",
         test_data,
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let job_id = TransferService::create_transfer(
         &state,
