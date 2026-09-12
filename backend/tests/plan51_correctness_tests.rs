@@ -3,11 +3,11 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
-use backend::domain::{Actor, SftpAuth, VfsPath};
+use backend::domain::{Actor, ConnectionId, SftpAuth, SortField, SortOrder, VfsPath};
 use backend::events::EventJournal;
 use backend::ports::transfer::{TransferJobResponse, TransferStatus, TransferType};
-use backend::services::{EditorService, FileService, TransferService};
-use backend::state::{AppState, RuntimeOwner, ShutdownReason, TransferState};
+use backend::services::{EditorService, TransferService};
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::{
     TransferManager, TransferStatus as EngineTransferStatus, TransferType as EngineTransferType,
 };
@@ -65,6 +65,30 @@ fn actor(user: &AuthenticatedUser) -> Actor {
     }
 }
 
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) {
+    let file_api = FileApiState::from_ref(state);
+    file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::local(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap();
+}
+
 async fn wait_for_completed(
     state: &AppState,
     user: &AuthenticatedUser,
@@ -106,16 +130,13 @@ async fn test_resume_integrity_restart_on_invalid_part() {
     let (state, admin, _runtime) = setup_test_context().await;
     let src_content = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/src_resume_test.txt",
         src_content.to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let job_id = TransferService::create_transfer(
         &state,
@@ -148,50 +169,56 @@ async fn test_pagination_bounded_limits_and_cursor() {
     let (state, admin, _runtime) = setup_test_context().await;
 
     for i in 0..20 {
-        FileService::create_or_write_file(
+        write_file(
             &state,
             &admin,
-            "local",
             &format!("/page_file_{i:02}.txt"),
             format!("content {i}").into_bytes(),
-            None,
+        )
+        .await;
+    }
+
+    let file_api = FileApiState::from_ref(&state);
+    let page1 = file_api
+        .files
+        .list_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::ListDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: Some("/".into()),
+                show_hidden: Some(false),
+                sort: Some(SortField::Name),
+                order: Some(SortOrder::Asc),
+                cursor: None,
+                limit: Some(5),
+            },
         )
         .await
         .unwrap();
-    }
-
-    let page1 = FileService::list_directory_paged(
-        &state,
-        &admin,
-        "local",
-        Some("/".into()),
-        Some(false),
-        Some("name"),
-        Some("asc"),
-        None,
-        Some(5),
-    )
-    .await
-    .unwrap();
 
     assert_eq!(page1.entries.len(), 5);
     assert_eq!(page1.total_count, Some(20));
     assert!(page1.has_more, "Should have more items");
     assert!(page1.next_cursor.is_some(), "Next cursor must be generated");
 
-    let page2 = FileService::list_directory_paged(
-        &state,
-        &admin,
-        "local",
-        Some("/".into()),
-        Some(false),
-        Some("name"),
-        Some("asc"),
-        page1.next_cursor.as_deref(),
-        Some(5),
-    )
-    .await
-    .unwrap();
+    let page2 = file_api
+        .files
+        .list_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::ListDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: Some("/".into()),
+                show_hidden: Some(false),
+                sort: Some(SortField::Name),
+                order: Some(SortOrder::Asc),
+                cursor: page1.next_cursor.clone(),
+                limit: Some(5),
+            },
+        )
+        .await
+        .unwrap();
 
     assert_eq!(page2.entries.len(), 5);
     assert_eq!(page2.total_count, Some(20));
@@ -204,21 +231,28 @@ async fn test_pagination_bounded_limits_and_cursor() {
 #[tokio::test]
 async fn test_directory_transfer_zero_vector_streaming() {
     let (state, admin, _runtime) = setup_test_context().await;
+    let file_api = FileApiState::from_ref(&state);
 
-    FileService::create_directory(&state, &admin, "local", "/source_dir/sub1/sub2")
-        .await
-        .unwrap();
-    for i in 0..10 {
-        FileService::create_or_write_file(
-            &state,
-            &admin,
-            "local",
-            &format!("/source_dir/sub1/file_{i}.txt"),
-            format!("file data {i}").into_bytes(),
-            None,
+    file_api
+        .files
+        .create_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::CreateDirectoryCommand {
+                connection: ConnectionId::local(),
+                path: "/source_dir/sub1/sub2".to_string(),
+            },
         )
         .await
         .unwrap();
+    for i in 0..10 {
+        write_file(
+            &state,
+            &admin,
+            &format!("/source_dir/sub1/file_{i}.txt"),
+            format!("file data {i}").into_bytes(),
+        )
+        .await;
     }
 
     let job_id = TransferService::create_transfer(
@@ -236,8 +270,17 @@ async fn test_directory_transfer_zero_vector_streaming() {
 
     wait_for_completed(&state, &admin, &job_id).await;
 
-    let dest_file_stat =
-        FileService::stat_file(&state, &admin, "local", "/dest_dir/sub1/file_0.txt").await;
+    let dest_file_stat = file_api
+        .files
+        .stat_file
+        .execute(
+            &actor(&admin),
+            backend::application::files::StatFileCommand {
+                connection: ConnectionId::local(),
+                path: "/dest_dir/sub1/file_0.txt".to_string(),
+            },
+        )
+        .await;
     assert!(
         dest_file_stat.is_ok(),
         "Copied nested file must exist on destination"
@@ -248,40 +291,46 @@ async fn test_directory_transfer_zero_vector_streaming() {
 async fn test_presign_upload_completion_endpoint() {
     let (state, admin, _runtime) = setup_test_context().await;
 
-    FileService::create_or_write_file(
+    write_file(
         &state,
         &admin,
-        "local",
         "/presigned_uploaded_file.bin",
         vec![1, 2, 3, 4, 5],
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let meta = FileService::complete_presigned_upload(
-        &state,
-        &admin,
-        "local",
-        "/presigned_uploaded_file.bin",
-        Some(5),
-        None,
-    )
-    .await
-    .unwrap();
+    let file_api = FileApiState::from_ref(&state);
+    let meta = file_api
+        .files
+        .complete_presigned
+        .execute(
+            &actor(&admin),
+            backend::application::files::CompletePresignedCommand {
+                connection: ConnectionId::local(),
+                path: "/presigned_uploaded_file.bin".to_string(),
+                expected_size: Some(5),
+                expected_checksum: None,
+            },
+        )
+        .await
+        .unwrap();
 
     assert_eq!(meta.size, 5);
     assert_eq!(meta.name, "presigned_uploaded_file.bin");
 
-    let err_res = FileService::complete_presigned_upload(
-        &state,
-        &admin,
-        "local",
-        "/non_existent_file.bin",
-        None,
-        None,
-    )
-    .await;
+    let err_res = file_api
+        .files
+        .complete_presigned
+        .execute(
+            &actor(&admin),
+            backend::application::files::CompletePresignedCommand {
+                connection: ConnectionId::local(),
+                path: "/non_existent_file.bin".to_string(),
+                expected_size: None,
+                expected_checksum: None,
+            },
+        )
+        .await;
     assert!(err_res.is_err());
 }
 
