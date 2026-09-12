@@ -8,7 +8,16 @@ use crate::sync::SyncManager;
 use crate::transfer::TransferManager;
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
-use crate::{application::files::{FileUseCases, ListDirectory, ReadFile, StatFile}, infrastructure::files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings}};
+use crate::{
+    application::{
+        files::{FileUseCases, ListDirectory, ReadFile, StatFile},
+        transfers::{CreateTransfer, TransferUseCases},
+    },
+    infrastructure::{
+        files::{RegistryFileSystemResolver, SqliteAuthorization, SqliteFileSettings},
+        transfers::{SqliteTransferEffects, TransferManagerQueue},
+    },
+};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -126,7 +135,6 @@ impl AppRuntime {
     }
 
     pub fn request_shutdown(&self, reason: ShutdownReason) -> bool {
-        // Atomic first-wins: only the first caller initiates shutdown and sets the canonical reason
         if self
             .shutdown_reason
             .compare_exchange(0, reason as u8, Ordering::AcqRel, Ordering::Acquire)
@@ -164,11 +172,11 @@ pub struct AppState {
     pub sync_manager: Arc<SyncManager>,
     pub runtime: AppRuntime,
     pub files: FileUseCases,
+    pub transfers: TransferUseCases,
 }
 
 impl AppState {
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
-        // Key separation (§100): prefer dedicated credential key, fallback to session_secret with warning
         let cred_key = config
             .security
             .credential_encryption_key
@@ -191,9 +199,6 @@ impl AppState {
 
         let resource_budget = Arc::new(ResourceBudget::default());
 
-        // TransferManager receives shutdown_token + task_tracker so its internal tasks
-        // (recovery + scheduler) are tracked and respond to cancellation.
-        // Recovery is awaited synchronously so server only announces readiness after jobs are loaded.
         let transfer_manager = TransferManager::new(
             registry.providers_map(),
             db.clone(),
@@ -212,9 +217,8 @@ impl AppState {
             registry.providers_map(),
         ));
 
-        // Spawn transfer completion listener for sync operations — dual path (§36):
-        // Legacy path via TransferManager completion channel (kept for compat) +
-        // new event-bus path via EventJournal (decoupled, §121).
+        // Transitional dual completion path; removed in Phase 7 after the
+        // transfer event stream becomes the single canonical sync trigger.
         let mut completion_rx = transfer_manager.completion_receiver();
         let sync_manager_clone = sync_manager.clone();
         let shutdown_token_cl = runtime.shutdown_token.clone();
@@ -234,7 +238,7 @@ impl AppState {
                 }
             }
         });
-        // Event-bus based sync subscriber — formalized (§121)
+
         let mut event_rx = event_journal.subscribe();
         let sync_manager_ev = sync_manager.clone();
         let shutdown_token_ev = runtime.shutdown_token.clone();
@@ -275,6 +279,7 @@ impl AppState {
         let cfg_limits_archive = config.limits.archive_concurrency;
         let cfg_limits_search = config.limits.search_concurrency;
         let config = Arc::new(config);
+
         let files = FileUseCases {
             list_directory: ListDirectory::new(
                 Arc::new(SqliteAuthorization::new(db.clone())),
@@ -290,6 +295,16 @@ impl AppState {
                 Arc::new(RegistryFileSystemResolver::new(registry.clone())),
             ),
         };
+
+        let transfers = TransferUseCases {
+            create_transfer: CreateTransfer::new(
+                Arc::new(SqliteAuthorization::new(db.clone())),
+                Arc::new(RegistryFileSystemResolver::new(registry.clone())),
+                Arc::new(TransferManagerQueue::new(transfer_manager.clone())),
+                Arc::new(SqliteTransferEffects::new(db.clone())),
+            ),
+        };
+
         let state = Self {
             config,
             db,
@@ -306,12 +321,11 @@ impl AppState {
             sync_manager,
             runtime,
             files,
+            transfers,
         };
 
-        // Initialize and register all connections from DB via ConnectionService
         ConnectionService::load_all_providers_from_db(&state).await;
 
-        // Spawn periodic cleanup for stale orphan .part files tracked via TaskSupervisor (config-driven §127)
         let local_root_clone = state.config.filesystem.default_local_root.clone();
         let cleanup_token = state.runtime.shutdown_token.clone();
         state.runtime.supervisor.spawn("stale_staging_cleanup", async move {
@@ -336,7 +350,6 @@ impl AppState {
             }
         });
 
-        // Spawn event journal vacuum task every 6 hours
         let journal_clone = state.event_journal.clone();
         let vacuum_token = state.runtime.shutdown_token.clone();
         state
@@ -364,12 +377,10 @@ impl AppState {
         state
     }
 
-    /// Pure read — no FS mutation. Use `ensure_provider` if lazy init of `local` is required (67.md §14).
     pub async fn get_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
         self.registry.get(connection_id).await
     }
 
-    /// Typed variant that preserves failure reason (67.md §15).
     pub async fn get_provider_result(
         &self,
         connection_id: &str,
@@ -378,7 +389,6 @@ impl AppState {
             return Ok(p);
         }
         if connection_id == crate::domain::ConnectionId::LOCAL {
-            // Local not yet registered — caller should use ensure_provider
             return Err(crate::errors::VfsError::ConnectionError(
                 "Local provider not initialized; call ensure_provider".into(),
             ));
@@ -389,8 +399,6 @@ impl AppState {
         )))
     }
 
-    /// Ensure local provider is initialized — isolated side-effect (67.md §14).
-    /// Separate from `get_provider` so callers make the mutation explicit.
     pub async fn ensure_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
         if let Some(p) = self.registry.get(connection_id).await {
             return Some(p);
@@ -419,7 +427,6 @@ impl AppState {
         None
     }
 
-    /// Retrieve the unified StorageRuntime for a connection (with fail-safe local fallback)
     pub async fn get_storage_runtime(
         &self,
         connection_id: &str,
@@ -427,7 +434,6 @@ impl AppState {
         if let Some(rt) = self.registry.get_runtime(connection_id).await {
             return Some(rt);
         }
-        // Ensure provider is initialized if local
         if self.ensure_provider(connection_id).await.is_some() {
             return self.registry.get_runtime(connection_id).await;
         }
@@ -443,9 +449,7 @@ impl AppState {
     }
 
     pub async fn set_connection_error(&self, connection_id: &str, error: &str) {
-        self.registry
-            .set_connection_error(connection_id, error)
-            .await;
+        self.registry.set_connection_error(connection_id, error).await;
     }
 
     pub async fn get_connection_error(&self, connection_id: &str) -> Option<String> {

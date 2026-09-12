@@ -61,17 +61,30 @@ pub async fn create_transfer(
     user: AuthenticatedUser,
     Json(payload): Json<CreateTransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let job_id = TransferService::create_transfer(
-        &state,
-        &user,
-        payload.name,
-        payload.transfer_type,
-        payload.source_connection_id,
-        payload.source_path,
-        payload.destination_connection_id,
-        payload.destination_path,
-    )
-    .await?;
+    let actor = crate::domain::Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    };
+    let source_connection = crate::domain::ConnectionId::new(payload.source_connection_id)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let destination_connection = crate::domain::ConnectionId::new(payload.destination_connection_id)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let job_id = state
+        .transfers
+        .create_transfer
+        .execute(
+            &actor,
+            crate::application::transfers::CreateTransferCommand {
+                name: payload.name,
+                transfer_type: payload.transfer_type,
+                source_connection,
+                source_path: payload.source_path,
+                destination_connection,
+                destination_path: payload.destination_path,
+            },
+        )
+        .await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -110,9 +123,7 @@ pub async fn list_transfers(
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/cancel",
-    params(
-        ("id" = String, Path, description = "Transfer job ID"),
-    ),
+    params(("id" = String, Path, description = "Transfer job ID")),
     responses(
         (status = 200, description = "Transfer cancelled", body = TransferActionResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
@@ -121,10 +132,7 @@ pub async fn list_transfers(
         (status = 409, description = "Conflict / Not cancellable", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "transfers"
 )]
 pub async fn cancel_transfer(
@@ -133,8 +141,6 @@ pub async fn cancel_transfer(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     TransferService::cancel_transfer(&state, &user, &id).await?;
-    // An admitted upload may not have received its HTTP body yet. Releasing
-    // its reservation here prevents a permanently locked destination.
     state.upload_locks.release(&id).await;
     Ok(Json(TransferActionResponse {
         success: true,
@@ -146,9 +152,7 @@ pub async fn cancel_transfer(
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/retry",
-    params(
-        ("id" = String, Path, description = "Transfer job ID"),
-    ),
+    params(("id" = String, Path, description = "Transfer job ID")),
     responses(
         (status = 200, description = "Transfer queued for retry", body = TransferActionResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
@@ -156,10 +160,7 @@ pub async fn cancel_transfer(
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "transfers"
 )]
 pub async fn retry_transfer(
@@ -178,9 +179,7 @@ pub async fn retry_transfer(
 #[utoipa::path(
     post,
     path = "/api/v1/transfers/{id}/dismiss",
-    params(
-        ("id" = String, Path, description = "Transfer job ID"),
-    ),
+    params(("id" = String, Path, description = "Transfer job ID")),
     responses(
         (status = 200, description = "Transfer dismissed", body = TransferActionResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
@@ -188,10 +187,7 @@ pub async fn retry_transfer(
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "transfers"
 )]
 pub async fn dismiss_transfer(
@@ -215,10 +211,7 @@ pub async fn dismiss_transfer(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "transfers"
 )]
 pub async fn clear_finished_transfers(
