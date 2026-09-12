@@ -55,7 +55,7 @@ impl ChmodEntry {
                 "chmod",
                 Some(format!("Mode changed to: {:04o}", command.mode)),
             )
-            .await;
+            .await?;
         Ok(())
     }
 }
