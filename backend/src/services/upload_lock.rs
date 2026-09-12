@@ -1,58 +1,35 @@
 use crate::domain::{ConnectionId, VfsPath};
 use crate::errors::AppError;
 use crate::ports::mutation::{MutationCoordinator, MutationLease};
-use crate::transfer::TransferPlan;
+use crate::ports::upload::{UploadClaim, UploadReservationStore, UploadSession};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct UploadLockManager {
     active_paths: Arc<Mutex<HashSet<String>>>,
     sessions: Arc<Mutex<HashMap<String, ReservedUpload>>>,
 }
 
-/// Admission data retained between `POST /uploads` and its streaming PUT.
-/// The contained guard deliberately owns the destination reservation until the
-/// job reaches a terminal state.
-#[derive(Debug, Clone)]
-pub struct UploadSession {
-    pub job_id: String,
-    pub user_id: String,
-    pub connection_id: String,
-    pub target: VfsPath,
-    pub file_name: String,
-    pub total_bytes: Option<u64>,
-    pub max_upload_bytes: u64,
-    pub target_exists: bool,
-    pub target_perms: Option<String>,
-    pub plan: TransferPlan,
-}
-
-#[derive(Debug)]
 struct ReservedUpload {
     session: UploadSession,
     claimed: bool,
     created_at: std::time::Instant,
-    _guard: UploadGuard,
+    _lease: Box<dyn MutationLease>,
 }
 
 /// Cancellation-safe ownership token for an executing reserved upload.
-///
-/// The reservation remains in the manager while this token is alive. Dropping
-/// the request future also drops this token, synchronously removing the session
-/// and releasing the destination `UploadGuard`. This prevents claimed sessions
-/// from pinning a destination forever when execution returns early or is
-/// cancelled by a disconnected client.
-#[derive(Debug)]
+/// Dropping the request future drops this token, synchronously removing the
+/// session and releasing its mutation lease.
 pub struct ClaimedUpload {
     job_id: String,
     session: UploadSession,
     manager: UploadLockManager,
 }
 
-impl ClaimedUpload {
-    pub fn session(&self) -> &UploadSession {
+impl UploadClaim for ClaimedUpload {
+    fn session(&self) -> &UploadSession {
         &self.session
     }
 }
@@ -63,7 +40,6 @@ impl Drop for ClaimedUpload {
     }
 }
 
-#[derive(Debug)]
 pub struct UploadGuard {
     key: String,
     manager: UploadLockManager,
@@ -71,8 +47,6 @@ pub struct UploadGuard {
 
 impl Drop for UploadGuard {
     fn drop(&mut self) {
-        // This lock is intentionally synchronous and held only for a HashSet
-        // mutation, so releasing a reservation is immediate and deterministic.
         if let Ok(mut active) = self.manager.active_paths.lock() {
             active.remove(&self.key);
         }
@@ -126,18 +100,18 @@ impl UploadLockManager {
         })
     }
 
+    /// Convenience entry point retained for low-level tests and legacy callers.
     pub async fn reserve(&self, session: UploadSession) -> Result<(), AppError> {
         let guard = self
             .try_acquire(&session.connection_id, &session.target.path)
             .await?;
-        self.reserve_existing(session, guard).await
+        self.reserve_with_lease(session, Box::new(guard))
     }
 
-    /// Store a reservation after a caller has already acquired the path lock.
-    pub async fn reserve_existing(
+    fn reserve_with_lease(
         &self,
         session: UploadSession,
-        guard: UploadGuard,
+        lease: Box<dyn MutationLease>,
     ) -> Result<(), AppError> {
         self.sessions
             .lock()
@@ -148,15 +122,13 @@ impl UploadLockManager {
                     session,
                     claimed: false,
                     created_at: std::time::Instant::now(),
-                    _guard: guard,
+                    _lease: lease,
                 },
             );
         Ok(())
     }
 
-    /// Claims a session once and returns a cancellation-safe ownership token.
-    /// The destination remains reserved until the returned token is dropped.
-    pub async fn claim(&self, job_id: &str, user_id: &str) -> Result<ClaimedUpload, AppError> {
+    fn claim_inner(&self, job_id: &str, user_id: &str) -> Result<ClaimedUpload, AppError> {
         let session = {
             let mut sessions = self.sessions.lock().map_err(|_| {
                 AppError::Internal(anyhow::anyhow!("upload session manager poisoned"))
@@ -213,11 +185,34 @@ impl MutationCoordinator for UploadLockManager {
     }
 }
 
+#[async_trait]
+impl UploadReservationStore for UploadLockManager {
+    async fn reserve(
+        &self,
+        session: UploadSession,
+        lease: Box<dyn MutationLease>,
+    ) -> Result<(), AppError> {
+        self.reserve_with_lease(session, lease)
+    }
+
+    async fn claim(
+        &self,
+        job_id: &str,
+        user_id: &str,
+    ) -> Result<Box<dyn UploadClaim>, AppError> {
+        Ok(Box::new(self.claim_inner(job_id, user_id)?))
+    }
+
+    async fn release(&self, job_id: &str) {
+        self.release_sync(job_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::CommitSemantics;
-    use crate::transfer::{TransferExecutionMode, TransferStaging};
+    use crate::ports::upload::{UploadPlan, UploadStaging};
 
     fn session(job_id: &str, user_id: &str) -> UploadSession {
         UploadSession {
@@ -230,9 +225,8 @@ mod tests {
             max_upload_bytes: 10,
             target_exists: false,
             target_perms: None,
-            plan: TransferPlan {
-                execution_mode: TransferExecutionMode::Inline,
-                staging: TransferStaging::LocalTemp,
+            plan: UploadPlan {
+                staging: UploadStaging::LocalTemp,
                 commit: CommitSemantics::AtomicRename,
             },
         }
@@ -244,14 +238,14 @@ mod tests {
         let session = session("job_session", "alice");
         manager.reserve(session.clone()).await.unwrap();
         assert!(matches!(
-            manager.claim("job_session", "bob").await,
+            manager.claim_inner("job_session", "bob"),
             Err(AppError::Forbidden(_))
         ));
 
-        let claimed = manager.claim("job_session", "alice").await.unwrap();
+        let claimed = manager.claim_inner("job_session", "alice").unwrap();
         assert_eq!(claimed.session().job_id, "job_session");
         assert!(matches!(
-            manager.claim("job_session", "alice").await,
+            manager.claim_inner("job_session", "alice"),
             Err(AppError::Conflict(_))
         ));
 
@@ -267,14 +261,14 @@ mod tests {
             .await
             .unwrap();
 
-        let claimed = manager.claim("job_cancelled", "alice").await.unwrap();
+        let claimed = manager.claim_inner("job_cancelled", "alice").unwrap();
         assert!(manager.try_acquire("local", "/session.bin").await.is_err());
 
         drop(claimed);
 
         assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
         assert!(matches!(
-            manager.claim("job_cancelled", "alice").await,
+            manager.claim_inner("job_cancelled", "alice"),
             Err(AppError::NotFound(_))
         ));
     }
@@ -295,7 +289,7 @@ mod tests {
                     claimed: false,
                     created_at: std::time::Instant::now()
                         - std::time::Duration::from_secs(70),
-                    _guard: guard,
+                    _lease: Box::new(guard),
                 },
             );
         assert!(manager.try_acquire("local", "/session.bin").await.is_ok());
