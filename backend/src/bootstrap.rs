@@ -20,12 +20,12 @@ use crate::infrastructure::{
 };
 use crate::runtime::ResourceBudget;
 use crate::services::{
-    connection_service::ConnectionService, ArchiveService, HealthService, RealtimeService,
-    SearchService, SettingsService, SyncService,
+    connection_service::ConnectionService, ArchiveService, FileApiService, HealthService,
+    RealtimeService, SearchService, SettingsService, SyncService,
 };
 use crate::state::{
-    AppRuntime, AppState, ArchiveState, HealthState, RealtimeState, SearchState, SettingsState,
-    SyncState,
+    AppRuntime, AppState, ArchiveState, FileApiState, HealthState, RealtimeState, SearchState,
+    SettingsState, SyncState,
 };
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
@@ -116,7 +116,11 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
             file_settings.clone(),
         ),
         stat_file: StatFile::new(file_authorization.clone(), file_filesystem.clone()),
-        read_file: ReadFile::new(file_authorization.clone(), file_filesystem.clone()),
+        read_file: ReadFile::new(
+            file_authorization.clone(),
+            file_filesystem.clone(),
+            file_effects.clone(),
+        ),
         write_file: WriteFile::new(
             file_authorization.clone(),
             file_filesystem.clone(),
@@ -217,6 +221,20 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         transfer_manager.clone(),
     ));
 
+    let file_api = FileApiState::new(
+        files.clone(),
+        uploads.clone(),
+        FileApiService::new(
+            db.clone(),
+            config.clone(),
+            file_authorization.clone(),
+            file_filesystem.clone(),
+            file_effects.clone(),
+            file_effects.clone(),
+            settings.service.clone(),
+        ),
+    );
+
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
             file_authorization,
@@ -266,6 +284,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         sync,
         archive,
         settings,
+        file_api,
     };
 
     spawn_runtime_tasks(&state);
