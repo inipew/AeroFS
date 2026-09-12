@@ -28,6 +28,11 @@ impl SearchService {
         }
     }
 
+    /// Observable capacity for diagnostics/tests without exposing the limiter itself.
+    pub fn available_capacity(&self) -> usize {
+        self.limiter.available_permits()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn search_files(
         &self,
