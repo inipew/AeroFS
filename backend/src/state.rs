@@ -8,7 +8,7 @@ use crate::db::DbPool;
 use crate::events::EventJournal;
 use crate::infrastructure::CredentialStore;
 use crate::runtime::{ResourceBudget, TaskSupervisor};
-use crate::services::{HealthService, RealtimeService, SearchService, SyncService};
+use crate::services::{ArchiveService, HealthService, RealtimeService, SearchService, SyncService};
 use crate::sync::SyncManager;
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
@@ -214,6 +214,17 @@ impl SyncState {
     }
 }
 
+#[derive(Clone)]
+pub struct ArchiveState {
+    pub service: ArchiveService,
+}
+
+impl ArchiveState {
+    pub fn new(service: ArchiveService) -> Self {
+        Self { service }
+    }
+}
+
 /// Runtime container handed to adapters.
 /// Concrete dependency construction belongs in `crate::bootstrap`.
 #[derive(Clone)]
@@ -227,7 +238,6 @@ pub struct AppState {
     pub metadata_cache: Arc<crate::services::MetadataCache>,
     pub upload_locks: Arc<crate::services::UploadLockManager>,
     pub global_io_semaphore: Arc<Semaphore>,
-    pub archive_semaphore: Arc<Semaphore>,
     pub resource_budget: Arc<ResourceBudget>,
     pub event_journal: Arc<EventJournal>,
     pub sync_manager: Arc<SyncManager>,
@@ -239,6 +249,7 @@ pub struct AppState {
     pub(crate) health: HealthState,
     pub(crate) realtime: RealtimeState,
     pub(crate) sync: SyncState,
+    pub(crate) archive: ArchiveState,
 }
 
 impl axum::extract::FromRef<AppState> for SearchState {
@@ -262,6 +273,12 @@ impl axum::extract::FromRef<AppState> for RealtimeState {
 impl axum::extract::FromRef<AppState> for SyncState {
     fn from_ref(state: &AppState) -> Self {
         state.sync.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for ArchiveState {
+    fn from_ref(state: &AppState) -> Self {
+        state.archive.clone()
     }
 }
 

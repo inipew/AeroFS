@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::db::DbPool;
 use crate::events::{EventJournal, MetadataCacheEventSubscriber};
 use crate::infrastructure::{
+    archive::SqliteArchiveEffects,
     files::{
         RegistryFileSystemResolver, SqliteAuthorization, SqliteFileMutationEffects,
         SqliteFileSettings,
@@ -19,10 +20,12 @@ use crate::infrastructure::{
 };
 use crate::runtime::ResourceBudget;
 use crate::services::{
-    connection_service::ConnectionService, HealthService, RealtimeService, SearchService,
-    SyncService,
+    connection_service::ConnectionService, ArchiveService, HealthService, RealtimeService,
+    SearchService, SyncService,
 };
-use crate::state::{AppRuntime, AppState, HealthState, RealtimeState, SearchState, SyncState};
+use crate::state::{
+    AppRuntime, AppState, ArchiveState, HealthState, RealtimeState, SearchState, SyncState,
+};
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
@@ -196,6 +199,16 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         sync_manager.clone(),
     ));
 
+    let archive = ArchiveState::new(ArchiveService::new(
+        file_authorization.clone(),
+        file_filesystem.clone(),
+        Arc::new(SqliteArchiveEffects::new(
+            db.clone(),
+            transfer_manager.clone(),
+        )),
+        Arc::new(Semaphore::new(cfg_limits_archive)),
+    ));
+
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
             file_authorization,
@@ -220,7 +233,6 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         metadata_cache,
         upload_locks,
         global_io_semaphore: Arc::new(Semaphore::new(cfg_limits_global)),
-        archive_semaphore: Arc::new(Semaphore::new(cfg_limits_archive)),
         resource_budget,
         event_journal,
         sync_manager,
@@ -232,6 +244,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         health,
         realtime,
         sync,
+        archive,
     };
 
     ConnectionService::load_all_providers_from_db(&state).await;

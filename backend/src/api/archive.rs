@@ -1,9 +1,9 @@
 use crate::api::extractors::{Json, Path, Query};
 use crate::auth::AuthenticatedUser;
+use crate::domain::{Actor, ConnectionId};
 use crate::errors::{AppError, ErrorResponse};
 use crate::filesystem::archive::{ArchiveOverwriteMode, VirtualArchiveEntry};
-use crate::services::ArchiveService;
-use crate::state::AppState;
+use crate::state::ArchiveState;
 use axum::{
     extract::State,
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -36,6 +36,18 @@ pub struct ArchiveResponse {
     pub skipped_count: Option<usize>,
 }
 
+fn actor_from_user(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
+}
+
+fn connection_id(raw: String) -> Result<ConnectionId, AppError> {
+    ConnectionId::new(raw).map_err(|error| AppError::BadRequest(error.to_string()))
+}
+
 /// Compress files into a ZIP or TAR.GZ archive
 #[utoipa::path(
     post,
@@ -57,21 +69,24 @@ pub struct ArchiveResponse {
     tag = "archive"
 )]
 pub async fn compress_files(
-    State(state): State<AppState>,
-    Path(connection_id): Path<String>,
+    State(state): State<ArchiveState>,
+    Path(connection_id_raw): Path<String>,
     user: AuthenticatedUser,
     Json(payload): Json<CompressRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let res = ArchiveService::compress(
-        &state,
-        &user,
-        &connection_id,
-        &payload.base_path,
-        &payload.relative_paths,
-        &payload.destination_file,
-        payload.format.as_deref(),
-    )
-    .await?;
+    let actor = actor_from_user(&user);
+    let connection = connection_id(connection_id_raw)?;
+    let res = state
+        .service
+        .compress(
+            &actor,
+            &connection,
+            &payload.base_path,
+            &payload.relative_paths,
+            &payload.destination_file,
+            payload.format.as_deref(),
+        )
+        .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -105,22 +120,25 @@ pub async fn compress_files(
     tag = "archive"
 )]
 pub async fn extract_archive_endpoint(
-    State(state): State<AppState>,
-    Path(connection_id): Path<String>,
+    State(state): State<ArchiveState>,
+    Path(connection_id_raw): Path<String>,
     user: AuthenticatedUser,
     Json(payload): Json<ExtractRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let actor = actor_from_user(&user);
+    let connection = connection_id(connection_id_raw)?;
     let overwrite_mode = payload.overwrite_mode.unwrap_or_default();
-    let res = ArchiveService::extract(
-        &state,
-        &user,
-        &connection_id,
-        &payload.archive_path,
-        &payload.destination_dir,
-        payload.format.as_deref(),
-        overwrite_mode,
-    )
-    .await?;
+    let res = state
+        .service
+        .extract(
+            &actor,
+            &connection,
+            &payload.archive_path,
+            &payload.destination_dir,
+            payload.format.as_deref(),
+            overwrite_mode,
+        )
+        .await?;
 
     Ok((
         StatusCode::OK,
@@ -160,15 +178,18 @@ pub struct ListArchiveQuery {
     tag = "archive"
 )]
 pub async fn list_virtual_archive_endpoint(
-    State(state): State<AppState>,
-    Path(connection_id): Path<String>,
+    State(state): State<ArchiveState>,
+    Path(connection_id_raw): Path<String>,
     user: AuthenticatedUser,
     Query(query): Query<ListArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let actor = actor_from_user(&user);
+    let connection = connection_id(connection_id_raw)?;
     let subpath = query.subpath.unwrap_or_default();
-    let entries =
-        ArchiveService::list_virtual(&state, &user, &connection_id, &query.archive_path, &subpath)
-            .await?;
+    let entries = state
+        .service
+        .list_virtual(&actor, &connection, &query.archive_path, &subpath)
+        .await?;
 
     Ok((StatusCode::OK, Json(entries)))
 }
@@ -200,19 +221,17 @@ pub struct ReadArchiveQuery {
     tag = "archive"
 )]
 pub async fn read_virtual_archive_entry_endpoint(
-    State(state): State<AppState>,
-    Path(connection_id): Path<String>,
+    State(state): State<ArchiveState>,
+    Path(connection_id_raw): Path<String>,
     user: AuthenticatedUser,
     Query(query): Query<ReadArchiveQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (file_name, bytes) = ArchiveService::read_virtual_entry(
-        &state,
-        &user,
-        &connection_id,
-        &query.archive_path,
-        &query.entry_path,
-    )
-    .await?;
+    let actor = actor_from_user(&user);
+    let connection = connection_id(connection_id_raw)?;
+    let (file_name, bytes) = state
+        .service
+        .read_virtual_entry(&actor, &connection, &query.archive_path, &query.entry_path)
+        .await?;
 
     let mime_type = mime_guess::from_path(&file_name)
         .first_or_octet_stream()
@@ -264,23 +283,25 @@ pub struct ExtractSelectedRequest {
     tag = "archive"
 )]
 pub async fn extract_selected_archive_endpoint(
-    State(state): State<AppState>,
-    Path(connection_id): Path<String>,
+    State(state): State<ArchiveState>,
+    Path(connection_id_raw): Path<String>,
     user: AuthenticatedUser,
     Json(payload): Json<ExtractSelectedRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let actor = actor_from_user(&user);
+    let connection = connection_id(connection_id_raw)?;
     let overwrite_mode = payload.overwrite_mode.unwrap_or_default();
-    let res = ArchiveService::extract_selected(
-        &state,
-        &user,
-        &connection_id,
-        &payload.archive_path,
-        &payload.destination_dir,
-        &payload.entries,
-        None,
-        overwrite_mode,
-    )
-    .await?;
+    let res = state
+        .service
+        .extract_selected(
+            &actor,
+            &connection,
+            &payload.archive_path,
+            &payload.destination_dir,
+            &payload.entries,
+            overwrite_mode,
+        )
+        .await?;
 
     Ok((
         StatusCode::OK,
