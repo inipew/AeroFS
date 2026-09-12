@@ -42,6 +42,7 @@ impl Authorization for SqliteAuthorization {
             FileAction::Download => PermissionAction::Download,
             FileAction::Create => PermissionAction::Create,
             FileAction::Write => PermissionAction::Write,
+            FileAction::Upload => PermissionAction::Upload,
             FileAction::Delete => PermissionAction::Delete,
         };
         check_permission(&self.db, &user, connection.as_str(), permission).await
@@ -183,16 +184,19 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             details.as_deref(),
         )
         .await;
-
         if let Err(error) = self
             .event_journal
             .append(
-                crate::events::DomainEvent::file_change(connection.as_str(), path, event_action),
+                crate::events::DomainEvent::file_change(
+                    connection.as_str(),
+                    path,
+                    event_action,
+                ),
                 None,
             )
             .await
         {
-            tracing::error!(%error, connection_id = %connection.as_str(), path, event_action, "file mutation event persistence failed");
+            tracing::error!(?error, connection = %connection.as_str(), path, event_action, "failed to append file change event");
         }
     }
 
@@ -211,16 +215,18 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             Some(from),
             "SUCCESS",
             None,
-            Some(&format!("Renamed to: {}", to)),
+            Some(&format!("Renamed {} -> {}", from, to)),
         )
         .await;
-
         if let Err(error) = self
             .event_journal
-            .append(crate::events::DomainEvent::file_rename(connection.as_str(), from, to), None)
+            .append(
+                crate::events::DomainEvent::file_rename(connection.as_str(), from, to),
+                None,
+            )
             .await
         {
-            tracing::error!(%error, connection_id = %connection.as_str(), from, to, "file rename event persistence failed");
+            tracing::error!(?error, connection = %connection.as_str(), from, to, "failed to append file rename event");
         }
     }
 
@@ -242,13 +248,15 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             Some(&format!("Copied {} -> {}", from, to)),
         )
         .await;
-
         if let Err(error) = self
             .event_journal
-            .append(crate::events::DomainEvent::file_change(connection.as_str(), to, "copy"), None)
+            .append(
+                crate::events::DomainEvent::file_change(connection.as_str(), to, "copy"),
+                None,
+            )
             .await
         {
-            tracing::error!(%error, connection_id = %connection.as_str(), from, to, "file copy event persistence failed");
+            tracing::error!(?error, connection = %connection.as_str(), from, to, "failed to append file copy event");
         }
     }
 }
