@@ -4,9 +4,9 @@ use crate::ports::{
     authorization::{Authorization, FileAction},
     effects::FileMutationEffects,
     filesystem::FileSystemResolver,
+    mutation::MutationCoordinator,
     settings::FileSettings,
 };
-use crate::services::UploadLockManager;
 use std::io::Cursor;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -26,7 +26,7 @@ pub struct WriteFile {
     filesystem: Arc<dyn FileSystemResolver>,
     settings: Arc<dyn FileSettings>,
     effects: Arc<dyn FileMutationEffects>,
-    mutation_locks: Arc<UploadLockManager>,
+    mutations: Arc<dyn MutationCoordinator>,
 }
 
 impl WriteFile {
@@ -35,14 +35,14 @@ impl WriteFile {
         filesystem: Arc<dyn FileSystemResolver>,
         settings: Arc<dyn FileSettings>,
         effects: Arc<dyn FileMutationEffects>,
-        mutation_locks: Arc<UploadLockManager>,
+        mutations: Arc<dyn MutationCoordinator>,
     ) -> Self {
         Self {
             authorization,
             filesystem,
             settings,
             effects,
-            mutation_locks,
+            mutations,
         }
     }
 
@@ -68,8 +68,8 @@ impl WriteFile {
         // no second writer can pass the same precondition while another writer
         // is between `stat` and commit.
         let _mutation_guard = self
-            .mutation_locks
-            .try_acquire(command.connection.as_str(), &path.path)
+            .mutations
+            .try_acquire(&command.connection, &path.path)
             .await?;
 
         if command.create_only {
