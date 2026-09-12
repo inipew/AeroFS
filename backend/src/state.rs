@@ -1,8 +1,6 @@
 use crate::application::{
     files::FileUseCases, transfers::TransferUseCases, UploadApplicationService,
 };
-use crate::config::AppConfig;
-use crate::db::DbPool;
 use crate::runtime::TaskSupervisor;
 use crate::services::{
     ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
@@ -412,11 +410,3 @@ impl_from_ref!(AuditState, audit);
 impl_from_ref!(PreferencesState, preferences);
 impl_from_ref!(ShareState, shares);
 impl_from_ref!(TrashState, trash);
-
-impl AppState {
-    /// Compatibility constructor for tests and non-server callers.
-    /// Production startup should use `bootstrap::build_application`.
-    pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
-        crate::bootstrap::build_app_state(config, db).await
-    }
-}

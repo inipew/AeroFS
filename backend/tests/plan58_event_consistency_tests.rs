@@ -1,14 +1,32 @@
 use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::events::{DomainEvent, ReplayOutcome};
 use backend::services::FileService;
-use backend::state::RealtimeState;
+use backend::state::{RealtimeState, RuntimeOwner, ShutdownReason};
 use backend::AppState;
 use tempfile::tempdir;
 
-async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
+struct TestRuntimeDir {
+    temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl TestRuntimeDir {
+    fn path(&self) -> &std::path::Path {
+        self.temp.path()
+    }
+}
+
+impl Drop for TestRuntimeDir {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_context() -> (AppState, AuthenticatedUser, TestRuntimeDir) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("plan58_test.db");
     let storage_dir = temp.path().join("storage");
@@ -19,7 +37,7 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
 
     let admin = AuthenticatedUser(UserInfo {
         id: "admin-id".to_string(),
@@ -27,7 +45,14 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
         is_admin: true,
     });
 
-    (state, admin, temp)
+    (
+        built.state,
+        admin,
+        TestRuntimeDir {
+            temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 #[tokio::test]

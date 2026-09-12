@@ -29,6 +29,29 @@ fn bootstrap_returns_runtime_owner_separately() {
 }
 
 #[test]
+fn runtime_owner_cannot_be_silently_discarded_by_compatibility_builders() {
+    let state = source("src/state.rs");
+    let bootstrap = source("src/bootstrap.rs");
+
+    assert!(!state.contains("pub async fn new_with_db"));
+    assert!(!state.contains("build_app_state(config, db).await"));
+    assert!(!bootstrap.contains("pub async fn build_app_state"));
+    assert!(!bootstrap.contains("build_application(config, db).await.state"));
+}
+
+#[test]
+fn cli_state_retains_and_cancels_runtime_owner() {
+    let context = source("src/cli/context.rs");
+    assert!(context.contains("pub struct CliState"));
+    assert!(context.contains("runtime: RuntimeOwner"));
+    assert!(context.contains("impl Deref for CliState"));
+    assert!(context.contains("impl Drop for CliState"));
+    assert!(context.contains("request_shutdown(ShutdownReason::Manual)"));
+    assert!(context.contains("let built = build_application(self.config.clone(), pool).await"));
+    assert!(!context.contains("AppState::new_with_db"));
+}
+
+#[test]
 fn runtime_tasks_are_owned_outside_app_state() {
     let bootstrap = source("src/bootstrap.rs");
     assert!(bootstrap.contains("runtime: &RuntimeOwner"));

@@ -2,12 +2,35 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
-use backend::{config::AppConfig, create_router, db::init_db, AppState};
+use backend::{
+    bootstrap::build_application,
+    config::AppConfig,
+    create_router,
+    db::init_db,
+    state::{RuntimeOwner, ShutdownReason},
+};
 use serde_json::json;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
+struct TestRuntimeDir {
+    temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl TestRuntimeDir {
+    fn path(&self) -> &std::path::Path {
+        self.temp.path()
+    }
+}
+
+impl Drop for TestRuntimeDir {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_app() -> (axum::Router, TestRuntimeDir) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("test.db");
     let storage_dir = temp.path().join("storage");
@@ -18,10 +41,16 @@ async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
-    let app = create_router(state);
+    let built = build_application(config, db).await;
+    let app = create_router(built.state);
 
-    (app, temp)
+    (
+        app,
+        TestRuntimeDir {
+            temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 async fn login_admin(app: &axum::Router) -> String {

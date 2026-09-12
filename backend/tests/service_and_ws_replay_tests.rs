@@ -1,5 +1,6 @@
 use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
@@ -7,11 +8,22 @@ use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::filesystem::archive::ArchiveOverwriteMode;
 use backend::ports::transfer::TransferType;
 use backend::services::{FileService, TransferService};
-use backend::state::ArchiveState;
+use backend::state::{ArchiveState, RuntimeOwner, ShutdownReason};
 use backend::AppState;
 use tempfile::tempdir;
 
-async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
+struct TestRuntime {
+    _temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_context() -> (AppState, AuthenticatedUser, TestRuntime) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("service_test.db");
     let storage_dir = temp.path().join("storage");
@@ -22,7 +34,7 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
 
     let user = AuthenticatedUser(UserInfo {
         id: "admin-id".to_string(),
@@ -30,7 +42,14 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
         is_admin: true,
     });
 
-    (state, user, temp)
+    (
+        built.state,
+        user,
+        TestRuntime {
+            _temp: temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 fn actor_from_user(user: &AuthenticatedUser) -> Actor {
@@ -90,7 +109,7 @@ async fn test_ws_event_sequence_and_durable_replay() {
 
 #[tokio::test]
 async fn test_file_service_full_crud_lifecycle() {
-    let (state, user, _temp) = setup_test_context().await;
+    let (state, user, _runtime) = setup_test_context().await;
 
     let dir_meta = FileService::create_directory(&state, &user, "local", "/docs")
         .await
@@ -145,7 +164,7 @@ async fn test_file_service_full_crud_lifecycle() {
 
 #[tokio::test]
 async fn test_archive_service_lifecycle() {
-    let (state, user, _temp) = setup_test_context().await;
+    let (state, user, _runtime) = setup_test_context().await;
     let archive = ArchiveState::from_ref(&state);
     let actor = actor_from_user(&user);
     let connection = ConnectionId::local();
@@ -218,7 +237,7 @@ async fn test_archive_service_lifecycle() {
 
 #[tokio::test]
 async fn test_transfer_service_operations() {
-    let (state, user, _temp) = setup_test_context().await;
+    let (state, user, _runtime) = setup_test_context().await;
 
     FileService::create_or_write_file(
         &state,
