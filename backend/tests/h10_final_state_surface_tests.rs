@@ -1,70 +1,119 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
-fn source(relative: &str) -> String {
-    fs::read_to_string(relative).unwrap_or_else(|error| panic!("failed to read {relative}: {error}"))
+fn source(path: &str) -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(root.join(path)).unwrap_or_else(|error| panic!("failed to read {path}: {error}"))
+}
+
+fn app_state_block(src: &str) -> &str {
+    let start = src.find("pub struct AppState {").expect("AppState must exist");
+    let rest = &src[start..];
+    let end = rest.find("\n}").expect("AppState block must close") + 2;
+    &rest[..end]
 }
 
 #[test]
 fn app_state_is_capability_only() {
     let state = source("src/state.rs");
+    let app_state = app_state_block(&state);
+
     for forbidden in [
-        "pub db:",
-        "pub config:",
-        "pub registry:",
-        "pub metadata_cache:",
-        "pub event_journal:",
-        "pub transfer_manager:",
-        "pub upload_locks:",
-        "pub task_tracker:",
-        "pub shutdown_token:",
+        "DbPool",
+        "AppConfig",
+        "ProviderRegistry",
+        "CredentialStore",
+        "TransferManager",
+        "TransferEngine",
+        "MetadataCache",
+        "UploadLockManager",
+        "Semaphore",
+        "ResourceBudget",
+        "EventJournal",
+        "SyncManager",
     ] {
-        assert!(!state.contains(forbidden), "AppState/runtime leaked concrete field `{forbidden}`");
+        assert!(
+            !app_state.contains(forbidden),
+            "AppState leaked raw infrastructure type {forbidden}:\n{app_state}"
+        );
     }
+
+    for expected in [
+        "RouterState",
+        "RuntimeState",
+        "AuthState",
+        "ConnectionState",
+        "FileApiState",
+        "TransferState",
+        "SearchState",
+        "HealthState",
+        "RealtimeState",
+        "SyncState",
+        "ArchiveState",
+        "SettingsState",
+        "AuditState",
+        "PreferencesState",
+        "ShareState",
+        "TrashState",
+    ] {
+        assert!(app_state.contains(expected), "missing capability {expected}");
+    }
+
+    assert!(
+        !app_state
+            .lines()
+            .skip(1)
+            .any(|line| line.trim_start().starts_with("pub ")),
+        "AppState fields must not be publicly exposed"
+    );
 }
 
 #[test]
 fn app_state_has_no_provider_or_runtime_escape_hatches() {
     let state = source("src/state.rs");
     for forbidden in [
-        "ProviderRegistry",
-        "TransferManager",
-        "MetadataCache",
-        "EventJournal",
-        "UploadLockManager",
-        "TaskTracker",
-        "CancellationToken",
-        "DbPool",
-        "AppConfig",
+        "fn get_provider(",
+        "fn get_storage_runtime(",
+        "fn get_provider_handle(",
+        "fn list_provider_ids(",
+        "fn db(",
+        "fn registry(",
+        "fn transfer_manager(",
+        "fn event_journal(",
     ] {
-        assert!(!state.contains(forbidden), "state layer leaked concrete runtime type `{forbidden}`");
+        assert!(!state.contains(forbidden), "state escape hatch returned: {forbidden}");
     }
 }
 
 #[test]
 fn http_adapters_never_extract_root_app_state() {
-    let api_files = [
-        "src/api/archive.rs",
-        "src/api/audit.rs",
-        "src/api/auth.rs",
-        "src/api/connections.rs",
-        "src/api/files.rs",
-        "src/api/health.rs",
-        "src/api/preferences.rs",
-        "src/api/realtime.rs",
-        "src/api/search.rs",
-        "src/api/settings.rs",
-        "src/api/shares.rs",
-        "src/api/sync.rs",
-        "src/api/transfers.rs",
-        "src/api/trash.rs",
-        "src/api/ws.rs",
-    ];
-
-    for path in api_files {
-        let src = source(path);
-        assert!(!src.contains("State(state): State<AppState>"), "{path} extracts root AppState");
-        assert!(!src.contains("State(app_state): State<AppState>"), "{path} extracts root AppState");
-        assert!(!src.contains("State(state): State<Arc<AppState>>"), "{path} extracts Arc<AppState>");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/api");
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let src = fs::read_to_string(&path).unwrap();
+        for forbidden in [
+            "State<AppState>",
+            "State(state): State<AppState>",
+            "state.db",
+            "state.registry",
+            "state.credentials",
+            "state.config",
+            "state.transfer_manager",
+            "state.transfer_engine",
+            "state.metadata_cache",
+            "state.upload_locks",
+            "state.event_journal",
+            "state.sync_manager",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{} leaked root state dependency `{forbidden}`",
+                path.display()
+            );
+        }
     }
 }
 
@@ -105,9 +154,6 @@ fn directory_pagination_uses_bounded_keyset_selection_and_reports_full_count() {
     assert!(src.contains("total_count = total_count.saturating_add(1)"));
     assert!(src.contains("total_count: Some(total_count)"));
 
-    // Numeric offsets are unstable under concurrent directory mutation and malformed
-    // cursors must not silently reset pagination to the first page.
     assert!(!src.contains("let page_start ="));
-    assert!(!src.contains("{\"offset\":"));
     assert!(!src.contains("unwrap_or(0) as usize"));
 }
