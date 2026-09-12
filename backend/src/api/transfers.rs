@@ -1,7 +1,6 @@
 use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, ErrorResponse};
-use crate::services::TransferService;
 use crate::state::AppState;
 use crate::transfer::model::TransferJobResponse;
 use crate::transfer::TransferType;
@@ -39,6 +38,14 @@ pub struct ClearFinishedTransfersResponse {
     pub message: String,
 }
 
+fn actor(user: &AuthenticatedUser) -> crate::domain::Actor {
+    crate::domain::Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
 /// Queue a new transfer job with full source and destination authorization
 #[utoipa::path(
     post,
@@ -50,10 +57,7 @@ pub struct ClearFinishedTransfersResponse {
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "transfers"
 )]
 pub async fn create_transfer(
@@ -61,20 +65,15 @@ pub async fn create_transfer(
     user: AuthenticatedUser,
     Json(payload): Json<CreateTransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let actor = crate::domain::Actor {
-        id: user.id.clone(),
-        username: user.username.clone(),
-        is_admin: user.is_admin,
-    };
     let source_connection = crate::domain::ConnectionId::new(payload.source_connection_id)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let destination_connection = crate::domain::ConnectionId::new(payload.destination_connection_id)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let job_id = state
         .transfers
         .create_transfer
         .execute(
-            &actor,
+            &actor(&user),
             crate::application::transfers::CreateTransferCommand {
                 name: payload.name,
                 transfer_type: payload.transfer_type,
@@ -105,18 +104,14 @@ pub async fn create_transfer(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "transfers"
 )]
 pub async fn list_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let jobs = TransferService::list_transfers(&state, &user).await?;
-    Ok(Json(jobs))
+    Ok(Json(state.transfers.list(&actor(&user)).await?))
 }
 
 /// Cancel an active transfer job (enforcing user ownership)
@@ -140,8 +135,7 @@ pub async fn cancel_transfer(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    TransferService::cancel_transfer(&state, &user, &id).await?;
-    state.upload_locks.release(&id).await;
+    state.transfers.cancel(&actor(&user), &id).await?;
     Ok(Json(TransferActionResponse {
         success: true,
         message: format!("Transfer job '{}' cancelled", id),
@@ -168,7 +162,7 @@ pub async fn retry_transfer(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    TransferService::retry_transfer(&state, &user, &id).await?;
+    state.transfers.retry(&actor(&user), &id).await?;
     Ok(Json(TransferActionResponse {
         success: true,
         message: format!("Transfer job '{}' queued for retry", id),
@@ -195,7 +189,7 @@ pub async fn dismiss_transfer(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    TransferService::dismiss_transfer(&state, &user, &id).await?;
+    state.transfers.dismiss(&actor(&user), &id).await?;
     Ok(Json(TransferActionResponse {
         success: true,
         message: format!("Transfer job '{}' dismissed", id),
@@ -218,7 +212,7 @@ pub async fn clear_finished_transfers(
     State(state): State<AppState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let cleared = TransferService::clear_finished_transfers(&state, &user).await?;
+    let cleared = state.transfers.clear_finished(&actor(&user)).await?;
     Ok(Json(ClearFinishedTransfersResponse {
         success: true,
         cleared,
