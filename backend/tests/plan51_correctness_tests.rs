@@ -1,12 +1,13 @@
 use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, SftpAuth, VfsPath};
 use backend::events::EventJournal;
 use backend::ports::transfer::{TransferJobResponse, TransferStatus, TransferType};
 use backend::services::{EditorService, FileService, TransferService};
-use backend::state::{AppState, TransferState};
+use backend::state::{AppState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::{
     TransferManager, TransferStatus as EngineTransferStatus, TransferType as EngineTransferType,
 };
@@ -16,7 +17,18 @@ use std::time::Duration;
 use tempfile::tempdir;
 use tokio::io::AsyncReadExt;
 
-async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
+struct TestRuntime {
+    _temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_context() -> (AppState, AuthenticatedUser, TestRuntime) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("test_plan51.db");
     let storage_dir = temp.path().join("storage");
@@ -27,7 +39,7 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
 
     let admin = AuthenticatedUser(UserInfo {
         id: "admin-user".to_string(),
@@ -35,7 +47,14 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
         is_admin: true,
     });
 
-    (state, admin, temp)
+    (
+        built.state,
+        admin,
+        TestRuntime {
+            _temp: temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 fn actor(user: &AuthenticatedUser) -> Actor {
@@ -84,7 +103,7 @@ async fn test_sftp_password_rejection_notice() {
 
 #[tokio::test]
 async fn test_resume_integrity_restart_on_invalid_part() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, _runtime) = setup_test_context().await;
     let src_content = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
     FileService::create_or_write_file(
@@ -126,7 +145,7 @@ async fn test_resume_integrity_restart_on_invalid_part() {
 
 #[tokio::test]
 async fn test_pagination_bounded_limits_and_cursor() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, _runtime) = setup_test_context().await;
 
     for i in 0..20 {
         FileService::create_or_write_file(
@@ -184,7 +203,7 @@ async fn test_pagination_bounded_limits_and_cursor() {
 
 #[tokio::test]
 async fn test_directory_transfer_zero_vector_streaming() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, _runtime) = setup_test_context().await;
 
     FileService::create_directory(&state, &admin, "local", "/source_dir/sub1/sub2")
         .await
@@ -227,7 +246,7 @@ async fn test_directory_transfer_zero_vector_streaming() {
 
 #[tokio::test]
 async fn test_presign_upload_completion_endpoint() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, _runtime) = setup_test_context().await;
 
     FileService::create_or_write_file(
         &state,
