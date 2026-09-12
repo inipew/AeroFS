@@ -21,10 +21,11 @@ use crate::infrastructure::{
 use crate::runtime::ResourceBudget;
 use crate::services::{
     connection_service::ConnectionService, ArchiveService, HealthService, RealtimeService,
-    SearchService, SyncService,
+    SearchService, SettingsService, SyncService,
 };
 use crate::state::{
-    AppRuntime, AppState, ArchiveState, HealthState, RealtimeState, SearchState, SyncState,
+    AppRuntime, AppState, ArchiveState, HealthState, RealtimeState, SearchState, SettingsState,
+    SyncState,
 };
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
@@ -209,6 +210,13 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         Arc::new(Semaphore::new(cfg_limits_archive)),
     ));
 
+    let settings = SettingsState::new(SettingsService::new(
+        db.clone(),
+        config.clone(),
+        registry.clone(),
+        transfer_manager.clone(),
+    ));
+
     let transfers = TransferUseCases::new(
         CreateTransfer::new(
             file_authorization,
@@ -257,6 +265,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         realtime,
         sync,
         archive,
+        settings,
     };
 
     spawn_runtime_tasks(&state);
