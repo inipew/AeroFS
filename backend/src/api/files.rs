@@ -825,22 +825,22 @@ pub async fn create_upload_session(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateUploadSessionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Upload).await?;
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-    let target =
-        crate::application::UploadApplicationService::validate_target(&connection_id, &payload.path)?;
-    let session = crate::application::UploadApplicationService::create_session(
-        &state,
-        &user.id,
-        &connection_id,
-        &provider,
-        target,
-        payload.file_name,
-        payload.total_bytes,
-    )
-    .await?;
+    let connection = crate::domain::ConnectionId::new(connection_id.clone())
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let target = crate::application::UploadApplicationService::validate_target(
+        &connection,
+        &payload.path,
+    )?;
+    let session = state
+        .uploads
+        .create_session(
+            &actor(&user),
+            &connection,
+            target,
+            payload.file_name,
+            payload.total_bytes,
+        )
+        .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(CreateUploadSessionResponse {
@@ -878,17 +878,15 @@ pub async fn upload_session_content(
     Path((connection_id, job_id)): Path<(String, String)>,
     body: Body,
 ) -> Result<impl IntoResponse, AppError> {
+    let connection = crate::domain::ConnectionId::new(connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let stream = body.into_data_stream().map(|chunk| {
         chunk.map_err(|error| AppError::BadRequest(format!("Upload stream error: {}", error)))
     });
-    let path = crate::application::UploadApplicationService::execute_session_stream(
-        &state,
-        &user.id,
-        &connection_id,
-        &job_id,
-        stream,
-    )
-    .await?;
+    let path = state
+        .uploads
+        .execute_session_stream(&actor(&user), &connection, &job_id, stream)
+        .await?;
     Ok(Json(SuccessResponse {
         success: true,
         message: format!("Uploaded: {}", path),
@@ -917,13 +915,10 @@ pub async fn upload_file(
     Path(connection_id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Upload).await?;
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
+    let connection = crate::domain::ConnectionId::new(connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let mut dest_dir = "/".to_string();
     let mut uploaded_files = Vec::new();
-    let max_upload_bytes = state.config.limits.max_upload_size;
 
     while let Some(mut field) = multipart
         .next_field()
@@ -938,20 +933,28 @@ pub async fn upload_file(
         if let Some(file_name) = field.file_name() {
             let clean_name = file_name.to_string();
             let target_path = VfsPath::new(
-                &connection_id,
+                connection.as_str(),
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
-            let uploaded_path =
-                crate::application::UploadApplicationService::execute_inline_stream(
-                    &state,
-                    &user.id,
-                    &connection_id,
-                    &provider,
+            let stream = futures::stream::unfold(field, |mut field| async move {
+                match field.chunk().await {
+                    Ok(Some(bytes)) => Some((Ok(bytes), field)),
+                    Ok(None) => None,
+                    Err(error) => Some((
+                        Err(AppError::BadRequest(format!("Upload stream error: {}", error))),
+                        field,
+                    )),
+                }
+            });
+            let uploaded_path = state
+                .uploads
+                .execute_inline_stream(
+                    &actor(&user),
+                    &connection,
                     target_path,
                     &clean_name,
                     None,
-                    max_upload_bytes,
-                    &mut field,
+                    stream,
                 )
                 .await?;
             uploaded_files.push(uploaded_path);
