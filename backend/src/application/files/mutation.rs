@@ -1,5 +1,5 @@
 use crate::domain::{Actor, ConnectionId, FileMetadata, PermissionInheritanceMode, VfsPath};
-use crate::errors::{AppError, VfsError};
+use crate::errors::AppError;
 use crate::ports::{
     authorization::{Authorization, FileAction},
     effects::FileMutationEffects,
