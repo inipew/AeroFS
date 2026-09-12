@@ -1,5 +1,5 @@
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{to_bytes, Body, Bytes, HttpBody},
     extract::Request,
     http::{header::HeaderName, HeaderValue, Method, StatusCode},
     middleware::Next,
@@ -137,14 +137,22 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
     let resp = next.run(req).await;
     let status = resp.status();
     if status.is_success() || status == StatusCode::CREATED || status == StatusCode::NO_CONTENT {
-        // Never consume a body unless it is known to fit in the cache. Previously,
-        // `to_bytes(..., 2 MiB)` consumed an oversized response and replaced it
-        // with an empty successful body on error.
-        let cacheable_len = resp
+        // Never consume a body unless the framework can prove it fits the cache.
+        // Some small JSON responses do not carry Content-Length, but Axum's body
+        // still exposes an exact/finite size hint. Unknown/streaming bodies are
+        // passed through untouched so idempotency can never truncate a success.
+        let header_len = resp
             .headers()
             .get(axum::http::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<usize>().ok())
+            .and_then(|value| value.parse::<usize>().ok());
+        let hinted_upper = resp
+            .body()
+            .size_hint()
+            .upper()
+            .and_then(|value| usize::try_from(value).ok());
+        let cacheable_len = header_len
+            .or(hinted_upper)
             .filter(|length| *length <= MAX_CACHED_RESPONSE_BYTES);
 
         if cacheable_len.is_none() {
@@ -172,9 +180,9 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
                 Response::from_parts(parts, Body::from(bytes))
             }
             Err(error) => {
-                // A declared-small body that still violates the bound indicates a
-                // broken response contract. Remove the reservation and surface a
-                // server error rather than returning a false successful empty body.
+                // A body whose declared/hinted upper bound fits the cache should
+                // not cross the limit. Treat this as a server contract failure,
+                // never as a false successful response with an empty body.
                 if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
                     guard.remove(&scoped_key);
                 }
