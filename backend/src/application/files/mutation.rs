@@ -1,214 +1,311 @@
 use super::FileApplicationService;
 use crate::auth::UserInfo;
-use crate::domain::{FileMetadata, PermissionInheritanceMode, VfsPath};
+use crate::domain::{Actor, ConnectionId, FileMetadata, PermissionInheritanceMode, VfsPath};
 use crate::errors::{AppError, VfsError};
+use crate::ports::{
+    authorization::{Authorization, FileAction},
+    effects::FileMutationEffects,
+    filesystem::FileSystemResolver,
+};
 use std::sync::Arc;
 use tokio::task::JoinSet;
+
+#[derive(Debug, Clone)]
+pub struct CreateDirectoryCommand {
+    pub connection: ConnectionId,
+    pub path: String,
+}
+
+#[derive(Clone)]
+pub struct CreateDirectory {
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    effects: Arc<dyn FileMutationEffects>,
+}
+
+impl CreateDirectory {
+    pub fn new(
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        effects: Arc<dyn FileMutationEffects>,
+    ) -> Self {
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        command: CreateDirectoryCommand,
+    ) -> Result<FileMetadata, AppError> {
+        use crate::domain::policy::resolve_destination_permissions;
+
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Create)
+            .await?;
+        let provider = self.filesystem.resolve(&command.connection).await?;
+        let path = VfsPath::new(command.connection.as_str(), command.path.clone())?;
+        let permissions = resolve_destination_permissions(
+            &provider,
+            &path,
+            true,
+            PermissionInheritanceMode::InheritParent,
+        )
+        .await;
+
+        provider.create_dir(&path).await?;
+        if let Some(permissions) = permissions {
+            let _ = provider.set_permissions(&path, &permissions).await;
+        }
+        let metadata = provider.stat(&path).await?;
+
+        self.effects
+            .invalidate(&command.connection, &command.path)
+            .await;
+        self.effects
+            .file_changed(
+                actor,
+                &command.connection,
+                &path.path,
+                "FILE_MKDIR",
+                "create",
+                None,
+            )
+            .await;
+        Ok(metadata)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RenameEntryCommand {
+    pub connection: ConnectionId,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone)]
+pub struct RenameEntry {
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    effects: Arc<dyn FileMutationEffects>,
+}
+
+impl RenameEntry {
+    pub fn new(
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        effects: Arc<dyn FileMutationEffects>,
+    ) -> Self {
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        command: RenameEntryCommand,
+    ) -> Result<(), AppError> {
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Write)
+            .await?;
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Delete)
+            .await?;
+
+        let provider = self.filesystem.resolve(&command.connection).await?;
+        let from = VfsPath::new(command.connection.as_str(), command.from.clone())?;
+        let to = VfsPath::new(command.connection.as_str(), command.to.clone())?;
+        provider.rename(&from, &to).await?;
+
+        self.effects
+            .invalidate_prefix(&command.connection, &command.from)
+            .await;
+        self.effects
+            .invalidate_prefix(&command.connection, &command.to)
+            .await;
+        self.effects
+            .file_renamed(actor, &command.connection, &from.path, &to.path)
+            .await;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteEntriesCommand {
+    pub connection: ConnectionId,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteEntriesResult {
+    pub succeeded: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+pub struct DeleteEntries {
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    effects: Arc<dyn FileMutationEffects>,
+}
+
+impl DeleteEntries {
+    pub fn new(
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        effects: Arc<dyn FileMutationEffects>,
+    ) -> Self {
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        command: DeleteEntriesCommand,
+    ) -> Result<DeleteEntriesResult, AppError> {
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Delete)
+            .await?;
+        let provider = self.filesystem.resolve(&command.connection).await?;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut tasks = JoinSet::new();
+
+        for raw_path in command.paths {
+            let provider = provider.clone();
+            let connection = command.connection.clone();
+            let semaphore = semaphore.clone();
+            tasks.spawn(async move {
+                let _permit = semaphore
+                    .acquire()
+                    .await
+                    .map_err(|_| VfsError::IoError("Semaphore closed".into()))?;
+                let path = VfsPath::new(connection.as_str(), &raw_path)?;
+                let result = provider.delete(&path).await;
+                Ok::<_, VfsError>((raw_path, result))
+            });
+        }
+
+        let mut succeeded = Vec::new();
+        let mut failed = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok(Ok((path, Ok(())))) => {
+                    self.effects
+                        .invalidate_prefix(&command.connection, &path)
+                        .await;
+                    self.effects
+                        .file_changed(
+                            actor,
+                            &command.connection,
+                            &path,
+                            "FILE_DELETE",
+                            "delete",
+                            None,
+                        )
+                        .await;
+                    succeeded.push(path);
+                }
+                Ok(Ok((path, Err(error)))) => failed.push((path, error.to_string())),
+                Ok(Err(error)) => failed.push(("<invalid-path>".into(), error.to_string())),
+                Err(error) => failed.push(("<task>".into(), error.to_string())),
+            }
+        }
+
+        succeeded.sort();
+        failed.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(DeleteEntriesResult { succeeded, failed })
+    }
+}
+
+fn actor_from_user(user: &UserInfo) -> Actor {
+    Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
 
 impl FileApplicationService {
     pub async fn create_directory_typed(
         &self,
         user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
+        connection: &ConnectionId,
         raw_path: String,
     ) -> Result<FileMetadata, AppError> {
-        use crate::auth::permissions::{check_permission, PermissionAction};
-        use crate::domain::policy::resolve_destination_permissions;
-        check_permission(
-            &self.db,
-            user,
-            connection.as_str(),
-            PermissionAction::Create,
+        CreateDirectory::new(
+            self.authorization.clone(),
+            self.filesystem.clone(),
+            self.effects.clone(),
         )
-        .await?;
-        let provider = self
-            .registry
-            .get(connection.as_str())
-            .await
-            .ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-            })?;
-        let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
-        let resolved_perms = resolve_destination_permissions(
-            &provider,
-            &vfs_path,
-            true,
-            PermissionInheritanceMode::InheritParent,
+        .execute(
+            &actor_from_user(user),
+            CreateDirectoryCommand {
+                connection: connection.clone(),
+                path: raw_path,
+            },
         )
-        .await;
-        provider.create_dir(&vfs_path).await?;
-        if let Some(perms) = resolved_perms {
-            let _ = provider.set_permissions(&vfs_path, &perms).await;
-        }
-        let meta = provider.stat(&vfs_path).await?;
-        self.metadata_cache
-            .invalidate(connection.as_str(), &raw_path)
-            .await;
-        crate::auth::audit::record_audit_log(
-            &self.db,
-            Some(&user.id),
-            "FILE_MKDIR",
-            Some(connection.as_str()),
-            Some(&vfs_path.path),
-            "SUCCESS",
-            None,
-            None,
-        )
-        .await;
-        let _ = self
-            .event_journal
-            .append(
-                crate::events::DomainEvent::file_change(
-                    connection.as_str(),
-                    &vfs_path.path,
-                    "create",
-                ),
-                None,
-            )
-            .await;
-        Ok(meta)
+        .await
     }
 
     pub async fn delete_files_typed(
         &self,
         user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
+        connection: &ConnectionId,
         paths: Vec<String>,
     ) -> Result<(Vec<String>, Vec<(String, String)>), AppError> {
-        use crate::auth::permissions::{check_permission, PermissionAction};
-        check_permission(
-            &self.db,
-            user,
-            connection.as_str(),
-            PermissionAction::Delete,
+        let result = DeleteEntries::new(
+            self.authorization.clone(),
+            self.filesystem.clone(),
+            self.effects.clone(),
+        )
+        .execute(
+            &actor_from_user(user),
+            DeleteEntriesCommand {
+                connection: connection.clone(),
+                paths,
+            },
         )
         .await?;
-        let provider = self
-            .registry
-            .get(connection.as_str())
-            .await
-            .ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-            })?;
-        let mut succeeded = Vec::new();
-        let mut failed = Vec::new();
-        let mut tasks = JoinSet::new();
-        let sem = Arc::new(tokio::sync::Semaphore::new(8));
-        for raw_path in paths {
-            let p_clone = provider.clone();
-            let conn_str = connection.to_string();
-            let sem_clone = sem.clone();
-            tasks.spawn(async move {
-                let _permit = sem_clone
-                    .acquire()
-                    .await
-                    .map_err(|_| VfsError::IoError("Semaphore closed".into()))?;
-                let vfs_path = VfsPath::new(&conn_str, &raw_path)?;
-                let res = p_clone.delete(&vfs_path).await;
-                Ok::<_, VfsError>((raw_path, res))
-            });
-        }
-        while let Some(join_res) = tasks.join_next().await {
-            if let Ok(Ok((path, del_res))) = join_res {
-                match del_res {
-                    Ok(_) => {
-                        self.metadata_cache
-                            .invalidate_prefix(connection.as_str(), &path)
-                            .await;
-                        crate::auth::audit::record_audit_log(
-                            &self.db,
-                            Some(&user.id),
-                            "FILE_DELETE",
-                            Some(connection.as_str()),
-                            Some(&path),
-                            "SUCCESS",
-                            None,
-                            None,
-                        )
-                        .await;
-                        let _ = self
-                            .event_journal
-                            .append(
-                                crate::events::DomainEvent::file_change(
-                                    connection.as_str(),
-                                    &path,
-                                    "delete",
-                                ),
-                                None,
-                            )
-                            .await;
-                        succeeded.push(path);
-                    }
-                    Err(e) => failed.push((path, e.to_string())),
-                }
-            }
-        }
-        succeeded.sort();
-        failed.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok((succeeded, failed))
+        Ok((result.succeeded, result.failed))
     }
 
     pub async fn rename_typed(
         &self,
         user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
+        connection: &ConnectionId,
         from_raw: String,
         to_raw: String,
     ) -> Result<(), AppError> {
-        use crate::auth::permissions::{check_permission, PermissionAction};
-        check_permission(&self.db, user, connection.as_str(), PermissionAction::Write).await?;
-        check_permission(
-            &self.db,
-            user,
-            connection.as_str(),
-            PermissionAction::Delete,
+        RenameEntry::new(
+            self.authorization.clone(),
+            self.filesystem.clone(),
+            self.effects.clone(),
         )
-        .await?;
-        let provider = self
-            .registry
-            .get(connection.as_str())
-            .await
-            .ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-            })?;
-        let from_vfs = VfsPath::new(connection.as_str(), from_raw.clone())?;
-        let to_vfs = VfsPath::new(connection.as_str(), to_raw.clone())?;
-        provider.rename(&from_vfs, &to_vfs).await?;
-        self.metadata_cache
-            .invalidate_prefix(connection.as_str(), &from_raw)
-            .await;
-        self.metadata_cache
-            .invalidate_prefix(connection.as_str(), &to_raw)
-            .await;
-        crate::auth::audit::record_audit_log(
-            &self.db,
-            Some(&user.id),
-            "FILE_RENAME",
-            Some(connection.as_str()),
-            Some(&from_vfs.path),
-            "SUCCESS",
-            None,
-            Some(&format!("Renamed to: {}", to_vfs.path)),
+        .execute(
+            &actor_from_user(user),
+            RenameEntryCommand {
+                connection: connection.clone(),
+                from: from_raw,
+                to: to_raw,
+            },
         )
-        .await;
-        let _ = self
-            .event_journal
-            .append(
-                crate::events::DomainEvent::file_rename(
-                    connection.as_str(),
-                    &from_vfs.path,
-                    &to_vfs.path,
-                ),
-                None,
-            )
-            .await;
-        Ok(())
+        .await
     }
 
     pub async fn chmod_typed(
         &self,
         user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
+        connection: &ConnectionId,
         raw_path: String,
         mode: u32,
     ) -> Result<(), AppError> {

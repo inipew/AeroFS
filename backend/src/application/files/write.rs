@@ -1,105 +1,99 @@
 use super::FileApplicationService;
 use crate::auth::UserInfo;
-use crate::domain::{FileMetadata, PermissionInheritanceMode, VfsPath};
+use crate::domain::{Actor, ConnectionId, FileMetadata, PermissionInheritanceMode, VfsPath};
 use crate::errors::{AppError, VfsError};
+use crate::ports::{
+    authorization::{Authorization, FileAction},
+    effects::FileMutationEffects,
+    filesystem::FileSystemResolver,
+    settings::FileSettings,
+};
 use std::io::Cursor;
+use std::sync::Arc;
 
-impl FileApplicationService {
-    /// Create an empty file without overwriting an existing destination.
-    ///
-    /// Editing uses `create_or_write_typed`; the REST create endpoint must not
-    /// share that overwrite behaviour because its public contract is 409 on an
-    /// existing path.
-    pub async fn create_file_typed(
-        &self,
-        user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
-        raw_path: String,
-    ) -> Result<FileMetadata, AppError> {
-        let provider = self
-            .registry
-            .get(connection.as_str())
-            .await
-            .ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-            })?;
-        let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
+#[derive(Debug, Clone)]
+pub struct WriteFileCommand {
+    pub connection: ConnectionId,
+    pub path: String,
+    pub content: Vec<u8>,
+    pub expected_etag: Option<String>,
+    pub create_only: bool,
+}
 
-        match provider.stat(&vfs_path).await {
-            Ok(_) => {
-                return Err(AppError::Vfs(VfsError::AlreadyExists(format!(
-                    "File '{}' already exists",
-                    vfs_path.path
-                ))));
-            }
-            Err(VfsError::NotFound(_)) => {}
-            Err(error) => return Err(error.into()),
+#[derive(Clone)]
+pub struct WriteFile {
+    authorization: Arc<dyn Authorization>,
+    filesystem: Arc<dyn FileSystemResolver>,
+    settings: Arc<dyn FileSettings>,
+    effects: Arc<dyn FileMutationEffects>,
+}
+
+impl WriteFile {
+    pub fn new(
+        authorization: Arc<dyn Authorization>,
+        filesystem: Arc<dyn FileSystemResolver>,
+        settings: Arc<dyn FileSettings>,
+        effects: Arc<dyn FileMutationEffects>,
+    ) -> Self {
+        Self {
+            authorization,
+            filesystem,
+            settings,
+            effects,
         }
-
-        self.create_or_write_typed(user, connection, raw_path, Vec::new(), None)
-            .await
     }
 
-    /// Owned write — no AppState, explicit ports (Phase 3.2).
-    pub async fn create_or_write_typed(
+    pub async fn execute(
         &self,
-        user: &UserInfo,
-        connection: &crate::domain::ConnectionId,
-        raw_path: String,
-        content: Vec<u8>,
-        expected_etag: Option<String>,
+        actor: &Actor,
+        command: WriteFileCommand,
     ) -> Result<FileMetadata, AppError> {
-        use crate::auth::permissions::{check_permission, PermissionAction};
         use crate::domain::policy::resolve_destination_permissions;
 
-        check_permission(&self.db, user, connection.as_str(), PermissionAction::Write).await?;
-        check_permission(
-            &self.db,
-            user,
-            connection.as_str(),
-            PermissionAction::Create,
-        )
-        .await?;
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Write)
+            .await?;
+        self.authorization
+            .authorize(actor, &command.connection, FileAction::Create)
+            .await?;
 
-        let provider = self
-            .registry
-            .get(connection.as_str())
-            .await
-            .ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", connection.as_str()))
-            })?;
+        let provider = self.filesystem.resolve(&command.connection).await?;
+        let path = VfsPath::new(command.connection.as_str(), command.path.clone())?;
 
-        let vfs_path = VfsPath::new(connection.as_str(), raw_path.clone())?;
+        if command.create_only {
+            match provider.stat(&path).await {
+                Ok(_) => {
+                    return Err(AppError::Vfs(VfsError::AlreadyExists(format!(
+                        "File '{}' already exists",
+                        path.path
+                    ))));
+                }
+                Err(VfsError::NotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
 
-        if !content.is_empty() {
-            let max_editable_bytes: u64 = sqlx::query_scalar::<_, String>(
-                "SELECT value FROM system_settings WHERE key = 'max_editable_size'",
-            )
-            .fetch_optional(&self.db)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(self.config.limits.max_editable_size);
-            if content.len() as u64 > max_editable_bytes {
+        if !command.content.is_empty() {
+            let max_editable_size = self.settings.max_editable_size().await?;
+            if command.content.len() as u64 > max_editable_size {
                 return Err(AppError::PayloadTooLarge(format!(
                     "File content length ({} bytes) exceeds maximum editable size of {} bytes",
-                    content.len(),
-                    max_editable_bytes
+                    command.content.len(),
+                    max_editable_size
                 )));
             }
         }
 
-        if let Some(expected) = expected_etag.as_deref() {
-            let existing_meta = provider.stat(&vfs_path).await.map_err(|e| match e {
+        if let Some(expected) = command.expected_etag.as_deref() {
+            let existing = provider.stat(&path).await.map_err(|error| match error {
                 VfsError::NotFound(_) => AppError::PreconditionFailed(format!(
                     "Target file '{}' does not exist for If-Match precondition",
-                    vfs_path.path
+                    path.path
                 )),
                 other => AppError::from(other),
             })?;
             let clean_expected = expected.trim().trim_matches('"');
-            let clean_actual = existing_meta.etag.trim().trim_matches('"');
+            let clean_actual = existing.etag.trim().trim_matches('"');
             if clean_expected != clean_actual && expected != "*" {
                 return Err(AppError::PreconditionFailed(format!(
                     "File was modified externally. Expected ETag: {}, Current ETag: {}",
@@ -108,101 +102,133 @@ impl FileApplicationService {
             }
         }
 
-        let caps = provider.capabilities();
-        let target_perms = resolve_destination_permissions(
+        let capabilities = provider.capabilities();
+        let permissions = resolve_destination_permissions(
             &provider,
-            &vfs_path,
+            &path,
             false,
             PermissionInheritanceMode::InheritExistingOrParent,
         )
         .await;
+        let content = command.content;
 
-        if caps.atomic_rename {
-            let tmp_vfs =
-                VfsPath::new(connection.as_str(), format!("{}.aerofs.tmp", vfs_path.path))?;
-            let cursor = Cursor::new(content.clone());
+        if capabilities.atomic_rename {
+            let temporary = VfsPath::new(
+                command.connection.as_str(),
+                format!("{}.aerofs.tmp", path.path),
+            )?;
             if provider
-                .write_stream(&tmp_vfs, Box::new(cursor))
+                .write_stream(&temporary, Box::new(Cursor::new(content.clone())))
                 .await
                 .is_ok()
             {
-                if caps.permissions {
-                    if let Some(ref perms) = target_perms {
-                        let _ = provider.set_permissions(&tmp_vfs, perms).await;
+                if capabilities.permissions {
+                    if let Some(ref permissions) = permissions {
+                        let _ = provider.set_permissions(&temporary, permissions).await;
                     }
                 }
-                if let Err(rename_err) = provider.rename(&tmp_vfs, &vfs_path).await {
+                if let Err(error) = provider.rename(&temporary, &path).await {
                     tracing::warn!(
                         "Atomic rename failed {}→{}: {}. Fallback direct",
-                        tmp_vfs.path,
-                        vfs_path.path,
-                        rename_err
+                        temporary.path,
+                        path.path,
+                        error
                     );
-                    let _ = provider.delete(&tmp_vfs).await;
-                    let fallback = Cursor::new(content);
-                    provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-                    if caps.permissions {
-                        if let Some(ref perms) = target_perms {
-                            let _ = provider.set_permissions(&vfs_path, perms).await;
-                        }
-                    }
-                } else if caps.permissions {
-                    if let Some(ref perms) = target_perms {
-                        let _ = provider.set_permissions(&vfs_path, perms).await;
-                    }
+                    let _ = provider.delete(&temporary).await;
+                    provider
+                        .write_stream(&path, Box::new(Cursor::new(content)))
+                        .await?;
                 }
             } else {
-                let fallback = Cursor::new(content);
-                provider.write_stream(&vfs_path, Box::new(fallback)).await?;
-                if caps.permissions {
-                    if let Some(ref perms) = target_perms {
-                        let _ = provider.set_permissions(&vfs_path, perms).await;
-                    }
-                }
+                provider
+                    .write_stream(&path, Box::new(Cursor::new(content)))
+                    .await?;
             }
         } else {
-            let cursor = Cursor::new(content);
-            provider.write_stream(&vfs_path, Box::new(cursor)).await?;
-            if caps.permissions {
-                if let Some(ref perms) = target_perms {
-                    let _ = provider.set_permissions(&vfs_path, perms).await;
-                }
+            provider
+                .write_stream(&path, Box::new(Cursor::new(content)))
+                .await?;
+        }
+
+        if capabilities.permissions {
+            if let Some(ref permissions) = permissions {
+                let _ = provider.set_permissions(&path, permissions).await;
             }
         }
 
-        let meta = provider.stat(&vfs_path).await?;
-        self.metadata_cache
-            .invalidate(connection.as_str(), &raw_path)
+        let metadata = provider.stat(&path).await?;
+        self.effects
+            .invalidate(&command.connection, &command.path)
             .await;
-        crate::auth::audit::record_audit_log(
-            &self.db,
-            Some(&user.id),
-            "FILE_WRITE",
-            Some(connection.as_str()),
-            Some(&vfs_path.path),
-            "SUCCESS",
-            None,
-            Some(&format!("Bytes written: {}", meta.size)),
-        )
-        .await;
-        let _ = self
-            .event_journal
-            .append(
-                crate::events::DomainEvent::file_change(
-                    connection.as_str(),
-                    &vfs_path.path,
-                    "write",
-                ),
-                None,
+        self.effects
+            .file_changed(
+                actor,
+                &command.connection,
+                &path.path,
+                "FILE_WRITE",
+                "write",
+                Some(format!("Bytes written: {}", metadata.size)),
             )
             .await;
-        Ok(meta)
+        Ok(metadata)
+    }
+}
+
+fn actor_from_user(user: &UserInfo) -> Actor {
+    Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
+impl FileApplicationService {
+    pub async fn create_file_typed(
+        &self,
+        user: &UserInfo,
+        connection: &ConnectionId,
+        raw_path: String,
+    ) -> Result<FileMetadata, AppError> {
+        self.write_file
+            .execute(
+                &actor_from_user(user),
+                WriteFileCommand {
+                    connection: connection.clone(),
+                    path: raw_path,
+                    content: Vec::new(),
+                    expected_etag: None,
+                    create_only: true,
+                },
+            )
+            .await
+    }
+
+    pub async fn create_or_write_typed(
+        &self,
+        user: &UserInfo,
+        connection: &ConnectionId,
+        raw_path: String,
+        content: Vec<u8>,
+        expected_etag: Option<String>,
+    ) -> Result<FileMetadata, AppError> {
+        self.write_file
+            .execute(
+                &actor_from_user(user),
+                WriteFileCommand {
+                    connection: connection.clone(),
+                    path: raw_path,
+                    content,
+                    expected_etag,
+                    create_only: false,
+                },
+            )
+            .await
     }
 
     pub async fn write_typed(
         &self,
-        user: &crate::auth::UserInfo,
-        connection: &crate::domain::ConnectionId,
+        user: &UserInfo,
+        connection: &ConnectionId,
         path: String,
         content: Vec<u8>,
     ) -> Result<(), AppError> {
