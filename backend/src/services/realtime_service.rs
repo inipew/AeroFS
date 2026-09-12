@@ -39,11 +39,7 @@ pub struct RealtimeService {
 }
 
 impl RealtimeService {
-    pub fn new(
-        db: DbPool,
-        journal: Arc<EventJournal>,
-        shutdown_token: CancellationToken,
-    ) -> Self {
+    pub fn new(db: DbPool, journal: Arc<EventJournal>, shutdown_token: CancellationToken) -> Self {
         Self {
             db,
             journal,

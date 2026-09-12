@@ -30,13 +30,7 @@ pub async fn ws_handler(
     let principal = RealtimePrincipal::new(user.id.clone(), user.is_admin);
     let service = state.service.clone();
     ws.on_upgrade(move |socket| {
-        handle_socket(
-            socket,
-            service,
-            principal,
-            query.last_epoch,
-            query.last_seq,
-        )
+        handle_socket(socket, service, principal, query.last_epoch, query.last_seq)
     })
 }
 
@@ -75,10 +69,7 @@ async fn handle_socket(
     }
 
     if let Some(sequence) = last_seq {
-        if let Ok(outcome) = service
-            .replay(last_epoch.as_deref(), sequence, 100)
-            .await
-        {
+        if let Ok(outcome) = service.replay(last_epoch.as_deref(), sequence, 100).await {
             match outcome {
                 ReplayOutcome::Events(missed) => {
                     let connections = authorized_connections.read().await.clone();
@@ -229,8 +220,7 @@ mod tests {
 
     #[test]
     fn websocket_authorization_snapshot_type_is_transport_local() {
-        let connections: Arc<RwLock<HashSet<String>>> =
-            Arc::new(RwLock::new(HashSet::new()));
+        let connections: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
         assert_eq!(Arc::strong_count(&connections), 1);
     }
 }

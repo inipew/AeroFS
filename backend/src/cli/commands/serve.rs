@@ -48,7 +48,10 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     }
 
     let db = init_db(&config.database.url).await?;
-    tracing::info!("Database initialized successfully at {}", config.database.url);
+    tracing::info!(
+        "Database initialized successfully at {}",
+        config.database.url
+    );
 
     tracing::info!("runtime.phase=starting");
     let state = build_app_state(config, db).await;

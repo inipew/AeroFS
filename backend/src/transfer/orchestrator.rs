@@ -1,6 +1,4 @@
-use crate::transfer::{
-    RetryTransferError, TransferJob, TransferManager, TransferType,
-};
+use crate::transfer::{RetryTransferError, TransferJob, TransferManager, TransferType};
 
 /// Canonical command admitted by the transfer subsystem. HTTP, Sync and future
 /// schedulers should submit this command rather than call TransferManager directly.

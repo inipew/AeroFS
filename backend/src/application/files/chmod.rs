@@ -43,7 +43,9 @@ impl ChmodEntry {
         provider
             .set_permissions(&path, &format!("{:04o}", command.mode))
             .await?;
-        self.effects.invalidate(&command.connection, &path.path).await;
+        self.effects
+            .invalidate(&command.connection, &path.path)
+            .await;
         self.effects
             .file_changed(
                 actor,

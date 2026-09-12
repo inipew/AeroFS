@@ -57,10 +57,7 @@ impl SyncService {
     }
 
     pub async fn list_jobs(&self) -> Result<Vec<SyncJob>, AppError> {
-        self.manager
-            .list_jobs()
-            .await
-            .map_err(AppError::Internal)
+        self.manager.list_jobs().await.map_err(AppError::Internal)
     }
 
     pub async fn list_operations(&self, job_id: &str) -> Result<Vec<SyncOperationRow>, AppError> {

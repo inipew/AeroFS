@@ -10,7 +10,8 @@ use backend::domain::{Actor, ConnectionId, VfsPath};
 use backend::infrastructure::CredentialStore;
 use backend::services::{
     AuditService, AuthService, AuthorizationService, ConnectionService, EditorService, FileService,
-    OperationService, PreferencesService, PreviewService, SettingsService, ShareService, TrashService,
+    OperationService, PreferencesService, PreviewService, SettingsService, ShareService,
+    TrashService,
 };
 use backend::state::{HealthState, RuntimePhase, SearchState};
 use backend::vfs::factory::ProviderFactory;
@@ -158,7 +159,10 @@ async fn test_plan36_connection_service_lifecycle() {
     let res = service.get_connection(&regular_actor, &conn_id).await;
     assert!(res.is_err());
 
-    let detail = service.get_connection(&admin_actor, &conn_id).await.unwrap();
+    let detail = service
+        .get_connection(&admin_actor, &conn_id)
+        .await
+        .unwrap();
     assert_eq!(detail.connection.name, "Extra Local");
 
     let test_res = service

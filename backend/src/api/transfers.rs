@@ -67,8 +67,9 @@ pub async fn create_transfer(
 ) -> Result<impl IntoResponse, AppError> {
     let source_connection = crate::domain::ConnectionId::new(payload.source_connection_id)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
-    let destination_connection = crate::domain::ConnectionId::new(payload.destination_connection_id)
-        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let destination_connection =
+        crate::domain::ConnectionId::new(payload.destination_connection_id)
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
     let job_id = state
         .transfers
         .create_transfer

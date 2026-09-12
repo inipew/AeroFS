@@ -64,14 +64,10 @@ async fn test_retry_rejected_after_permission_revoked() {
     let (app, _admin_cookie, _temp, state) = setup_app().await;
 
     // 1. Create a non-admin user "alice"
-    let alice_id = backend::services::UserService::create_user(
-        &state.db,
-        "alice",
-        "alicepassword",
-        false,
-    )
-    .await
-    .unwrap();
+    let alice_id =
+        backend::services::UserService::create_user(&state.db, "alice", "alicepassword", false)
+            .await
+            .unwrap();
 
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
@@ -119,7 +115,10 @@ async fn test_retry_rejected_after_permission_revoked() {
         created_at: now,
         updated_at: now,
     };
-    state.transfer_manager.insert_job_for_test(job.clone()).await;
+    state
+        .transfer_manager
+        .insert_job_for_test(job.clone())
+        .await;
 
     // 3. Set Alice's read permission on source connection "local" to 0
     let perm_id = uuid::Uuid::new_v4().to_string();
@@ -337,7 +336,10 @@ async fn test_retry_move_recovery_from_cleaning_up_without_recopy() {
     assert_eq!(final_job.status, TransferStatus::Completed);
     assert_eq!(final_job.phase, TransferPhase::Completed);
     // Source file should have been deleted without destination conflict
-    assert!(!move_src.exists(), "Source file should have been deleted during CleaningUp");
+    assert!(
+        !move_src.exists(),
+        "Source file should have been deleted during CleaningUp"
+    );
     assert!(move_dst.exists(), "Destination file must still exist");
 }
 
@@ -383,7 +385,10 @@ async fn test_concurrent_retry_race_condition_cas_guard() {
     let r2 = res2.unwrap();
 
     let success_count = (if r1.is_ok() { 1 } else { 0 }) + (if r2.is_ok() { 1 } else { 0 });
-    assert_eq!(success_count, 1, "Exactly one concurrent retry request must succeed");
+    assert_eq!(
+        success_count, 1,
+        "Exactly one concurrent retry request must succeed"
+    );
 
     let err = match r1 {
         Err(e) => e,
@@ -397,7 +402,10 @@ async fn test_concurrent_retry_race_condition_cas_guard() {
                 "Second concurrent request should fail CAS status verification"
             );
         }
-        other => panic!("Expected InvalidStatus on concurrent retry, got {:?}", other),
+        other => panic!(
+            "Expected InvalidStatus on concurrent retry, got {:?}",
+            other
+        ),
     }
 }
 
@@ -595,7 +603,10 @@ async fn test_fast_transfer_final_progress_and_payload_parity() {
         created_at: now,
         updated_at: now,
     };
-    state.transfer_manager.insert_job_for_test(job.clone()).await;
+    state
+        .transfer_manager
+        .insert_job_for_test(job.clone())
+        .await;
 
     // Fast finish (< 100ms) with actual 42 bytes
     let actual_uploaded = 42;
@@ -603,7 +614,10 @@ async fn test_fast_transfer_final_progress_and_payload_parity() {
         .transfer_manager
         .update_inline_progress(job_id, actual_uploaded, actual_uploaded, 0, Some(0))
         .await;
-    state.transfer_manager.complete_inline_job(job_id, Some("sha256:abc".into())).await;
+    state
+        .transfer_manager
+        .complete_inline_job(job_id, Some("sha256:abc".into()))
+        .await;
 
     let final_job = state.transfer_manager.get_job(job_id).await.unwrap();
     assert_eq!(final_job.status, TransferStatus::Completed);

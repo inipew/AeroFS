@@ -266,44 +266,50 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
 fn spawn_runtime_tasks(state: &AppState) {
     let local_root = state.config.filesystem.default_local_root.clone();
     let cleanup_token = state.runtime.shutdown_token.clone();
-    state.runtime.supervisor.spawn("stale_staging_cleanup", async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-            crate::config::EVENT_JOURNAL_VACUUM_SECS,
-        ));
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = cleanup_token.cancelled() => break,
-                _ = interval.tick() => {
-                    let _ = crate::vfs::cleanup_stale_staging_files(
-                        &local_root,
-                        std::time::Duration::from_secs(crate::config::STAGING_RETENTION_SECS),
-                    ).await;
+    state
+        .runtime
+        .supervisor
+        .spawn("stale_staging_cleanup", async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                crate::config::EVENT_JOURNAL_VACUUM_SECS,
+            ));
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cleanup_token.cancelled() => break,
+                    _ = interval.tick() => {
+                        let _ = crate::vfs::cleanup_stale_staging_files(
+                            &local_root,
+                            std::time::Duration::from_secs(crate::config::STAGING_RETENTION_SECS),
+                        ).await;
+                    }
                 }
             }
-        }
-    });
+        });
 
     let journal = state.event_journal.clone();
     let vacuum_token = state.runtime.shutdown_token.clone();
-    state.runtime.supervisor.spawn("event_journal_vacuum", async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-            crate::config::EVENT_JOURNAL_VACUUM_SECS,
-        ));
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = vacuum_token.cancelled() => break,
-                _ = interval.tick() => {
-                    let _ = journal
-                        .vacuum(std::time::Duration::from_secs(
-                            crate::config::EVENT_JOURNAL_RETENTION_SECS,
-                        ))
-                        .await;
+    state
+        .runtime
+        .supervisor
+        .spawn("event_journal_vacuum", async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                crate::config::EVENT_JOURNAL_VACUUM_SECS,
+            ));
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = vacuum_token.cancelled() => break,
+                    _ = interval.tick() => {
+                        let _ = journal
+                            .vacuum(std::time::Duration::from_secs(
+                                crate::config::EVENT_JOURNAL_RETENTION_SECS,
+                            ))
+                            .await;
+                    }
                 }
             }
-        }
-    });
+        });
 
     let housekeeping_db = state.db.clone();
     let housekeeping_token = state.runtime.shutdown_token.clone();

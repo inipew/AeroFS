@@ -135,8 +135,7 @@ async fn process_envelope(
             .get("id")
             .and_then(|v| v.as_str())
             .map(|id| (id.to_owned(), true)),
-        DomainEvent::TransferFailed(ref value)
-        | DomainEvent::TransferCancelled(ref value) => value
+        DomainEvent::TransferFailed(ref value) | DomainEvent::TransferCancelled(ref value) => value
             .get("id")
             .and_then(|v| v.as_str())
             .map(|id| (id.to_owned(), false)),

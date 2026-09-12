@@ -124,11 +124,10 @@ async fn sync_transfer_completion_projection_is_idempotent() {
     assert_eq!(synced_files, 1, "completion replay must not double count");
     assert_eq!(job_status, "completed");
 
-    let op_status: String =
-        sqlx::query_scalar("SELECT status FROM sync_operations WHERE id = ?")
-            .bind("op-phase8")
-            .fetch_one(&db)
-            .await
-            .unwrap();
+    let op_status: String = sqlx::query_scalar("SELECT status FROM sync_operations WHERE id = ?")
+        .bind("op-phase8")
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(op_status, "completed");
 }

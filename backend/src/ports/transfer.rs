@@ -21,12 +21,7 @@ pub trait TransferQueue: Send + Sync {
 
 #[async_trait]
 pub trait TransferEffects: Send + Sync {
-    async fn submitted(
-        &self,
-        actor: &Actor,
-        submission: &TransferSubmission,
-        job_id: &str,
-    );
+    async fn submitted(&self, actor: &Actor, submission: &TransferSubmission, job_id: &str);
 }
 
 /// Query/control boundary used by transport adapters. Implementations own the

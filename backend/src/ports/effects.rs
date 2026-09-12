@@ -26,18 +26,6 @@ pub trait FileMutationEffects: Send + Sync {
         event_action: &'static str,
         details: Option<String>,
     );
-    async fn file_renamed(
-        &self,
-        actor: &Actor,
-        connection: &ConnectionId,
-        from: &str,
-        to: &str,
-    );
-    async fn file_copied(
-        &self,
-        actor: &Actor,
-        connection: &ConnectionId,
-        from: &str,
-        to: &str,
-    );
+    async fn file_renamed(&self, actor: &Actor, connection: &ConnectionId, from: &str, to: &str);
+    async fn file_copied(&self, actor: &Actor, connection: &ConnectionId, from: &str, to: &str);
 }

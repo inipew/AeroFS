@@ -27,7 +27,11 @@ impl CreateDirectory {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
     pub async fn execute(
@@ -56,7 +60,9 @@ impl CreateDirectory {
         }
         let metadata = provider.stat(&path).await?;
 
-        self.effects.invalidate(&command.connection, &command.path).await;
+        self.effects
+            .invalidate(&command.connection, &command.path)
+            .await;
         self.effects
             .file_changed(
                 actor,
@@ -91,7 +97,11 @@ impl RenameEntry {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
     pub async fn execute(
@@ -111,8 +121,12 @@ impl RenameEntry {
         let to = VfsPath::new(command.connection.as_str(), command.to.clone())?;
         provider.rename(&from, &to).await?;
 
-        self.effects.invalidate_prefix(&command.connection, &command.from).await;
-        self.effects.invalidate_prefix(&command.connection, &command.to).await;
+        self.effects
+            .invalidate_prefix(&command.connection, &command.from)
+            .await;
+        self.effects
+            .invalidate_prefix(&command.connection, &command.to)
+            .await;
         self.effects
             .file_renamed(actor, &command.connection, &from.path, &to.path)
             .await;
@@ -140,7 +154,11 @@ impl CopyEntry {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
     pub async fn execute(
@@ -165,7 +183,9 @@ impl CopyEntry {
         }
 
         provider.copy(&from, &to).await?;
-        self.effects.invalidate_prefix(&command.connection, &to.path).await;
+        self.effects
+            .invalidate_prefix(&command.connection, &to.path)
+            .await;
         self.effects
             .file_copied(actor, &command.connection, &from.path, &to.path)
             .await;
@@ -198,7 +218,11 @@ impl DeleteEntries {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
     pub async fn execute(
@@ -233,7 +257,9 @@ impl DeleteEntries {
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok(Ok((path, Ok(())))) => {
-                    self.effects.invalidate_prefix(&command.connection, &path).await;
+                    self.effects
+                        .invalidate_prefix(&command.connection, &path)
+                        .await;
                     self.effects
                         .file_changed(
                             actor,

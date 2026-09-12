@@ -354,12 +354,11 @@ impl EventJournal {
             return Ok(ReplayOutcome::Events(Vec::new()));
         }
 
-        let min_sequence: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(sequence) FROM event_journal WHERE epoch = ?",
-        )
-        .bind(&self.epoch)
-        .fetch_one(&self.db)
-        .await?;
+        let min_sequence: Option<i64> =
+            sqlx::query_scalar("SELECT MIN(sequence) FROM event_journal WHERE epoch = ?")
+                .bind(&self.epoch)
+                .fetch_one(&self.db)
+                .await?;
 
         match min_sequence {
             Some(min_seq) => {

@@ -827,10 +827,8 @@ pub async fn create_upload_session(
 ) -> Result<impl IntoResponse, AppError> {
     let connection = crate::domain::ConnectionId::new(connection_id.clone())
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
-    let target = crate::application::UploadApplicationService::validate_target(
-        &connection,
-        &payload.path,
-    )?;
+    let target =
+        crate::application::UploadApplicationService::validate_target(&connection, &payload.path)?;
     let session = state
         .uploads
         .create_session(
@@ -941,7 +939,10 @@ pub async fn upload_file(
                     Ok(Some(bytes)) => Some((Ok(bytes), field)),
                     Ok(None) => None,
                     Err(error) => Some((
-                        Err(AppError::BadRequest(format!("Upload stream error: {}", error))),
+                        Err(AppError::BadRequest(format!(
+                            "Upload stream error: {}",
+                            error
+                        ))),
                         field,
                     )),
                 }

@@ -63,12 +63,15 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
             Ok(())
         }
         ConnectionAction::Show { id } => {
-            let detail = service.get_connection(&admin, &id).await.map_err(|e| match e {
-                crate::errors::AppError::NotFound(_) | crate::errors::AppError::Vfs(_) => {
-                    CliError::not_found(format!("Connection '{}' not found", id))
-                }
-                _ => CliError::database(format!("Failed to get connection: {}", e)),
-            })?;
+            let detail = service
+                .get_connection(&admin, &id)
+                .await
+                .map_err(|e| match e {
+                    crate::errors::AppError::NotFound(_) | crate::errors::AppError::Vfs(_) => {
+                        CliError::not_found(format!("Connection '{}' not found", id))
+                    }
+                    _ => CliError::database(format!("Failed to get connection: {}", e)),
+                })?;
 
             ctx.output.print_success("connection.show", &detail, || {
                 println!("Connection Details:");
@@ -91,36 +94,68 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
                 println!("  • Base Path:           {}", detail.connection.base_path);
                 println!(
                     "  • Read-Only:           {}",
-                    if detail.connection.read_only { "Yes" } else { "No" }
+                    if detail.connection.read_only {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!(
                     "  • Enabled:             {}",
-                    if detail.connection.enabled { "Yes" } else { "No" }
+                    if detail.connection.enabled {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!("Capabilities:");
                 println!(
                     "  • Read / Download:     {}",
-                    if detail.capabilities.read { "Yes" } else { "No" }
+                    if detail.capabilities.read {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!(
                     "  • Write / Upload:      {}",
-                    if detail.capabilities.write { "Yes" } else { "No" }
+                    if detail.capabilities.write {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!(
                     "  • Atomic Write:        {}",
-                    if detail.capabilities.atomic_write { "Yes" } else { "No" }
+                    if detail.capabilities.atomic_write {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!(
                     "  • Server-Side Copy:    {}",
-                    if detail.capabilities.server_side_copy { "Yes" } else { "No" }
+                    if detail.capabilities.server_side_copy {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!(
                     "  • Checksum & Integrity:{}",
-                    if detail.capabilities.checksum { "Yes" } else { "No" }
+                    if detail.capabilities.checksum {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
                 println!(
                     "  • Symlink Resolution:  {}",
-                    if detail.capabilities.symlink { "Yes" } else { "No" }
+                    if detail.capabilities.symlink {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
                 );
             });
             Ok(())
@@ -142,7 +177,8 @@ pub async fn handle(cmd: ConnectionCommand, ctx: &CliContext) -> Result<(), CliE
             };
 
             if res.success {
-                ctx.output.print_success("connection.test", &res, human_test);
+                ctx.output
+                    .print_success("connection.test", &res, human_test);
                 Ok(())
             } else {
                 let err = CliError::health(format!(

@@ -7,7 +7,11 @@ use crate::services::connection_service::{
     UpdateConnectionRequest,
 };
 use crate::state::AppState;
-use axum::{extract::{FromRef, State}, http::StatusCode, response::IntoResponse};
+use axum::{
+    extract::{FromRef, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -67,7 +71,9 @@ pub async fn list_connections(
     State(state): State<ConnectionState>,
     user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(axum::Json(state.service.list_connections(&actor(&user)).await?))
+    Ok(axum::Json(
+        state.service.list_connections(&actor(&user)).await?,
+    ))
 }
 
 /// Create a new connection with encrypted credential storage (Admin only, Fail-Closed Transactional)
@@ -91,7 +97,10 @@ pub async fn create_connection(
     Json(payload): Json<CreateConnectionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let name = payload.name.clone();
-    let id = state.service.create_connection(&actor(&user), payload).await?;
+    let id = state
+        .service
+        .create_connection(&actor(&user), payload)
+        .await?;
     Ok((
         StatusCode::CREATED,
         axum::Json(CreateConnectionResponse {
@@ -124,7 +133,10 @@ pub async fn update_connection(
     Path(id): Path<String>,
     Json(payload): Json<UpdateConnectionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.service.update_connection(&actor(&user), &id, payload).await?;
+    state
+        .service
+        .update_connection(&actor(&user), &id, payload)
+        .await?;
     Ok(axum::Json(ConnectionActionResponse {
         success: true,
         message: format!("Connection '{}' updated successfully", id),
@@ -175,7 +187,9 @@ pub async fn test_connection(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(axum::Json(state.service.test_connection(&actor(&user), &id).await?))
+    Ok(axum::Json(
+        state.service.test_connection(&actor(&user), &id).await?,
+    ))
 }
 
 /// Get a specific connection and its capabilities
@@ -196,5 +210,7 @@ pub async fn get_connection(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(axum::Json(state.service.get_connection(&actor(&user), &id).await?))
+    Ok(axum::Json(
+        state.service.get_connection(&actor(&user), &id).await?,
+    ))
 }

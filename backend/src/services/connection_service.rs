@@ -181,14 +181,20 @@ impl ConnectionService {
             tracing::error!("Failed to create local root dir {:?}: {}", local_root, e);
         }
         let local_cfg = self.config.storage.get_provider_config("local");
-        match ProviderFactory::build_local_with_config("local", local_root.clone(), Some(&local_cfg)) {
+        match ProviderFactory::build_local_with_config(
+            "local",
+            local_root.clone(),
+            Some(&local_cfg),
+        ) {
             Ok(local_fs) => {
                 self.registry.register("local".to_string(), local_fs).await;
                 tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
             }
             Err(e) => {
                 tracing::error!("Failed to init Local Storage provider: {}", e);
-                self.registry.set_connection_error("local", &e.to_string()).await;
+                self.registry
+                    .set_connection_error("local", &e.to_string())
+                    .await;
             }
         }
 
@@ -243,11 +249,22 @@ impl ConnectionService {
             ) {
                 Ok(fs) => {
                     self.registry.register(id.clone(), fs).await;
-                    tracing::info!("Storage connection '{}' ('{}', {}) initialized successfully", id, name, provider_type);
+                    tracing::info!(
+                        "Storage connection '{}' ('{}', {}) initialized successfully",
+                        id,
+                        name,
+                        provider_type
+                    );
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    tracing::error!("Failed to initialize storage connection '{}' ('{}', {}): {}", id, name, provider_type, err_msg);
+                    tracing::error!(
+                        "Failed to initialize storage connection '{}' ('{}', {}): {}",
+                        id,
+                        name,
+                        provider_type,
+                        err_msg
+                    );
                     self.registry.set_connection_error(&id, &err_msg).await;
                 }
             }
@@ -273,7 +290,20 @@ impl ConnectionService {
         };
 
         let mut connections = Vec::with_capacity(rows.len());
-        for (id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at) in rows {
+        for (
+            id,
+            name,
+            provider,
+            host,
+            port,
+            username,
+            base_path,
+            read_only,
+            enabled,
+            created_at,
+            updated_at,
+        ) in rows
+        {
             let is_active = self.registry.get(&id).await.is_some();
             let error_message = self.registry.get_connection_error(&id).await;
             let status = if enabled == 0 {
@@ -312,11 +342,10 @@ impl ConnectionService {
         id: &str,
     ) -> Result<ConnectionDetailResponse, AppError> {
         self.authorize_read(actor, id).await?;
-        let provider = self
-            .registry
-            .get(id)
-            .await
-            .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", id)))?;
+        let provider =
+            self.registry.get(id).await.ok_or_else(|| {
+                VfsError::ConnectionError(format!("Connection '{}' not found", id))
+            })?;
         let row: Option<ConnectionDbRow> = sqlx::query_as(
             "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at FROM connections WHERE id = ?",
         )
@@ -324,8 +353,19 @@ impl ConnectionService {
         .fetch_optional(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        let (id, name, provider_name, host, port, username, base_path, read_only, enabled, created_at, updated_at) =
-            row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
+        let (
+            id,
+            name,
+            provider_name,
+            host,
+            port,
+            username,
+            base_path,
+            read_only,
+            enabled,
+            created_at,
+            updated_at,
+        ) = row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
         let is_active = self.registry.get(&id).await.is_some();
         let error_message = self.registry.get_connection_error(&id).await;
         let status = if enabled == 0 {
@@ -365,7 +405,8 @@ impl ConnectionService {
         payload: CreateConnectionRequest,
     ) -> Result<String, AppError> {
         Self::require_admin(actor, "create")?;
-        self.validate_target(payload.host.as_deref(), payload.port).await?;
+        self.validate_target(payload.host.as_deref(), payload.port)
+            .await?;
 
         let id = format!("conn_{}", &Uuid::new_v4().to_string()[..8]);
         let now = Utc::now().to_rfc3339();
@@ -388,10 +429,18 @@ impl ConnectionService {
             updated_at: Utc::now(),
         };
         let provider_cfg = self.config.storage.get_provider_config(provider_name);
-        let fs = ProviderFactory::build_with_config(&conn, payload.secret.as_deref(), Some(&provider_cfg))
-            .map_err(|e| AppError::BadRequest(format!("Failed to build provider: {}", e)))?;
+        let fs = ProviderFactory::build_with_config(
+            &conn,
+            payload.secret.as_deref(),
+            Some(&provider_cfg),
+        )
+        .map_err(|e| AppError::BadRequest(format!("Failed to build provider: {}", e)))?;
 
-        let mut tx = self.db.begin().await.map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
+        let mut tx = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
         sqlx::query(
             "INSERT INTO connections (id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
         )
@@ -420,7 +469,9 @@ impl ConnectionService {
                     .map_err(|e| anyhow::anyhow!("Failed to save credential: {}", e))?;
             }
         }
-        tx.commit().await.map_err(|e| anyhow::anyhow!("Failed to commit connection transaction: {}", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit connection transaction: {}", e))?;
         self.registry.register(id.clone(), fs).await;
         Ok(id)
     }
@@ -433,7 +484,9 @@ impl ConnectionService {
     ) -> Result<(), AppError> {
         Self::require_admin(actor, "update")?;
         if id == "local" {
-            return Err(AppError::BadRequest("Default local connection cannot be edited directly".into()));
+            return Err(AppError::BadRequest(
+                "Default local connection cannot be edited directly".into(),
+            ));
         }
         let row: Option<ConnectionDbRow> = sqlx::query_as(
             "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at FROM connections WHERE id = ?",
@@ -442,8 +495,19 @@ impl ConnectionService {
         .fetch_optional(&self.db)
         .await
         .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        let (_, cur_name, provider_name, cur_host, cur_port, cur_username, cur_base_path, cur_read_only, cur_enabled, created_at, _) =
-            row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
+        let (
+            _,
+            cur_name,
+            provider_name,
+            cur_host,
+            cur_port,
+            cur_username,
+            cur_base_path,
+            cur_read_only,
+            cur_enabled,
+            created_at,
+            _,
+        ) = row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
         let new_name = payload.name.unwrap_or(cur_name);
         let new_host = payload.host.or(cur_host);
         let new_port = payload.port.or(cur_port.map(|p| p as u16));
@@ -463,7 +527,11 @@ impl ConnectionService {
             base_path: new_base_path.clone(),
             read_only: new_read_only,
             enabled: new_enabled,
-            status: if new_enabled { ConnectionStatus::Connected } else { ConnectionStatus::Disconnected },
+            status: if new_enabled {
+                ConnectionStatus::Connected
+            } else {
+                ConnectionStatus::Disconnected
+            },
             error_message: None,
             created_at: DateTime::parse_from_rfc3339(&created_at)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -471,7 +539,11 @@ impl ConnectionService {
             updated_at: Utc::now(),
         };
         let resolved_secret = if let Some(secret) = payload.secret {
-            if secret.trim().is_empty() { None } else { Some(secret) }
+            if secret.trim().is_empty() {
+                None
+            } else {
+                Some(secret)
+            }
         } else {
             let row: Option<(String,)> = sqlx::query_as(
                 "SELECT encrypted_secret FROM connection_credentials WHERE connection_id = ?",
@@ -485,9 +557,19 @@ impl ConnectionService {
 
         if new_enabled {
             let provider_cfg = self.config.storage.get_provider_config(&provider_name);
-            let fs = ProviderFactory::build_with_config(&updated_conn, resolved_secret.as_deref(), Some(&provider_cfg))
-                .map_err(|e| AppError::BadRequest(format!("Failed to build updated provider: {}", e)))?;
-            let mut tx = self.db.begin().await.map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
+            let fs = ProviderFactory::build_with_config(
+                &updated_conn,
+                resolved_secret.as_deref(),
+                Some(&provider_cfg),
+            )
+            .map_err(|e| {
+                AppError::BadRequest(format!("Failed to build updated provider: {}", e))
+            })?;
+            let mut tx = self
+                .db
+                .begin()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
             sqlx::query("UPDATE connections SET name = ?, host = ?, port = ?, username = ?, base_path = ?, read_only = ?, enabled = ?, updated_at = ? WHERE id = ?")
                 .bind(&new_name)
                 .bind(&new_host)
@@ -511,9 +593,13 @@ impl ConnectionService {
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to save credential: {}", e))?;
             }
-            tx.commit().await.map_err(|e| anyhow::anyhow!("Failed to commit update transaction: {}", e))?;
+            tx.commit()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to commit update transaction: {}", e))?;
             if let Some(existing) = self.registry.get_runtime(id).await {
-                existing.set_state(crate::vfs::ProviderState::Draining).await;
+                existing
+                    .set_state(crate::vfs::ProviderState::Draining)
+                    .await;
             }
             self.registry.register(id.to_string(), fs).await;
         } else {
@@ -532,9 +618,15 @@ impl ConnectionService {
     pub async fn delete_connection(&self, actor: &Actor, id: &str) -> Result<(), AppError> {
         Self::require_admin(actor, "delete")?;
         if id == "local" {
-            return Err(AppError::BadRequest("Default local connection cannot be deleted".into()));
+            return Err(AppError::BadRequest(
+                "Default local connection cannot be deleted".into(),
+            ));
         }
-        let mut tx = self.db.begin().await.map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
+        let mut tx = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
         sqlx::query("DELETE FROM connection_credentials WHERE connection_id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -548,12 +640,19 @@ impl ConnectionService {
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
         }
-        tx.commit().await.map_err(|e| anyhow::anyhow!("Failed to commit connection deletion: {}", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit connection deletion: {}", e))?;
 
         let active_jobs = self.transfer_manager.list_jobs(None, true, false).await;
         for job in active_jobs {
             if (job.source_connection_id == id || job.destination_connection_id == id)
-                && matches!(job.status, TransferStatus::Running | TransferStatus::Queued | TransferStatus::CancellationRequested)
+                && matches!(
+                    job.status,
+                    TransferStatus::Running
+                        | TransferStatus::Queued
+                        | TransferStatus::CancellationRequested
+                )
             {
                 let _ = self.transfer_manager.cancel_job(&job.id, None, true).await;
             }

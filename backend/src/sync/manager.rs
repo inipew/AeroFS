@@ -299,12 +299,11 @@ impl SyncManager {
         success: bool,
     ) -> anyhow::Result<()> {
         let mut tx = self.db.begin().await?;
-        let op = sqlx::query(
-            "SELECT id, job_id, status FROM sync_operations WHERE transfer_job_id = ?",
-        )
-        .bind(transfer_job_id)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let op =
+            sqlx::query("SELECT id, job_id, status FROM sync_operations WHERE transfer_job_id = ?")
+                .bind(transfer_job_id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
         let Some(row) = op else {
             tx.commit().await?;

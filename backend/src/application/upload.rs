@@ -10,7 +10,7 @@ use crate::ports::{
     filesystem::FileSystemResolver,
 };
 use crate::services::{UploadLockManager, UploadSession};
-use crate::transfer::{planner::UploadConstraints, planner::TransferPlanner, TransferManager};
+use crate::transfer::{planner::TransferPlanner, planner::UploadConstraints, TransferManager};
 use bytes::Bytes;
 use futures::Stream;
 use std::path::PathBuf;
@@ -51,7 +51,10 @@ impl UploadApplicationService {
         }
     }
 
-    pub fn validate_target(connection: &ConnectionId, dest_path: &str) -> Result<VfsPath, AppError> {
+    pub fn validate_target(
+        connection: &ConnectionId,
+        dest_path: &str,
+    ) -> Result<VfsPath, AppError> {
         Ok(VfsPath::new(connection.as_str(), dest_path)?)
     }
 
@@ -277,7 +280,9 @@ impl UploadApplicationService {
                         Some(format!("Uploaded: {} via Transfer {}", target.path, job_id)),
                     )
                     .await;
-                self.transfer_manager.complete_inline_job(job_id, None).await;
+                self.transfer_manager
+                    .complete_inline_job(job_id, None)
+                    .await;
                 Ok(target.path.clone())
             }
             Err(error) => {

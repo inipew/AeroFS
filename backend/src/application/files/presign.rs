@@ -28,10 +28,18 @@ impl PresignDownload {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileAccessEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
-    pub async fn execute(&self, actor: &Actor, command: PresignCommand) -> Result<String, AppError> {
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        command: PresignCommand,
+    ) -> Result<String, AppError> {
         self.authorization
             .authorize(actor, &command.connection, FileAction::Read)
             .await?;
@@ -44,10 +52,19 @@ impl PresignDownload {
         })?;
         let path = VfsPath::new(command.connection.as_str(), command.path)?;
         let url = presign
-            .presign_read_url(&path, Duration::from_secs(command.expire_secs.clamp(60, 86400)))
+            .presign_read_url(
+                &path,
+                Duration::from_secs(command.expire_secs.clamp(60, 86400)),
+            )
             .await?;
         self.effects
-            .accessed(actor, &command.connection, &path.path, "presign_download", None)
+            .accessed(
+                actor,
+                &command.connection,
+                &path.path,
+                "presign_download",
+                None,
+            )
             .await;
         Ok(url)
     }
@@ -66,10 +83,18 @@ impl PresignUpload {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileAccessEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
-    pub async fn execute(&self, actor: &Actor, command: PresignCommand) -> Result<String, AppError> {
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        command: PresignCommand,
+    ) -> Result<String, AppError> {
         self.authorization
             .authorize(actor, &command.connection, FileAction::Write)
             .await?;
@@ -82,10 +107,19 @@ impl PresignUpload {
         })?;
         let path = VfsPath::new(command.connection.as_str(), command.path)?;
         let url = presign
-            .presign_write_url(&path, Duration::from_secs(command.expire_secs.clamp(60, 86400)))
+            .presign_write_url(
+                &path,
+                Duration::from_secs(command.expire_secs.clamp(60, 86400)),
+            )
             .await?;
         self.effects
-            .accessed(actor, &command.connection, &path.path, "presign_upload", None)
+            .accessed(
+                actor,
+                &command.connection,
+                &path.path,
+                "presign_upload",
+                None,
+            )
             .await;
         Ok(url)
     }
@@ -112,7 +146,11 @@ impl CompletePresigned {
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn FileMutationEffects>,
     ) -> Self {
-        Self { authorization, filesystem, effects }
+        Self {
+            authorization,
+            filesystem,
+            effects,
+        }
     }
 
     pub async fn execute(
@@ -151,7 +189,9 @@ impl CompletePresigned {
             }
         }
 
-        self.effects.invalidate(&command.connection, &path.path).await;
+        self.effects
+            .invalidate(&command.connection, &path.path)
+            .await;
         self.effects
             .file_changed(
                 actor,

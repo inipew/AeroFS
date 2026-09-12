@@ -155,7 +155,9 @@ impl WriteFile {
         }
 
         let metadata = provider.stat(&path).await?;
-        self.effects.invalidate(&command.connection, &command.path).await;
+        self.effects
+            .invalidate(&command.connection, &command.path)
+            .await;
         self.effects
             .file_changed(
                 actor,

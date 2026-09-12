@@ -1,7 +1,5 @@
 use crate::application::{
-    files::FileUseCases,
-    transfers::TransferUseCases,
-    UploadApplicationService,
+    files::FileUseCases, transfers::TransferUseCases, UploadApplicationService,
 };
 use crate::config::AppConfig;
 use crate::db::DbPool;
@@ -97,7 +95,10 @@ impl RuntimeView {
     }
 
     pub fn is_shutting_down(&self) -> bool {
-        matches!(self.phase(), RuntimePhase::ShuttingDown | RuntimePhase::Stopped)
+        matches!(
+            self.phase(),
+            RuntimePhase::ShuttingDown | RuntimePhase::Stopped
+        )
     }
 }
 
@@ -143,7 +144,10 @@ impl AppRuntime {
     }
 
     pub fn is_shutting_down(&self) -> bool {
-        matches!(self.phase(), RuntimePhase::ShuttingDown | RuntimePhase::Stopped)
+        matches!(
+            self.phase(),
+            RuntimePhase::ShuttingDown | RuntimePhase::Stopped
+        )
     }
 
     pub fn shutdown_reason(&self) -> Option<ShutdownReason> {
@@ -361,7 +365,9 @@ impl AppState {
     }
 
     pub async fn set_connection_error(&self, connection_id: &str, error: &str) {
-        self.registry.set_connection_error(connection_id, error).await;
+        self.registry
+            .set_connection_error(connection_id, error)
+            .await;
     }
 
     pub async fn get_connection_error(&self, connection_id: &str) -> Option<String> {

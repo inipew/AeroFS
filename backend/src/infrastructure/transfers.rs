@@ -56,12 +56,7 @@ impl SqliteTransferEffects {
 
 #[async_trait]
 impl TransferEffects for SqliteTransferEffects {
-    async fn submitted(
-        &self,
-        actor: &Actor,
-        submission: &TransferSubmission,
-        job_id: &str,
-    ) {
+    async fn submitted(&self, actor: &Actor, submission: &TransferSubmission, job_id: &str) {
         record_audit_log(
             &self.db,
             Some(&actor.id),
@@ -201,11 +196,10 @@ impl TransferControl for SqliteTransferControl {
     }
 
     async fn retry(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
-        let job = self
-            .manager
-            .get_job(job_id)
-            .await
-            .ok_or_else(|| AppError::NotFound(format!("Transfer job '{}' not found", job_id)))?;
+        let job =
+            self.manager.get_job(job_id).await.ok_or_else(|| {
+                AppError::NotFound(format!("Transfer job '{}' not found", job_id))
+            })?;
 
         if job.dismissed_at.is_some() {
             return Err(AppError::BadRequest(format!(
@@ -221,8 +215,13 @@ impl TransferControl for SqliteTransferControl {
 
         if !actor.is_admin {
             let user = Self::user(actor);
-            check_permission(&self.db, &user, &job.source_connection_id, PermissionAction::Read)
-                .await?;
+            check_permission(
+                &self.db,
+                &user,
+                &job.source_connection_id,
+                PermissionAction::Read,
+            )
+            .await?;
             if job.transfer_type == TransferType::Move {
                 check_permission(
                     &self.db,
@@ -248,8 +247,10 @@ impl TransferControl for SqliteTransferControl {
             .await?;
         }
 
-        self.verify_connection_enabled(&job.source_connection_id).await?;
-        self.verify_connection_enabled(&job.destination_connection_id).await?;
+        self.verify_connection_enabled(&job.source_connection_id)
+            .await?;
+        self.verify_connection_enabled(&job.destination_connection_id)
+            .await?;
 
         match self
             .manager

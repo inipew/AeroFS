@@ -48,11 +48,10 @@ impl SearchService {
             .authorize(actor, connection, FileAction::Read)
             .await?;
 
-        let _permit = self
-            .limiter
-            .acquire()
-            .await
-            .map_err(|_| AppError::ServiceUnavailable("Search service is shutting down".into()))?;
+        let _permit =
+            self.limiter.acquire().await.map_err(|_| {
+                AppError::ServiceUnavailable("Search service is shutting down".into())
+            })?;
 
         let provider = self.filesystem.resolve(connection).await?;
         let start_path = path_opt.unwrap_or("/");

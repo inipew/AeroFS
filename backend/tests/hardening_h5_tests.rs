@@ -33,7 +33,10 @@ fn archive_service_owns_ports_and_limiter() {
         "Arc<dyn ArchiveEffects>",
         "Arc<Semaphore>",
     ] {
-        assert!(src.contains(expected), "archive service missing boundary: {expected}");
+        assert!(
+            src.contains(expected),
+            "archive service missing boundary: {expected}"
+        );
     }
     for forbidden in [
         "AppState",
@@ -63,7 +66,11 @@ fn app_state_exposes_archive_substate_without_raw_archive_limiter() {
 #[test]
 fn bootstrap_composes_archive_capability_once() {
     let src = source("src/bootstrap.rs");
-    assert_eq!(src.matches("ArchiveState::new(ArchiveService::new(").count(), 1);
+    assert_eq!(
+        src.matches("ArchiveState::new(ArchiveService::new(")
+            .count(),
+        1
+    );
     assert!(src.contains("SqliteArchiveEffects::new("));
     assert!(src.contains("Semaphore::new(cfg_limits_archive)"));
 }

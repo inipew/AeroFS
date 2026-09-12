@@ -94,12 +94,11 @@ impl FileSettings for SqliteFileSettings {
     }
 
     async fn max_editable_size(&self) -> Result<u64, AppError> {
-        let configured: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM system_settings WHERE key = 'max_editable_size'",
-        )
-        .fetch_optional(&self.db)
-        .await
-        .unwrap_or(None);
+        let configured: Option<String> =
+            sqlx::query_scalar("SELECT value FROM system_settings WHERE key = 'max_editable_size'")
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
         Ok(configured
             .and_then(|value| value.parse().ok())
             .unwrap_or(self.config.limits.max_editable_size))
@@ -161,7 +160,9 @@ impl FileMutationEffects for SqliteFileMutationEffects {
     }
 
     async fn invalidate_prefix(&self, connection: &ConnectionId, path: &str) {
-        self.cache.invalidate_prefix(connection.as_str(), path).await;
+        self.cache
+            .invalidate_prefix(connection.as_str(), path)
+            .await;
     }
 
     async fn file_changed(
@@ -187,11 +188,7 @@ impl FileMutationEffects for SqliteFileMutationEffects {
         if let Err(error) = self
             .event_journal
             .append(
-                crate::events::DomainEvent::file_change(
-                    connection.as_str(),
-                    path,
-                    event_action,
-                ),
+                crate::events::DomainEvent::file_change(connection.as_str(), path, event_action),
                 None,
             )
             .await
@@ -200,13 +197,7 @@ impl FileMutationEffects for SqliteFileMutationEffects {
         }
     }
 
-    async fn file_renamed(
-        &self,
-        actor: &Actor,
-        connection: &ConnectionId,
-        from: &str,
-        to: &str,
-    ) {
+    async fn file_renamed(&self, actor: &Actor, connection: &ConnectionId, from: &str, to: &str) {
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&actor.id),
@@ -230,13 +221,7 @@ impl FileMutationEffects for SqliteFileMutationEffects {
         }
     }
 
-    async fn file_copied(
-        &self,
-        actor: &Actor,
-        connection: &ConnectionId,
-        from: &str,
-        to: &str,
-    ) {
+    async fn file_copied(&self, actor: &Actor, connection: &ConnectionId, from: &str, to: &str) {
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&actor.id),

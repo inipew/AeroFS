@@ -61,7 +61,10 @@ impl CreateTransfer {
             .authorize(actor, &command.destination_connection, FileAction::Create)
             .await?;
 
-        let source = VfsPath::new(command.source_connection.as_str(), command.source_path.clone())?;
+        let source = VfsPath::new(
+            command.source_connection.as_str(),
+            command.source_path.clone(),
+        )?;
         let destination = VfsPath::new(
             command.destination_connection.as_str(),
             command.destination_path.clone(),
@@ -73,7 +76,9 @@ impl CreateTransfer {
         }
 
         self.filesystem.resolve(&command.source_connection).await?;
-        self.filesystem.resolve(&command.destination_connection).await?;
+        self.filesystem
+            .resolve(&command.destination_connection)
+            .await?;
 
         let submission = TransferSubmission {
             user_id: Some(actor.id.clone()),
