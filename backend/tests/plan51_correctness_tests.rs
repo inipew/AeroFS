@@ -4,9 +4,12 @@ use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, SftpAuth, VfsPath};
 use backend::events::EventJournal;
+use backend::ports::transfer::{TransferJobResponse, TransferStatus, TransferType};
 use backend::services::{EditorService, FileService, TransferService};
 use backend::state::{AppState, TransferState};
-use backend::transfer::{TransferManager, TransferStatus, TransferType};
+use backend::transfer::{
+    TransferManager, TransferStatus as EngineTransferStatus, TransferType as EngineTransferType,
+};
 use backend::vfs::opendal::builder::build_sftp_operator_with_config;
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,7 +50,7 @@ async fn wait_for_completed(
     state: &AppState,
     user: &AuthenticatedUser,
     job_id: &str,
-) -> backend::transfer::TransferJobResponse {
+) -> TransferJobResponse {
     let transfers = TransferState::from_ref(state);
     let actor = actor(user);
     for _ in 0..50 {
@@ -307,12 +310,12 @@ async fn test_transfer_to_non_atomic_rename_provider() {
         id: "job_nonatomic_test".to_string(),
         user_id: Some("admin-user".to_string()),
         name: "test_nonatomic".to_string(),
-        transfer_type: TransferType::Copy,
+        transfer_type: EngineTransferType::Copy,
         source_connection_id: "local".to_string(),
         source_path: "/src_nonatomic.txt".to_string(),
         destination_connection_id: "mock_ftp".to_string(),
         destination_path: "/dst_nonatomic.txt".to_string(),
-        status: TransferStatus::Queued,
+        status: EngineTransferStatus::Queued,
         phase: backend::transfer::TransferPhase::Preparing,
         execution_mode: Default::default(),
         staging: Default::default(),
