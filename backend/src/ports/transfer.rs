@@ -1,6 +1,6 @@
 use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
-use crate::transfer::TransferType;
+use crate::transfer::{TransferJobResponse, TransferType};
 use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
@@ -27,4 +27,16 @@ pub trait TransferEffects: Send + Sync {
         submission: &TransferSubmission,
         job_id: &str,
     );
+}
+
+/// Query/control boundary used by transport adapters. Implementations own the
+/// persistence, ownership, permission revalidation, audit and transfer-engine
+/// details so HTTP handlers only map DTOs to application calls.
+#[async_trait]
+pub trait TransferControl: Send + Sync {
+    async fn list(&self, actor: &Actor) -> Result<Vec<TransferJobResponse>, AppError>;
+    async fn cancel(&self, actor: &Actor, job_id: &str) -> Result<(), AppError>;
+    async fn retry(&self, actor: &Actor, job_id: &str) -> Result<(), AppError>;
+    async fn dismiss(&self, actor: &Actor, job_id: &str) -> Result<(), AppError>;
+    async fn clear_finished(&self, actor: &Actor) -> Result<usize, AppError>;
 }
