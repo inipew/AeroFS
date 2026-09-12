@@ -6,8 +6,10 @@ use crate::ports::{
     filesystem::FileSystemResolver,
     settings::FileSettings,
 };
+use crate::services::UploadLockManager;
 use std::io::Cursor;
 use std::sync::Arc;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct WriteFileCommand {
@@ -24,6 +26,7 @@ pub struct WriteFile {
     filesystem: Arc<dyn FileSystemResolver>,
     settings: Arc<dyn FileSettings>,
     effects: Arc<dyn FileMutationEffects>,
+    mutation_locks: Arc<UploadLockManager>,
 }
 
 impl WriteFile {
@@ -32,12 +35,14 @@ impl WriteFile {
         filesystem: Arc<dyn FileSystemResolver>,
         settings: Arc<dyn FileSettings>,
         effects: Arc<dyn FileMutationEffects>,
+        mutation_locks: Arc<UploadLockManager>,
     ) -> Self {
         Self {
             authorization,
             filesystem,
             settings,
             effects,
+            mutation_locks,
         }
     }
 
@@ -57,6 +62,15 @@ impl WriteFile {
 
         let provider = self.filesystem.resolve(&command.connection).await?;
         let path = VfsPath::new(command.connection.as_str(), command.path.clone())?;
+
+        // Serialize the complete read-check-write sequence with uploads targeting
+        // the same canonical destination. This closes the ETag TOCTOU window:
+        // no second writer can pass the same precondition while another writer
+        // is between `stat` and commit.
+        let _mutation_guard = self
+            .mutation_locks
+            .try_acquire(command.connection.as_str(), &path.path)
+            .await?;
 
         if command.create_only {
             match provider.stat(&path).await {
@@ -111,9 +125,12 @@ impl WriteFile {
         let content = command.content;
 
         if capabilities.atomic_rename {
+            // Never share a staging path between operations. The mutation guard
+            // already serializes this destination, while the operation id also
+            // prevents stale artifacts from a previous crash being reused.
             let temporary = VfsPath::new(
                 command.connection.as_str(),
-                format!("{}.aerofs.tmp", path.path),
+                format!("{}.aerofs.tmp-{}", path.path, Uuid::new_v4()),
             )?;
             if provider
                 .write_stream(&temporary, Box::new(Cursor::new(content.clone())))
