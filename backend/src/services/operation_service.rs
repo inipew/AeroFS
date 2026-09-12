@@ -7,7 +7,7 @@ use crate::domain::policy::PermissionInheritanceMode;
 use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
 use crate::filesystem::archive::ArchiveOverwriteMode;
-use crate::state::AppState;
+use crate::state::FileApiState;
 use uuid::Uuid;
 
 pub struct OperationService;
@@ -39,7 +39,7 @@ impl OperationService {
     }
 
     pub async fn execute_plan(
-        state: &AppState,
+        state: &FileApiState,
         user: &AuthenticatedUser,
         plan: &OperationPlan,
     ) -> Result<OperationExecutionResult, AppError> {
@@ -57,7 +57,6 @@ impl OperationService {
             None => None,
         };
         state
-            .file_api
             .service
             .authorize_intent(&actor, plan.intent_type, &source, destination.as_ref())
             .await?;
@@ -67,7 +66,6 @@ impl OperationService {
             let res = match plan.intent_type {
                 OperationIntentType::Delete => {
                     let delete_result = state
-                        .file_api
                         .files
                         .delete_entries
                         .execute(
@@ -89,7 +87,6 @@ impl OperationService {
                 OperationIntentType::Move => {
                     if let Some(dest_p) = &plan.destination_path {
                         state
-                            .file_api
                             .files
                             .rename_entry
                             .execute(
@@ -109,7 +106,6 @@ impl OperationService {
                 }
                 OperationIntentType::Chmod => {
                     state
-                        .file_api
                         .files
                         .chmod_entry
                         .execute(
