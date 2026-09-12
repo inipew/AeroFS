@@ -18,8 +18,11 @@ fn transfer_handlers_only_use_application_transfer_boundary() {
 #[test]
 fn file_handlers_do_not_reconstruct_compatibility_facade() {
     let api = source("src/api/files.rs");
-    assert!(api.contains("state.files"));
     assert!(!api.contains("FileApplicationService::from_state"));
+    assert!(!api.contains("FileApplicationService::new"));
+    assert!(api.contains(".write_file"));
+    assert!(api.contains(".presign_download"));
+    assert!(api.contains(".chmod_entry"));
 }
 
 #[test]
@@ -32,7 +35,7 @@ fn file_copy_orchestration_lives_outside_http_layer() {
         .expect("next handler marker");
     let handler = &tail[..end];
 
-    assert!(handler.contains("state\n        .files\n        .copy_entry"));
+    assert!(handler.contains(".copy_entry"));
     assert!(!handler.contains("provider.copy"));
     assert!(!handler.contains("record_audit_log"));
     assert!(!handler.contains("metadata_cache"));
