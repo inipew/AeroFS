@@ -8,10 +8,11 @@ use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::create_router;
 use backend::db::init_db;
+use backend::domain::{Actor, ConnectionId};
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::middleware::REQUEST_ID_HEADER;
 use backend::ports::transfer::TransferType;
-use backend::services::{FileService, TransferService};
+use backend::services::TransferService;
 use backend::state::{AppState, RealtimeState, RuntimeOwner, ShutdownReason};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -82,6 +83,38 @@ fn admin_user() -> AuthenticatedUser {
     })
 }
 
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) {
+    state
+        .file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::new("local").unwrap(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn test_request_id_middleware_propagation() {
     let (app, _state, _cookie, _runtime) = setup_test_app().await;
@@ -115,41 +148,40 @@ async fn test_part_file_filtered_from_directory_listing() {
     let (_app, state, _cookie, _runtime) = setup_test_app().await;
     let admin = admin_user();
 
-    FileService::create_or_write_file(&state, &admin, "local", "/visible_file.txt", b"Visible".to_vec(), None)
-        .await
-        .unwrap();
-    FileService::create_or_write_file(
+    write_file(&state, &admin, "/visible_file.txt", b"Visible".to_vec()).await;
+    write_file(
         &state,
         &admin,
-        "local",
         "/.visible_file.txt.aerofs-part-job1234",
         b"Staging Part Data".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
-    FileService::create_or_write_file(
+    .await;
+    write_file(
         &state,
         &admin,
-        "local",
         "/staging.dat.aerofs-part-job999",
         b"Staging Part Data 2".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
-    let listing = FileService::list_directory(
-        &state,
-        &admin,
-        "local",
-        Some("/".into()),
-        Some(true),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let listing = state
+        .file_api
+        .files
+        .list_directory
+        .execute(
+            &actor(&admin),
+            backend::application::files::ListDirectoryCommand {
+                connection: ConnectionId::new("local").unwrap(),
+                path: Some("/".into()),
+                show_hidden: Some(true),
+                sort: None,
+                order: None,
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
 
     let names: Vec<String> = listing.entries.into_iter().map(|e| e.name).collect();
     assert!(names.contains(&"visible_file.txt".to_string()));
