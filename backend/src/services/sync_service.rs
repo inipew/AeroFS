@@ -8,7 +8,7 @@ use std::sync::Arc;
 ///
 /// SyncManager remains the runtime engine used by durable subscribers and
 /// recovery. This facade owns request-facing authorization and prevents the
-/// HTTP layer from reaching AppState, DbPool, or SyncManager directly.
+/// HTTP layer from reaching persistence or runtime engine internals directly.
 #[derive(Clone)]
 pub struct SyncService {
     authorization: Arc<dyn Authorization>,
