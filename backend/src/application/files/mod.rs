@@ -13,8 +13,8 @@ mod write;
 pub use list_directory::{ListDirectory, ListDirectoryCommand};
 pub use listing::ListOptions;
 pub use mutation::{
-    CreateDirectory, CreateDirectoryCommand, DeleteEntries, DeleteEntriesCommand,
-    DeleteEntriesResult, RenameEntry, RenameEntryCommand,
+    CopyEntry, CopyEntryCommand, CreateDirectory, CreateDirectoryCommand, DeleteEntries,
+    DeleteEntriesCommand, DeleteEntriesResult, RenameEntry, RenameEntryCommand,
 };
 pub use read::ReadOptions;
 pub use read_file::{ReadFile, ReadFileCommand, ReadFileResult};
@@ -42,6 +42,11 @@ pub struct FileUseCases {
     pub list_directory: ListDirectory,
     pub stat_file: StatFile,
     pub read_file: ReadFile,
+    pub write_file: WriteFile,
+    pub create_directory: CreateDirectory,
+    pub rename_entry: RenameEntry,
+    pub copy_entry: CopyEntry,
+    pub delete_entries: DeleteEntries,
 }
 
 /// Compatibility facade for endpoints not migrated yet. New file operations
