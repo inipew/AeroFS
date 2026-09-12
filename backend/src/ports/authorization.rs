@@ -9,6 +9,7 @@ pub enum FileAction {
     Download,
     Create,
     Write,
+    Upload,
     Delete,
 }
 
