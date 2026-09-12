@@ -353,12 +353,11 @@ mod tests {
         let db = init_db(&config.database.url).await.unwrap();
         let state = AppState::new_with_db(config, db).await;
         std::mem::forget(temp);
-        let caps = {
-            let mut c = Capabilities::default();
-            c.atomic_rename = true;
-            c.write = true;
-            c.read = true;
-            c
+        let caps = Capabilities {
+            atomic_rename: true,
+            write: true,
+            read: true,
+            ..Default::default()
         };
         let mock = Arc::new(BlockingMockFs {
             capabilities: caps,
@@ -593,10 +592,7 @@ mod tests {
             .list_jobs(Some("user1"), false, false)
             .await;
         // Find job
-        let _final_job = jobs.iter().find(|j| j.id == job.id).or_else(|| {
-            // May need to check DB via list with include_dismissed? But job is completed not dismissed
-            None
-        });
+        let _final_job = jobs.iter().find(|j| j.id == job.id);
         // Alternative: check via manager internal? Use list_jobs includes completed
         // If not found in list, check directly via manager's job map via list
         // For now assert rename happened and executor succeeded

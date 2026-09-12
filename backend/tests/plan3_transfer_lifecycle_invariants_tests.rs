@@ -385,7 +385,10 @@ async fn test_concurrent_retry_race_condition_cas_guard() {
     let success_count = (if r1.is_ok() { 1 } else { 0 }) + (if r2.is_ok() { 1 } else { 0 });
     assert_eq!(success_count, 1, "Exactly one concurrent retry request must succeed");
 
-    let err = if r1.is_err() { r1.unwrap_err() } else { r2.unwrap_err() };
+    let err = match r1 {
+        Err(e) => e,
+        Ok(_) => r2.unwrap_err(),
+    };
     match err {
         RetryTransferError::InvalidStatus(_, msg) => {
             assert!(

@@ -397,7 +397,7 @@ mod tests {
         let plan = TransferPlanner::plan_upload(
             &caps,
             UploadConstraints {
-                total_hint: Some(1 * 1024 * 1024),
+                total_hint: Some(1024 * 1024),
                 supports_resume: true,
             },
             threshold,
@@ -431,9 +431,11 @@ mod tests {
         assert!(plan.uses_staging());
         // s3-like caps: atomic_rename false, atomic_write true → ProviderTemp but commit AtomicObjectPut
         // uses_staging true per spec (staging != None)
-        let mut caps_s3 = Capabilities::default();
-        caps_s3.atomic_write = true;
-        caps_s3.atomic_rename = false;
+        let caps_s3 = Capabilities {
+            atomic_write: true,
+            atomic_rename: false,
+            ..Default::default()
+        };
         let plan = TransferPlanner::plan_upload(
             &caps_s3,
             UploadConstraints::inline(Some(1024)),

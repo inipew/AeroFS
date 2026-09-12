@@ -343,6 +343,30 @@ impl EventJournal {
             return Ok(ReplayOutcome::Events(Vec::new()));
         }
 
+        let min_sequence: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(sequence) FROM event_journal WHERE epoch = ?",
+        )
+        .bind(&self.epoch)
+        .fetch_one(&self.db)
+        .await?;
+
+        match min_sequence {
+            Some(min_seq) => {
+                if (last_sequence + 1) < min_seq as u64 {
+                    return Ok(ReplayOutcome::Expired {
+                        latest_sequence: current_latest,
+                    });
+                }
+            }
+            None => {
+                if last_sequence + 1 < current_latest {
+                    return Ok(ReplayOutcome::Expired {
+                        latest_sequence: current_latest,
+                    });
+                }
+            }
+        }
+
         let rows = sqlx::query(
             "SELECT id, sequence, payload, created_at FROM event_journal\n             WHERE epoch = ? AND sequence > ?\n             ORDER BY sequence ASC LIMIT ?",
         )

@@ -197,12 +197,7 @@ async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
 
 #[tokio::test]
 async fn test_transfer_idempotency_key_deduplication() {
-    let (app, state, cookie, _temp) = setup_test_app().await;
-    let admin = AuthenticatedUser(UserInfo {
-        id: "admin-id".to_string(),
-        username: "admin".to_string(),
-        is_admin: true,
-    });
+    let (app, _state, cookie, _temp) = setup_test_app().await;
 
     let req_body = serde_json::json!({
         "name": "idempotent_test",
@@ -229,7 +224,7 @@ async fn test_transfer_idempotency_key_deduplication() {
         .await
         .unwrap();
     assert_eq!(response1.status(), StatusCode::ACCEPTED);
-    let body1: serde_json::Value =
+    let body1: Value =
         serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap())
             .unwrap();
     let job_id1 = body1["job_id"].as_str().unwrap().to_string();
@@ -250,7 +245,7 @@ async fn test_transfer_idempotency_key_deduplication() {
         .await
         .unwrap();
     assert_eq!(response2.status(), StatusCode::ACCEPTED);
-    let body2: serde_json::Value =
+    let body2: Value =
         serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap())
             .unwrap();
     let job_id2 = body2["job_id"].as_str().unwrap().to_string();

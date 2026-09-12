@@ -62,13 +62,7 @@ impl UploadLockManager {
         let mut sessions = self.sessions.lock().await;
         let now = std::time::Instant::now();
         sessions.retain(|_, res| {
-            if !res.claimed
-                && now.duration_since(res.created_at) > std::time::Duration::from_secs(60)
-            {
-                false
-            } else {
-                true
-            }
+            res.claimed || now.duration_since(res.created_at) <= std::time::Duration::from_secs(60)
         });
     }
 

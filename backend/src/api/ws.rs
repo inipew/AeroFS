@@ -95,48 +95,6 @@ fn is_event_authorized(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_event_authorized;
-    use crate::events::DomainEvent;
-    use std::collections::HashSet;
-
-    #[test]
-    fn upload_progress_is_authorized_by_its_destination_only() {
-        let allowed = HashSet::from(["destination".to_string()]);
-        let upload = DomainEvent::TransferProgress(serde_json::json!({
-            "transfer_type": "upload",
-            "source_connection_id": "upload",
-            "destination_connection_id": "destination"
-        }));
-        assert!(is_event_authorized(&upload, "user1", false, &allowed));
-    }
-
-    #[test]
-    fn transfer_owner_is_always_authorized() {
-        let allowed = HashSet::new();
-        let owned = DomainEvent::TransferProgress(serde_json::json!({
-            "user_id": "user1",
-            "transfer_type": "copy",
-            "source_connection_id": "source",
-            "destination_connection_id": "destination"
-        }));
-        assert!(is_event_authorized(&owned, "user1", false, &allowed));
-        assert!(!is_event_authorized(&owned, "user2", false, &allowed));
-    }
-
-    #[test]
-    fn non_upload_transfer_still_requires_both_endpoints() {
-        let allowed = HashSet::from(["destination".to_string()]);
-        let copy = DomainEvent::TransferProgress(serde_json::json!({
-            "transfer_type": "copy",
-            "source_connection_id": "source",
-            "destination_connection_id": "destination"
-        }));
-        assert!(!is_event_authorized(&copy, "other_user", false, &allowed));
-    }
-}
-
 async fn reload_permissions(
     db: &crate::db::DbPool,
     user_id: &str,
@@ -329,4 +287,46 @@ async fn handle_socket(
     }
 
     tracing::info!("ws.closed: user_id={}", user_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_event_authorized;
+    use crate::events::DomainEvent;
+    use std::collections::HashSet;
+
+    #[test]
+    fn upload_progress_is_authorized_by_its_destination_only() {
+        let allowed = HashSet::from(["destination".to_string()]);
+        let upload = DomainEvent::TransferProgress(serde_json::json!({
+            "transfer_type": "upload",
+            "source_connection_id": "upload",
+            "destination_connection_id": "destination"
+        }));
+        assert!(is_event_authorized(&upload, "user1", false, &allowed));
+    }
+
+    #[test]
+    fn transfer_owner_is_always_authorized() {
+        let allowed = HashSet::new();
+        let owned = DomainEvent::TransferProgress(serde_json::json!({
+            "user_id": "user1",
+            "transfer_type": "copy",
+            "source_connection_id": "source",
+            "destination_connection_id": "destination"
+        }));
+        assert!(is_event_authorized(&owned, "user1", false, &allowed));
+        assert!(!is_event_authorized(&owned, "user2", false, &allowed));
+    }
+
+    #[test]
+    fn non_upload_transfer_still_requires_both_endpoints() {
+        let allowed = HashSet::from(["destination".to_string()]);
+        let copy = DomainEvent::TransferProgress(serde_json::json!({
+            "transfer_type": "copy",
+            "source_connection_id": "source",
+            "destination_connection_id": "destination"
+        }));
+        assert!(!is_event_authorized(&copy, "other_user", false, &allowed));
+    }
 }
