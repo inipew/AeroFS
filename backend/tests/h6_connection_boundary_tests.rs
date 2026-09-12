@@ -42,11 +42,24 @@ fn bootstrap_precomposes_and_loads_connection_capability() {
 }
 
 #[test]
-fn cli_connection_actions_use_lifecycle_service() {
+fn cli_connection_actions_use_precomposed_lifecycle_capability() {
     let src = source("src/cli/commands/connection.rs");
     let compact = compact(&src);
-    assert!(compact.contains("letservice=ConnectionService::new("));
+
+    assert!(compact.contains("letconnections=ConnectionState::from_ref(&state)"));
+    assert!(compact.contains("letservice=&connections.service"));
     assert!(compact.contains("service.update_connection("));
+    assert!(!compact.contains("ConnectionService::new("));
     assert!(!compact.contains("UPDATEconnectionsSETenabled"));
-    assert!(!compact.contains("ConnectionService::list_connections(&state"));
+
+    for forbidden in [
+        "state.db",
+        "state.config",
+        "state.registry",
+        "state.credentials",
+        "state.metadata_cache",
+        "state.transfer_manager",
+    ] {
+        assert!(!src.contains(forbidden), "CLI leaked raw state dependency {forbidden}");
+    }
 }
