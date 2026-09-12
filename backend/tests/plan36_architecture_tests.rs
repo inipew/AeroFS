@@ -9,9 +9,7 @@ use backend::domain::policy::PermissionInheritanceMode;
 use backend::domain::settings::UserPreferences;
 use backend::domain::{Actor, ConnectionId, VfsPath};
 use backend::infrastructure::CredentialStore;
-use backend::services::{
-    EditorService, FileService, OperationService, PreviewService,
-};
+use backend::services::{EditorService, OperationService, PreviewService};
 use backend::state::{
     AuditState, AuthState, ConnectionState, FileApiState, HealthState, PreferencesState,
     RuntimeOwner, RuntimePhase, SearchState, SettingsState, ShareState, TrashState,
@@ -55,6 +53,30 @@ fn actor(user: &AuthenticatedUser) -> Actor {
         username: user.username().to_string(),
         is_admin: user.is_admin(),
     }
+}
+
+async fn write_file(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+    content: Vec<u8>,
+) {
+    state
+        .file_api
+        .files
+        .write_file
+        .execute(
+            &actor(user),
+            backend::application::files::WriteFileCommand {
+                connection: ConnectionId::new("local").unwrap(),
+                path: path.to_string(),
+                content,
+                expected_etag: None,
+                create_only: false,
+            },
+        )
+        .await
+        .unwrap();
 }
 
 async fn setup_test_app() -> TestApp {
@@ -232,7 +254,23 @@ async fn test_plan36_settings_and_preferences_services() {
         .await
         .unwrap();
 
-    let listing = FileService::list_directory(&app.state, &admin, "local", None, None, None, None)
+    let listing = app
+        .state
+        .file_api
+        .files
+        .list_directory
+        .execute(
+            &admin_actor,
+            backend::application::files::ListDirectoryCommand {
+                connection: ConnectionId::new("local").unwrap(),
+                path: None,
+                show_hidden: None,
+                sort: None,
+                order: None,
+                cursor: None,
+                limit: None,
+            },
+        )
         .await
         .unwrap();
     assert!(listing.entries.iter().any(|e| e.name == "new_marker.txt"));
@@ -286,16 +324,13 @@ async fn test_plan36_operation_service_lifecycle() {
     let app = setup_test_app().await;
     let admin = get_seeded_admin(&app.db).await;
     let path = "/test_op.txt";
-    FileService::create_or_write_file(
+    write_file(
         &app.state,
         &admin,
-        "local",
         path,
         b"Operation Engine Content".to_vec(),
-        None,
     )
-    .await
-    .unwrap();
+    .await;
 
     let plan = OperationService::create_plan(
         OperationIntentType::Delete,
