@@ -20,6 +20,14 @@ use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 use utoipa::{IntoParams, ToSchema};
 
+fn actor(user: &AuthenticatedUser) -> crate::domain::Actor {
+    crate::domain::Actor {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        is_admin: user.is_admin,
+    }
+}
+
 #[cfg(unix)]
 pub fn get_available_disk_space(path: &std::path::Path) -> Option<u64> {
     use std::ffi::CString;
@@ -117,26 +125,18 @@ pub struct CreateUploadSessionResponse {
     pub upload_url: String,
 }
 
-// FileService facade remains for tests; handlers now use FileApplicationService directly
-
 /// List files and directories in a given path for a connection with streaming and pagination support
 #[utoipa::path(
     get,
     path = "/api/v1/connections/{id}/files",
-    params(
-        ("id" = String, Path, description = "Connection identifier"),
-        ListFilesQuery
-    ),
+    params(("id" = String, Path, description = "Connection identifier"), ListFilesQuery),
     responses(
         (status = 200, description = "Directory listing", body = DirectoryListing),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn list_files(
@@ -145,34 +145,30 @@ pub async fn list_files(
     Path(connection_id): Path<crate::domain::ConnectionId>,
     Query(query): Query<ListFilesQuery>,
 ) -> Result<Json<crate::domain::DirectoryListing>, AppError> {
-    let actor = crate::domain::Actor {
-        id: user.0.id.clone(), username: user.0.username.clone(), is_admin: user.0.is_admin,
-    };
     let command = crate::application::files::ListDirectoryCommand {
-        connection: connection_id, path: query.path, show_hidden: query.show_hidden,
-        sort: query.sort, order: query.order, cursor: query.cursor, limit: query.limit,
+        connection: connection_id,
+        path: query.path,
+        show_hidden: query.show_hidden,
+        sort: query.sort,
+        order: query.order,
+        cursor: query.cursor,
+        limit: query.limit,
     };
-    let listing = state.files.list_directory.execute(&actor, command).await?;
-    Ok(Json(listing))
+    Ok(Json(state.files.list_directory.execute(&actor(&user), command).await?))
 }
 
 /// Generate a pre-signed URL for direct browser-to-storage download
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files/presign/download",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = PresignRequest,
     responses(
         (status = 200, description = "Presigned download URL", body = PresignResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn presign_download_file(
@@ -187,29 +183,21 @@ pub async fn presign_download_file(
     let url = crate::application::FileApplicationService::from_state(&state)
         .presign_download_typed(&user.0, &conn, payload.path, Some(expire_secs))
         .await?;
-    Ok(Json(PresignResponse {
-        url,
-        expires_in_seconds: expire_secs,
-    }))
+    Ok(Json(PresignResponse { url, expires_in_seconds: expire_secs }))
 }
 
 /// Generate a pre-signed URL for direct browser-to-storage upload
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files/presign/upload",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = PresignRequest,
     responses(
         (status = 200, description = "Presigned upload URL", body = PresignResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn presign_upload_file(
@@ -224,29 +212,21 @@ pub async fn presign_upload_file(
     let url = crate::application::FileApplicationService::from_state(&state)
         .presign_upload_typed(&user.0, &conn, payload.path, Some(expire_secs))
         .await?;
-    Ok(Json(PresignResponse {
-        url,
-        expires_in_seconds: expire_secs,
-    }))
+    Ok(Json(PresignResponse { url, expires_in_seconds: expire_secs }))
 }
 
 /// Complete and verify a direct pre-signed upload
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files/presign/complete",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = PresignRequest,
     responses(
         (status = 200, description = "Uploaded file metadata", body = FileMetadata),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn presign_complete_upload(
@@ -273,20 +253,14 @@ pub async fn presign_complete_upload(
 #[utoipa::path(
     get,
     path = "/api/v1/connections/{id}/files/metadata",
-    params(
-        ("id" = String, Path, description = "Connection identifier"),
-        PathQuery
-    ),
+    params(("id" = String, Path, description = "Connection identifier"), PathQuery),
     responses(
         (status = 200, description = "File or directory metadata", body = FileMetadata),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn stat_file(
@@ -295,10 +269,16 @@ pub async fn stat_file(
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
+    let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let actor = crate::domain::Actor { id: user.0.id.clone(), username: user.0.username.clone(), is_admin: user.0.is_admin };
-    let meta = state.files.stat_file.execute(&actor, crate::application::files::StatFileCommand { connection: conn, path: query.path }).await?;
+    let meta = state
+        .files
+        .stat_file
+        .execute(
+            &actor(&user),
+            crate::application::files::StatFileCommand { connection: conn, path: query.path },
+        )
+        .await?;
     Ok(Json(meta))
 }
 
@@ -308,10 +288,7 @@ pub use stat_file as get_metadata;
 #[utoipa::path(
     get,
     path = "/api/v1/connections/{id}/files/content",
-    params(
-        ("id" = String, Path, description = "Connection identifier"),
-        PathQuery
-    ),
+    params(("id" = String, Path, description = "Connection identifier"), PathQuery),
     responses(
         (status = 200, description = "File content stream", content_type = "application/octet-stream"),
         (status = 206, description = "Partial file content stream", content_type = "application/octet-stream"),
@@ -319,10 +296,7 @@ pub use stat_file as get_metadata;
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn get_file_content(
@@ -332,33 +306,37 @@ pub async fn get_file_content(
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let actor = crate::domain::Actor { id: user.0.id.clone(), username: user.0.username.clone(), is_admin: user.0.is_admin };
-    let connection = crate::domain::ConnectionId::new(connection_id.clone()).map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let read = state.files.read_file.execute(&actor, crate::application::files::ReadFileCommand { connection, path: query.path, download: query.download.unwrap_or(false) }).await?;
+    let connection = crate::domain::ConnectionId::new(connection_id.clone())
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let read = state
+        .files
+        .read_file
+        .execute(
+            &actor(&user),
+            crate::application::files::ReadFileCommand {
+                connection,
+                path: query.path,
+                download: query.download.unwrap_or(false),
+            },
+        )
+        .await?;
     let provider = read.filesystem;
     let vfs_path = read.path;
     let meta = read.metadata;
-
     let file_size = meta.size;
-    let mime = meta
-        .mime_type
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime = meta.mime_type.clone().unwrap_or_else(|| "application/octet-stream".to_string());
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     resp_headers.insert(
         CONTENT_TYPE,
-        HeaderValue::from_str(&mime)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(&mime).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     resp_headers.insert(
         ETAG,
         HeaderValue::from_str(&meta.etag).unwrap_or_else(|_| HeaderValue::from_static("\"\"")),
     );
-    resp_headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-    );
+    resp_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store, no-cache, must-revalidate"));
     resp_headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
 
     if let Some(mtime) = meta.modified_at {
@@ -367,14 +345,12 @@ pub async fn get_file_content(
         }
     }
 
-    // Security Sandbox: Isolate inline HTML/SVG/JS preview from host origin (XSS mitigation)
     let is_active_content = mime == "text/html"
         || mime == "image/svg+xml"
         || mime == "application/xml"
         || mime == "text/xml"
         || mime == "text/javascript"
         || mime == "application/javascript";
-
     if is_active_content && !query.download.unwrap_or(false) {
         resp_headers.insert(
             header::HeaderName::from_static("content-security-policy"),
@@ -392,11 +368,7 @@ pub async fn get_file_content(
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
             .collect::<String>();
-        let fallback = if ascii_fallback.is_empty() {
-            "download".to_string()
-        } else {
-            ascii_fallback
-        };
+        let fallback = if ascii_fallback.is_empty() { "download".to_string() } else { ascii_fallback };
         let encoded_utf8 = urlencoding::encode(&meta.name);
         let disposition = format!(
             "attachment; filename=\"{}\"; filename*=UTF-8''{}",
@@ -419,11 +391,7 @@ pub async fn get_file_content(
         .await;
     }
 
-    // Handle ETag conditional caching: 304 Not Modified
-    if let Some(if_none_match) = req_headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|h| h.to_str().ok())
-    {
+    if let Some(if_none_match) = req_headers.get(header::IF_NONE_MATCH).and_then(|h| h.to_str().ok()) {
         let clean_client = if_none_match.trim().trim_matches('"');
         let clean_server = meta.etag.trim().trim_matches('"');
         if clean_client == clean_server || if_none_match == "*" {
@@ -431,16 +399,12 @@ pub async fn get_file_content(
         }
     }
 
-    // Handle HTTP Range header for seeking in video/audio players (RFC 9110 / RFC 7233 compliant)
     if let Some(range_val) = req_headers.get(header::RANGE).and_then(|r| r.to_str().ok()) {
         match parse_single_byte_range(range_val, file_size) {
             Ok(byte_range) => {
                 let chunk_len = byte_range.length();
-                let stream = provider
-                    .read_range(&vfs_path, byte_range.start, chunk_len)
-                    .await?;
+                let stream = provider.read_range(&vfs_path, byte_range.start, chunk_len).await?;
                 let body = Body::from_stream(ReaderStream::new(stream));
-
                 resp_headers.insert(CONTENT_LENGTH, HeaderValue::from(chunk_len));
                 if let Ok(cr_val) = HeaderValue::from_str(&byte_range.content_range_header()) {
                     resp_headers.insert(header::CONTENT_RANGE, cr_val);
@@ -450,28 +414,19 @@ pub async fn get_file_content(
             Err(RangeError::MultiRangeNotSupported)
             | Err(RangeError::NotSatisfiable(_))
             | Err(RangeError::InvalidFormat(_)) => {
-                // 416 Range Not Satisfiable
                 let mut unsat_headers = HeaderMap::new();
                 unsat_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-                if let Ok(cr_val) =
-                    HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size))
-                {
+                if let Ok(cr_val) = HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size)) {
                     unsat_headers.insert(header::CONTENT_RANGE, cr_val);
                 }
-                return Ok((
-                    StatusCode::RANGE_NOT_SATISFIABLE,
-                    unsat_headers,
-                    Body::empty(),
-                ));
+                return Ok((StatusCode::RANGE_NOT_SATISFIABLE, unsat_headers, Body::empty()));
             }
         }
     }
 
-    // Default full stream (200 OK)
     let stream = provider.read_stream(&vfs_path).await?;
     let body = Body::from_stream(ReaderStream::new(stream));
     resp_headers.insert(CONTENT_LENGTH, HeaderValue::from(file_size));
-
     Ok((StatusCode::OK, resp_headers, body))
 }
 
@@ -479,9 +434,7 @@ pub async fn get_file_content(
 #[utoipa::path(
     put,
     path = "/api/v1/connections/{id}/files/content",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = UpdateContentRequest,
     responses(
         (status = 200, description = "File updated successfully", body = SuccessResponse),
@@ -490,10 +443,7 @@ pub async fn get_file_content(
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 412, description = "Precondition failed", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn update_file_content(
@@ -508,41 +458,37 @@ pub async fn update_file_content(
         .and_then(|h| h.to_str().ok())
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(false);
-
     let expected_etag = if force_overwrite {
         None
     } else {
-        headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok())
+        headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok()).map(str::to_string)
     };
-
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
+    let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let meta = crate::application::FileApplicationService::from_state(&state)
-        .create_or_write_typed(
-            &user.0,
-            &conn,
-            payload.path,
-            payload.content.into_bytes(),
-            expected_etag.map(|s| s.to_string()),
+    let meta = state
+        .files
+        .write_file
+        .execute(
+            &actor(&user),
+            crate::application::files::WriteFileCommand {
+                connection: conn,
+                path: payload.path,
+                content: payload.content.into_bytes(),
+                expected_etag,
+                create_only: false,
+            },
         )
         .await?;
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(
-        header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        HeaderValue::from_static("ETag"),
-    );
+    resp_headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("ETag"));
     if let Ok(val) = HeaderValue::from_str(&meta.etag) {
         resp_headers.insert(header::ETAG, val);
     }
-
     Ok((
         StatusCode::OK,
         resp_headers,
-        Json(SuccessResponse {
-            success: true,
-            message: format!("File updated: {}", meta.path),
-        }),
+        Json(SuccessResponse { success: true, message: format!("File updated: {}", meta.path) }),
     ))
 }
 
@@ -550,9 +496,7 @@ pub async fn update_file_content(
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = CreateEntryRequest,
     responses(
         (status = 201, description = "File created successfully", body = SuccessResponse),
@@ -560,10 +504,7 @@ pub async fn update_file_content(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 409, description = "File already exists", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn create_file(
@@ -572,18 +513,25 @@ pub async fn create_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
+    let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let meta = crate::application::FileApplicationService::from_state(&state)
-        .create_file_typed(&user.0, &conn, payload.path)
+    let meta = state
+        .files
+        .write_file
+        .execute(
+            &actor(&user),
+            crate::application::files::WriteFileCommand {
+                connection: conn,
+                path: payload.path,
+                content: Vec::new(),
+                expected_etag: None,
+                create_only: true,
+            },
+        )
         .await?;
-
     Ok((
         StatusCode::CREATED,
-        Json(SuccessResponse {
-            success: true,
-            message: format!("File created: {}", meta.path),
-        }),
+        Json(SuccessResponse { success: true, message: format!("File created: {}", meta.path) }),
     ))
 }
 
@@ -591,9 +539,7 @@ pub async fn create_file(
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/directories",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = CreateEntryRequest,
     responses(
         (status = 201, description = "Directory created successfully", body = SuccessResponse),
@@ -601,10 +547,7 @@ pub async fn create_file(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 409, description = "Directory already exists", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn create_directory(
@@ -613,18 +556,19 @@ pub async fn create_directory(
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
+    let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let meta = crate::application::FileApplicationService::from_state(&state)
-        .create_directory_typed(&user.0, &conn, payload.path)
+    let meta = state
+        .files
+        .create_directory
+        .execute(
+            &actor(&user),
+            crate::application::files::CreateDirectoryCommand { connection: conn, path: payload.path },
+        )
         .await?;
-
     Ok((
         StatusCode::CREATED,
-        Json(SuccessResponse {
-            success: true,
-            message: format!("Directory created: {}", meta.path),
-        }),
+        Json(SuccessResponse { success: true, message: format!("Directory created: {}", meta.path) }),
     ))
 }
 
@@ -646,9 +590,7 @@ pub struct DeleteResponse {
 #[utoipa::path(
     delete,
     path = "/api/v1/connections/{id}/files",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = DeleteRequest,
     responses(
         (status = 200, description = "Deletion completed", body = DeleteResponse),
@@ -656,10 +598,7 @@ pub struct DeleteResponse {
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn delete_files(
@@ -668,43 +607,35 @@ pub async fn delete_files(
     Path(connection_id): Path<String>,
     Json(payload): Json<DeleteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
+    let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let (succeeded, failed_items) = crate::application::FileApplicationService::from_state(&state)
-        .delete_files_typed(&user.0, &conn, payload.paths)
+    let result = state
+        .files
+        .delete_entries
+        .execute(
+            &actor(&user),
+            crate::application::files::DeleteEntriesCommand { connection: conn, paths: payload.paths },
+        )
         .await?;
-
-    let failed: Vec<DeleteResultItem> = failed_items
+    let failed: Vec<DeleteResultItem> = result
+        .failed
         .into_iter()
         .map(|(path, error)| DeleteResultItem { path, error })
         .collect();
-
     let success = failed.is_empty();
     let message = if success {
-        format!("Deleted {} item(s)", succeeded.len())
+        format!("Deleted {} item(s)", result.succeeded.len())
     } else {
-        format!(
-            "Deleted {} item(s), {} failed",
-            succeeded.len(),
-            failed.len()
-        )
+        format!("Deleted {} item(s), {} failed", result.succeeded.len(), failed.len())
     };
-
-    Ok(Json(DeleteResponse {
-        success,
-        succeeded,
-        failed,
-        message,
-    }))
+    Ok(Json(DeleteResponse { success, succeeded: result.succeeded, failed, message }))
 }
 
 /// Rename an entry
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files/rename",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = TransferRequest,
     responses(
         (status = 200, description = "Entry renamed successfully", body = SuccessResponse),
@@ -713,10 +644,7 @@ pub async fn delete_files(
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 409, description = "Target already exists", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn rename_entry(
@@ -725,24 +653,29 @@ pub async fn rename_entry(
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
+    let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    crate::application::FileApplicationService::from_state(&state)
-        .rename_typed(&user.0, &conn, payload.from.clone(), payload.to.clone())
+    let to = payload.to.clone();
+    state
+        .files
+        .rename_entry
+        .execute(
+            &actor(&user),
+            crate::application::files::RenameEntryCommand {
+                connection: conn,
+                from: payload.from,
+                to: payload.to,
+            },
+        )
         .await?;
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: format!("Renamed to: {}", payload.to),
-    }))
+    Ok(Json(SuccessResponse { success: true, message: format!("Renamed to: {}", to) }))
 }
 
 /// Copy an entry
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files/copy",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = TransferRequest,
     responses(
         (status = 200, description = "Entry copied successfully", body = SuccessResponse),
@@ -751,10 +684,7 @@ pub async fn rename_entry(
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 409, description = "Target already exists", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn copy_entry(
@@ -763,67 +693,35 @@ pub async fn copy_entry(
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Create).await?;
-
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-
-    let from_vfs = VfsPath::new(&connection_id, &payload.from)?;
-    let to_vfs = VfsPath::new(&connection_id, &payload.to)?;
-
-    provider.copy(&from_vfs, &to_vfs).await?;
-
-    // Invalidate destination in metadata cache on copy
-    state
-        .metadata_cache
-        .invalidate_prefix(&connection_id, &payload.to)
-        .await;
-
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "FILE_COPY",
-        Some(&connection_id),
-        Some(&from_vfs.path),
-        "SUCCESS",
-        None,
-        Some(&format!("Copied {} -> {}", from_vfs.path, to_vfs.path)),
-    )
-    .await;
-
-    state
-        .transfer_manager
-        .broadcast_event(crate::transfer::WsEvent::file_change(
-            &connection_id,
-            &to_vfs.path,
-            "copy",
-        ))
-        .await;
-
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: format!("Copied to: {}", to_vfs.path),
-    }))
+    let conn = crate::domain::ConnectionId::new(connection_id)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let copied_to = state
+        .files
+        .copy_entry
+        .execute(
+            &actor(&user),
+            crate::application::files::CopyEntryCommand {
+                connection: conn,
+                from: payload.from,
+                to: payload.to,
+            },
+        )
+        .await?;
+    Ok(Json(SuccessResponse { success: true, message: format!("Copied to: {}", copied_to) }))
 }
 
 /// Admit a streaming upload and return a job-bound URL for its bytes.
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/uploads",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = CreateUploadSessionRequest,
     responses(
         (status = 202, description = "Upload session created", body = CreateUploadSessionResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn create_upload_session(
@@ -836,10 +734,7 @@ pub async fn create_upload_session(
     let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
         VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
     })?;
-    let target = crate::application::UploadApplicationService::validate_target(
-        &connection_id,
-        &payload.path,
-    )?;
+    let target = crate::application::UploadApplicationService::validate_target(&connection_id, &payload.path)?;
     let session = crate::application::UploadApplicationService::create_session(
         &state,
         &user.id,
@@ -853,17 +748,13 @@ pub async fn create_upload_session(
     Ok((
         StatusCode::ACCEPTED,
         Json(CreateUploadSessionResponse {
-            upload_url: format!(
-                "/api/v1/connections/{}/uploads/{}/content",
-                connection_id, session.job_id
-            ),
+            upload_url: format!("/api/v1/connections/{}/uploads/{}/content", connection_id, session.job_id),
             job_id: session.job_id,
         }),
     ))
 }
 
-/// Stream a previously admitted upload session. The client must use the job id
-/// returned by `create_upload_session`; a second PUT is rejected.
+/// Stream a previously admitted upload session.
 #[utoipa::path(
     put,
     path = "/api/v1/connections/{id}/uploads/{job_id}/content",
@@ -878,10 +769,7 @@ pub async fn create_upload_session(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Upload session not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn upload_session_content(
@@ -901,31 +789,20 @@ pub async fn upload_session_content(
         stream,
     )
     .await?;
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: format!("Uploaded: {}", path),
-    }))
+    Ok(Json(SuccessResponse { success: true, message: format!("Uploaded: {}", path) }))
 }
 
-/// Streaming multipart upload — now owned by TransferEngine (Upload-as-Transfer)
-/// Wire contract unchanged: POST /connections/{id}/files/upload -> {success,message}
-/// Internally: HTTP handler (thin) → UploadApplicationService::execute_inline_stream → TransferEngine → VFS
-/// Handler no longer knows staging/duplex/write_stream/rename — all via TransferPlan + service.
+/// Streaming multipart upload — owned by TransferEngine (Upload-as-Transfer).
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/upload",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     responses(
         (status = 200, description = "Multipart upload completed", body = SuccessResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn upload_file(
@@ -938,7 +815,6 @@ pub async fn upload_file(
     let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
         VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
     })?;
-
     let mut dest_dir = "/".to_string();
     let mut uploaded_files = Vec::new();
     let max_upload_bytes = state.config.limits.max_upload_size;
@@ -949,35 +825,28 @@ pub async fn upload_file(
         .map_err(|e| AppError::BadRequest(format!("Multipart parse error: {}", e)))?
     {
         let name = field.name().unwrap_or_default().to_string();
-
         if name == "path" {
             dest_dir = field.text().await.unwrap_or_else(|_| "/".to_string());
             continue;
         }
-
         if let Some(file_name) = field.file_name() {
             let clean_name = file_name.to_string();
             let target_path = VfsPath::new(
                 &connection_id,
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
-
-            // Delegate full lifecycle to UploadApplicationService (thin handler).
-            // Total hint is None for multipart without Content-Length; progress uses indeterminate (total=0).
-            let uploaded_path =
-                crate::application::UploadApplicationService::execute_inline_stream(
-                    &state,
-                    &user.id,
-                    &connection_id,
-                    &provider,
-                    target_path,
-                    &clean_name,
-                    None,
-                    max_upload_bytes,
-                    &mut field,
-                )
-                .await?;
-
+            let uploaded_path = crate::application::UploadApplicationService::execute_inline_stream(
+                &state,
+                &user.id,
+                &connection_id,
+                &provider,
+                target_path,
+                &clean_name,
+                None,
+                max_upload_bytes,
+                &mut field,
+            )
+            .await?;
             uploaded_files.push(uploaded_path);
         }
     }
@@ -1002,9 +871,7 @@ pub struct ChmodResponse {
 #[utoipa::path(
     post,
     path = "/api/v1/connections/{id}/files/chmod",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     request_body = ChmodRequest,
     responses(
         (status = 200, description = "Permissions updated successfully", body = ChmodResponse),
@@ -1012,10 +879,7 @@ pub struct ChmodResponse {
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn chmod_file(
@@ -1024,7 +888,6 @@ pub async fn chmod_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<ChmodRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Delegated to application layer (typed, explicit ports)
     let conn = crate::domain::ConnectionId::new(connection_id.clone())
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     if !payload.recursive.unwrap_or(false) {
@@ -1038,7 +901,7 @@ pub async fn chmod_file(
             message: format!("Permissions updated for {}", payload.path),
         }));
     }
-    // Recursive path keeps filesystem walk (Unix only) — permission already checked below
+
     check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
     let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
         VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
@@ -1049,34 +912,26 @@ pub async fn chmod_file(
 
     #[cfg(unix)]
     {
-        if payload.recursive.unwrap_or(false) {
-            let root = if let Some(custom) =
-                crate::services::SettingsService::get_system_setting(&state, "local_root").await
-            {
-                std::path::PathBuf::from(custom)
-            } else {
-                state.config.filesystem.default_local_root.clone()
-            };
-            if let Ok(safe_path) = crate::filesystem::safepath::SafePath::resolve(
-                &root,
-                &payload.path,
-                state.config.security.allow_symlinks_outside_root,
-            ) {
-                let abs_path = safe_path.absolute();
-                if abs_path.is_dir() {
-                    let (succeeded, failed) = apply_chmod_recursive(abs_path, payload.mode).await;
-                    if !failed.is_empty() {
-                        return Ok(Json(ChmodResponse {
-                            success: false,
-                            succeeded: Some(succeeded),
-                            failed: Some(failed.clone()),
-                            message: format!(
-                                "Chmod partially completed: {} succeeded, {} failed",
-                                succeeded,
-                                failed.len()
-                            ),
-                        }));
-                    }
+        let root = if let Some(custom) = crate::services::SettingsService::get_system_setting(&state, "local_root").await {
+            std::path::PathBuf::from(custom)
+        } else {
+            state.config.filesystem.default_local_root.clone()
+        };
+        if let Ok(safe_path) = crate::filesystem::safepath::SafePath::resolve(
+            &root,
+            &payload.path,
+            state.config.security.allow_symlinks_outside_root,
+        ) {
+            let abs_path = safe_path.absolute();
+            if abs_path.is_dir() {
+                let (succeeded, failed) = apply_chmod_recursive(abs_path, payload.mode).await;
+                if !failed.is_empty() {
+                    return Ok(Json(ChmodResponse {
+                        success: false,
+                        succeeded: Some(succeeded),
+                        failed: Some(failed.clone()),
+                        message: format!("Chmod partially completed: {} succeeded, {} failed", succeeded, failed.len()),
+                    }));
                 }
             }
         }
@@ -1084,9 +939,7 @@ pub async fn chmod_file(
 
     #[cfg(not(unix))]
     {
-        return Err(AppError::BadRequest(
-            "CHMOD is only supported on Unix systems".into(),
-        ));
+        return Err(AppError::BadRequest("CHMOD is only supported on Unix systems".into()));
     }
 
     crate::auth::record_audit_log(
@@ -1097,10 +950,7 @@ pub async fn chmod_file(
         Some(&vfs_path.path),
         "SUCCESS",
         None,
-        Some(&format!(
-            "Changed permissions to {:o} on {}",
-            payload.mode, vfs_path.path
-        )),
+        Some(&format!("Changed permissions to {:o} on {}", payload.mode, vfs_path.path)),
     )
     .await;
 
@@ -1118,7 +968,6 @@ async fn apply_chmod_recursive(dir: &std::path::Path, mode: u32) -> (usize, Vec<
     let mut succeeded = 0;
     let mut failed = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
-
     while let Some(curr_dir) = stack.pop() {
         if let Ok(mut entries) = tokio::fs::read_dir(&curr_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
@@ -1153,18 +1002,13 @@ pub struct StorageInfoResponse {
 #[utoipa::path(
     get,
     path = "/api/v1/connections/{id}/storage-info",
-    params(
-        ("id" = String, Path, description = "Connection identifier")
-    ),
+    params(("id" = String, Path, description = "Connection identifier")),
     responses(
         (status = 200, description = "Storage and disk information", body = StorageInfoResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Connection not found", body = ErrorResponse)
     ),
-    security(
-        ("CookieAuth" = []),
-        ("BearerAuth" = [])
-    ),
+    security(("CookieAuth" = []), ("BearerAuth" = [])),
     tag = "files"
 )]
 pub async fn get_storage_info(
@@ -1173,9 +1017,7 @@ pub async fn get_storage_info(
     Path(connection_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if connection_id == "local" {
-        let root = if let Some(custom) =
-            crate::services::SettingsService::get_system_setting(&state, "local_root").await
-        {
+        let root = if let Some(custom) = crate::services::SettingsService::get_system_setting(&state, "local_root").await {
             std::path::PathBuf::from(custom)
         } else {
             state.config.filesystem.default_local_root.clone()
@@ -1190,14 +1032,8 @@ pub async fn get_storage_info(
                     let total = stat.f_blocks * stat.f_frsize;
                     let free = stat.f_bavail * stat.f_frsize;
                     let used = total.saturating_sub(free);
-                    let pct = if total > 0 {
-                        ((used as f64 / total as f64) * 100.0) as u8
-                    } else {
-                        0
-                    };
-
+                    let pct = if total > 0 { ((used as f64 / total as f64) * 100.0) as u8 } else { 0 };
                     let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
-
                     return Ok(Json(StorageInfoResponse {
                         source_name: "Local Storage".to_string(),
                         source_size_formatted: format_bytes_str(used),
@@ -1224,7 +1060,6 @@ pub async fn get_storage_info(
         }));
     }
 
-    // For Remote / FTP connections
     let row: Option<(String, String, Option<String>, Option<i64>)> =
         sqlx::query_as("SELECT name, provider, host, port FROM connections WHERE id = ?")
             .bind(&connection_id)
@@ -1261,10 +1096,7 @@ pub async fn get_storage_info(
 
 fn format_bytes_str(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 * 1024 {
-        format!(
-            "{:.1} TiB",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
-        )
+        format!("{:.1} TiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {
