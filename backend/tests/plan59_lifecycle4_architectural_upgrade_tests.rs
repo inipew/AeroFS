@@ -1,6 +1,6 @@
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::runtime::{ResourceBudget, TaskSupervisor};
-use backend::state::{AppRuntime, RuntimePhase};
+use backend::state::{RuntimeOwner, RuntimePhase};
 use backend::sync::{ConflictResolver, FileManifest, ManifestDiffer, SyncOpKind, SyncStrategy};
 use backend::transfer::TransferCheckpoint;
 use backend::vfs::ProviderState;
@@ -32,7 +32,7 @@ async fn test_task_supervisor_tracked_spawns_and_drain() {
 
 #[tokio::test]
 async fn test_runtime_binding_phase_and_health_readiness() {
-    let runtime = AppRuntime::default();
+    let runtime = RuntimeOwner::default();
     assert_eq!(runtime.phase(), RuntimePhase::Starting);
 
     runtime.set_phase(RuntimePhase::Binding);
@@ -82,7 +82,6 @@ async fn test_event_journal_epoch_and_sqlite_persistence() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Query replay with matching epoch
     let outcome = journal.get_since(Some(&epoch), 0, 10).await.unwrap();
     match outcome {
         ReplayOutcome::Events(events) => {
@@ -256,7 +255,6 @@ async fn test_sync_manifest_diff_engine() {
         },
     ];
 
-    // SourceWins strategy:
     let ops_src_wins = ManifestDiffer::diff(&src, &dst, SyncStrategy::SourceWins);
     let same_op = ops_src_wins
         .iter()
@@ -276,7 +274,6 @@ async fn test_sync_manifest_diff_engine() {
         .unwrap();
     assert_eq!(new_op.kind, SyncOpKind::Create);
 
-    // KeepBoth strategy:
     let ops_keep_both = ManifestDiffer::diff(&src, &dst, SyncStrategy::KeepBoth);
     let mod_conflict = ops_keep_both
         .iter()
