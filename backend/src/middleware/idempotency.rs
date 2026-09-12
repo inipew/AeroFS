@@ -23,6 +23,15 @@ enum CacheEntry {
     Completed(CachedResponse),
 }
 
+impl CacheEntry {
+    fn created_at(&self) -> Instant {
+        match self {
+            Self::InProgress(created_at) => *created_at,
+            Self::Completed(response) => response.created_at,
+        }
+    }
+}
+
 static IDEMPOTENCY_CACHE: LazyLock<Arc<RwLock<HashMap<String, CacheEntry>>>> =
     LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
@@ -30,8 +39,9 @@ const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 const CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
 const IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
 const MAX_CACHE_ENTRIES: usize = 1000;
+const MAX_CACHED_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Axum middleware for transparent scoped Idempotency-Key deduplication on mutating requests
+/// Axum middleware for transparent scoped Idempotency-Key deduplication on mutating requests.
 pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let is_mutating = method == Method::POST
@@ -55,7 +65,6 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
         None => return next.run(req).await,
     };
 
-    // Construct composite isolation key: auth_scope + method + path + idempotency_key
     let auth_scope = req
         .headers()
         .get(axum::http::header::COOKIE)
@@ -73,17 +82,26 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
         })
         .unwrap_or_else(|| "anon".to_string());
 
-    let scoped_key = format!("{}:{}:{}:{}", auth_scope, method, req.uri().path(), raw_key);
+    // Include path + query so the same key cannot collide across semantically
+    // different request targets.
+    let scoped_key = format!("{}:{}:{}:{}", auth_scope, method, req.uri(), raw_key);
 
-    // 1. Check existing cache & atomic reservation
     {
         if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
-            // Evict expired entries if cache is full
             if guard.len() >= MAX_CACHE_ENTRIES {
-                guard.retain(|_, v| match v {
+                guard.retain(|_, value| match value {
                     CacheEntry::InProgress(t) => t.elapsed() < IN_FLIGHT_TIMEOUT,
                     CacheEntry::Completed(c) => c.created_at.elapsed() < CACHE_TTL,
                 });
+            }
+            if guard.len() >= MAX_CACHE_ENTRIES && !guard.contains_key(&scoped_key) {
+                if let Some(oldest_key) = guard
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.created_at())
+                    .map(|(key, _)| key.clone())
+                {
+                    guard.remove(&oldest_key);
+                }
             }
 
             if let Some(entry) = guard.get(&scoped_key) {
@@ -103,7 +121,6 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
                             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
                     }
                     CacheEntry::InProgress(t) if t.elapsed() < IN_FLIGHT_TIMEOUT => {
-                        // Concurrent request with same idempotency key is currently processing
                         return crate::errors::AppError::ConcurrentIdempotentRequest(
                             "An identical request is currently being processed".to_string(),
                         )
@@ -113,46 +130,62 @@ pub async fn idempotency_middleware(req: Request, next: Next) -> Response {
                 }
             }
 
-            // Reserve in-flight execution
             guard.insert(scoped_key.clone(), CacheEntry::InProgress(Instant::now()));
         }
     }
 
-    // 2. Execute inner handler
     let resp = next.run(req).await;
-
-    // 3. Cache completed response
     let status = resp.status();
     if status.is_success() || status == StatusCode::CREATED || status == StatusCode::NO_CONTENT {
-        let (parts, body) = resp.into_parts();
-        let content_type = parts.headers.get(axum::http::header::CONTENT_TYPE).cloned();
+        // Never consume a body unless it is known to fit in the cache. Previously,
+        // `to_bytes(..., 2 MiB)` consumed an oversized response and replaced it
+        // with an empty successful body on error.
+        let cacheable_len = resp
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|length| *length <= MAX_CACHED_RESPONSE_BYTES);
 
-        // Convert body to bytes (bounded 2 MB limit)
-        if let Ok(bytes) = to_bytes(body, 2 * 1024 * 1024).await {
-            if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
-                guard.insert(
-                    scoped_key,
-                    CacheEntry::Completed(CachedResponse {
-                        status,
-                        content_type,
-                        body: bytes.clone(),
-                        created_at: Instant::now(),
-                    }),
-                );
-            }
-            return Response::from_parts(parts, Body::from(bytes));
-        } else {
+        if cacheable_len.is_none() {
             if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
                 guard.remove(&scoped_key);
             }
-            return Response::from_parts(parts, Body::empty());
+            return resp;
+        }
+
+        let (parts, body) = resp.into_parts();
+        let content_type = parts.headers.get(axum::http::header::CONTENT_TYPE).cloned();
+        match to_bytes(body, MAX_CACHED_RESPONSE_BYTES).await {
+            Ok(bytes) => {
+                if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
+                    guard.insert(
+                        scoped_key,
+                        CacheEntry::Completed(CachedResponse {
+                            status,
+                            content_type,
+                            body: bytes.clone(),
+                            created_at: Instant::now(),
+                        }),
+                    );
+                }
+                Response::from_parts(parts, Body::from(bytes))
+            }
+            Err(error) => {
+                // A declared-small body that still violates the bound indicates a
+                // broken response contract. Remove the reservation and surface a
+                // server error rather than returning a false successful empty body.
+                if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
+                    guard.remove(&scoped_key);
+                }
+                tracing::error!(?error, "failed to buffer cacheable idempotent response");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
     } else {
-        // Clear reservation on failure so client can retry with same key
         if let Ok(mut guard) = IDEMPOTENCY_CACHE.write() {
             guard.remove(&scoped_key);
         }
+        resp
     }
-
-    resp
 }
