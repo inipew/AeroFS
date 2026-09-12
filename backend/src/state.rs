@@ -213,8 +213,8 @@ pub struct AppState {
     pub files: FileUseCases,
     pub transfers: TransferUseCases,
     pub uploads: UploadApplicationService,
-    search: SearchState,
-    health: HealthState,
+    pub(crate) search: SearchState,
+    pub(crate) health: HealthState,
 }
 
 impl axum::extract::FromRef<AppState> for SearchState {
@@ -234,12 +234,6 @@ impl AppState {
     /// Production startup should use `bootstrap::build_app_state` directly.
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
         crate::bootstrap::build_app_state(config, db).await
-    }
-
-    pub(crate) fn with_narrow_states(mut self, search: SearchState, health: HealthState) -> Self {
-        self.search = search;
-        self.health = health;
-        self
     }
 
     pub async fn get_provider(&self, connection_id: &str) -> Option<Arc<dyn FileSystem>> {
