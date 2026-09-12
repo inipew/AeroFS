@@ -5,7 +5,7 @@ use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
 use backend::services::EditorService;
-use backend::state::{AppState, ArchiveState, RuntimeOwner, ShutdownReason};
+use backend::state::{AppState, ArchiveState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::vfs::factory::ProviderFactory;
 use backend::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
@@ -66,8 +66,8 @@ async fn write_file(
     path: &str,
     content: Vec<u8>,
 ) -> backend::domain::FileMetadata {
-    state
-        .file_api
+    let file_api = FileApiState::from_ref(state);
+    file_api
         .files
         .write_file
         .execute(
@@ -89,11 +89,11 @@ async fn stat_file(
     user: &AuthenticatedUser,
     path: &str,
 ) -> Result<backend::domain::FileMetadata, backend::errors::AppError> {
-    if let Some(metadata) = state.file_api.service.cached_metadata("local", path).await {
+    let file_api = FileApiState::from_ref(state);
+    if let Some(metadata) = file_api.service.cached_metadata("local", path).await {
         return Ok(metadata);
     }
-    let metadata = state
-        .file_api
+    let metadata = file_api
         .files
         .stat_file
         .execute(
@@ -104,8 +104,7 @@ async fn stat_file(
             },
         )
         .await?;
-    state
-        .file_api
+    file_api
         .service
         .cache_metadata("local", path, metadata.clone())
         .await;
@@ -208,6 +207,7 @@ async fn test_presigned_upload_complete_validation() {
     let (state, admin, _temp) = setup_test_context().await;
     let actor = actor_from_user(&admin);
     let connection = ConnectionId::local();
+    let file_api = FileApiState::from_ref(&state);
 
     let content = b"PRESIGNED PAYLOAD FOR VALIDATION TEST";
     write_file(
@@ -218,8 +218,7 @@ async fn test_presigned_upload_complete_validation() {
     )
     .await;
 
-    let meta = state
-        .file_api
+    let meta = file_api
         .files
         .complete_presigned
         .execute(
@@ -235,8 +234,7 @@ async fn test_presigned_upload_complete_validation() {
         .unwrap();
     assert_eq!(meta.size, content.len() as u64);
 
-    let err_size = state
-        .file_api
+    let err_size = file_api
         .files
         .complete_presigned
         .execute(
@@ -251,8 +249,7 @@ async fn test_presigned_upload_complete_validation() {
         .await;
     assert!(err_size.is_err(), "Size mismatch must fail verification");
 
-    let err_nf = state
-        .file_api
+    let err_nf = file_api
         .files
         .complete_presigned
         .execute(
@@ -271,6 +268,7 @@ async fn test_presigned_upload_complete_validation() {
 #[tokio::test]
 async fn test_metadata_cache_lifecycle_and_invalidation() {
     let (state, admin, _temp) = setup_test_context().await;
+    let file_api = FileApiState::from_ref(&state);
 
     let content1 = b"Original Content v1";
     write_file(
@@ -300,8 +298,7 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
         "stat after write must not return stale cached metadata"
     );
 
-    let delete_result = state
-        .file_api
+    let delete_result = file_api
         .files
         .delete_entries
         .execute(
@@ -324,6 +321,7 @@ async fn test_metadata_cache_lifecycle_and_invalidation() {
 #[tokio::test]
 async fn test_directory_paged_listing_has_more_and_total_count() {
     let (state, admin, _temp) = setup_test_context().await;
+    let file_api = FileApiState::from_ref(&state);
 
     for i in 0..10 {
         write_file(
@@ -335,8 +333,7 @@ async fn test_directory_paged_listing_has_more_and_total_count() {
         .await;
     }
 
-    let listing = state
-        .file_api
+    let listing = file_api
         .files
         .list_directory
         .execute(
