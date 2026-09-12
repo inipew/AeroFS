@@ -1,11 +1,18 @@
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
+use backend::domain::{Actor, ConnectionId};
 use backend::filesystem::archive::ArchiveOverwriteMode;
+use backend::infrastructure::{
+    archive::SqliteArchiveEffects,
+    files::{RegistryFileSystemResolver, SqliteAuthorization},
+};
 use backend::services::{ArchiveService, FileService, TransferService};
 use backend::transfer::{TransferType, WsEvent};
 use backend::AppState;
+use std::sync::Arc;
 use tempfile::tempdir;
+use tokio::sync::Semaphore;
 
 async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
     let temp = tempdir().unwrap();
@@ -27,6 +34,26 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     });
 
     (state, user, temp)
+}
+
+fn archive_service(state: &AppState) -> ArchiveService {
+    ArchiveService::new(
+        Arc::new(SqliteAuthorization::new(state.db.clone())),
+        Arc::new(RegistryFileSystemResolver::new(state.registry.clone())),
+        Arc::new(SqliteArchiveEffects::new(
+            state.db.clone(),
+            state.transfer_manager.clone(),
+        )),
+        Arc::new(Semaphore::new(state.config.limits.archive_concurrency)),
+    )
+}
+
+fn actor_from_user(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
 }
 
 #[tokio::test]
@@ -131,6 +158,9 @@ async fn test_file_service_full_crud_lifecycle() {
 #[tokio::test]
 async fn test_archive_service_lifecycle() {
     let (state, user, _temp) = setup_test_context().await;
+    let archive = archive_service(&state);
+    let actor = actor_from_user(&user);
+    let connection = ConnectionId::local();
 
     // Create source files
     FileService::create_or_write_file(
@@ -156,45 +186,46 @@ async fn test_archive_service_lifecycle() {
     .unwrap();
 
     // 1. Compress into ZIP
-    let compress_res = ArchiveService::compress(
-        &state,
-        &user,
-        "local",
-        "/",
-        &["src1.txt".to_string(), "src2.txt".to_string()],
-        "/bundle.zip",
-        Some("zip"),
-    )
-    .await
-    .expect("Compression failed");
+    let compress_res = archive
+        .compress(
+            &actor,
+            &connection,
+            "/",
+            &["src1.txt".to_string(), "src2.txt".to_string()],
+            "/bundle.zip",
+            Some("zip"),
+        )
+        .await
+        .expect("Compression failed");
     assert!(compress_res.success);
 
     // 2. List virtual archive contents
-    let virtual_entries = ArchiveService::list_virtual(&state, &user, "local", "/bundle.zip", "")
+    let virtual_entries = archive
+        .list_virtual(&actor, &connection, "/bundle.zip", "")
         .await
         .expect("List virtual archive failed");
     assert!(virtual_entries.iter().any(|e| e.name == "src1.txt"));
 
     // 3. Read virtual archive entry
-    let (filename, bytes) =
-        ArchiveService::read_virtual_entry(&state, &user, "local", "/bundle.zip", "src1.txt")
-            .await
-            .expect("Read virtual archive entry failed");
+    let (filename, bytes) = archive
+        .read_virtual_entry(&actor, &connection, "/bundle.zip", "src1.txt")
+        .await
+        .expect("Read virtual archive entry failed");
     assert_eq!(filename, "src1.txt");
     assert_eq!(bytes, b"Source file 1 content");
 
     // 4. Extract archive
-    let extract_res = ArchiveService::extract(
-        &state,
-        &user,
-        "local",
-        "/bundle.zip",
-        "/extracted",
-        Some("zip"),
-        ArchiveOverwriteMode::Overwrite,
-    )
-    .await
-    .expect("Extract archive failed");
+    let extract_res = archive
+        .extract(
+            &actor,
+            &connection,
+            "/bundle.zip",
+            "/extracted",
+            Some("zip"),
+            ArchiveOverwriteMode::Overwrite,
+        )
+        .await
+        .expect("Extract archive failed");
     assert!(extract_res.success);
 }
 
