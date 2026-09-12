@@ -10,10 +10,9 @@ use backend::domain::{Actor, ConnectionId, VfsPath};
 use backend::infrastructure::CredentialStore;
 use backend::services::{
     AuditService, AuthService, AuthorizationService, ConnectionService, EditorService, FileService,
-    OperationService, PreferencesService, PreviewService, SettingsService, ShareService,
-    TrashService,
+    OperationService, PreferencesService, PreviewService, ShareService, TrashService,
 };
-use backend::state::{HealthState, RuntimePhase, SearchState};
+use backend::state::{HealthState, RuntimePhase, SearchState, SettingsState};
 use backend::vfs::factory::ProviderFactory;
 use backend::vfs::registry::ProviderRegistry;
 use backend::AppState;
@@ -182,8 +181,14 @@ async fn test_plan36_connection_service_lifecycle() {
 async fn test_plan36_settings_and_preferences_services() {
     let (state, _temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
+    let admin_actor = actor(&admin);
+    let settings_state = SettingsState::from_ref(&state);
 
-    let settings = SettingsService::get_settings(&state, &admin).await.unwrap();
+    let settings = settings_state
+        .service
+        .get_settings(&admin_actor)
+        .await
+        .unwrap();
     assert_eq!(settings.settings.general.theme, "dark");
 
     let prefs = UserPreferences {
@@ -205,20 +210,21 @@ async fn test_plan36_settings_and_preferences_services() {
     std::fs::create_dir_all(&new_root).unwrap();
     std::fs::write(new_root.join("new_marker.txt"), "hello switched root").unwrap();
 
-    SettingsService::update_settings(
-        &state,
-        &admin,
-        backend::services::settings_service::UpdateSettingsRequest {
-            settings: None,
-            local_root: Some(new_root.to_string_lossy().to_string()),
-            temp_dir: None,
-            allow_symlinks: None,
-            show_hidden_default: None,
-            read_only_default: None,
-        },
-    )
-    .await
-    .unwrap();
+    settings_state
+        .service
+        .update_settings(
+            &admin_actor,
+            backend::services::settings_service::UpdateSettingsRequest {
+                settings: None,
+                local_root: Some(new_root.to_string_lossy().to_string()),
+                temp_dir: None,
+                allow_symlinks: None,
+                show_hidden_default: None,
+                read_only_default: None,
+            },
+        )
+        .await
+        .unwrap();
 
     let listing = FileService::list_directory(&state, &admin, "local", None, None, None, None)
         .await
