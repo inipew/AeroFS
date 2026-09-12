@@ -1,7 +1,8 @@
 use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
+use crate::domain::Actor;
 use crate::errors::{AppError, ErrorResponse};
-use crate::state::AppState;
+use crate::state::SyncState;
 use crate::sync::models::{SyncJob, SyncOperation, SyncStrategy};
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,14 @@ pub struct ResolveConflictResponse {
     pub success: bool,
 }
 
+fn actor_from_user(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
+}
+
 /// Create a new sync job
 #[utoipa::path(
     post,
@@ -53,38 +62,22 @@ pub struct ResolveConflictResponse {
     tag = "sync"
 )]
 pub async fn create_sync_job(
-    State(state): State<AppState>,
+    State(state): State<SyncState>,
     user: AuthenticatedUser,
     Json(payload): Json<CreateSyncRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    crate::auth::permissions::check_permission(
-        &state.db,
-        &user,
-        &payload.source_connection_id,
-        crate::auth::permissions::PermissionAction::Read,
-    )
-    .await?;
-
-    crate::auth::permissions::check_permission(
-        &state.db,
-        &user,
-        &payload.destination_connection_id,
-        crate::auth::permissions::PermissionAction::Write,
-    )
-    .await?;
-
+    let actor = actor_from_user(&user);
     let job = state
-        .sync_manager
+        .service
         .create_job(
-            &user.id,
+            &actor,
             &payload.source_connection_id,
             &payload.source_path,
             &payload.destination_connection_id,
             &payload.destination_path,
             payload.strategy,
         )
-        .await
-        .map_err(AppError::Internal)?;
+        .await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -112,16 +105,10 @@ pub async fn create_sync_job(
     tag = "sync"
 )]
 pub async fn list_sync_jobs(
-    State(state): State<AppState>,
+    State(state): State<SyncState>,
     _user: AuthenticatedUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let jobs = state
-        .sync_manager
-        .list_jobs()
-        .await
-        .map_err(AppError::Internal)?;
-
-    Ok(Json(jobs))
+    Ok(Json(state.service.list_jobs().await?))
 }
 
 /// List operations for a sync job
@@ -144,17 +131,11 @@ pub async fn list_sync_jobs(
     tag = "sync"
 )]
 pub async fn list_operations(
-    State(state): State<AppState>,
+    State(state): State<SyncState>,
     _user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let ops = state
-        .sync_manager
-        .list_operations(&id)
-        .await
-        .map_err(AppError::Internal)?;
-
-    Ok(Json(ops))
+    Ok(Json(state.service.list_operations(&id).await?))
 }
 
 /// Resolve a conflict in a sync job
@@ -179,16 +160,15 @@ pub async fn list_operations(
     tag = "sync"
 )]
 pub async fn resolve_conflict(
-    State(state): State<AppState>,
+    State(state): State<SyncState>,
     _user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(payload): Json<ResolveConflictRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     state
-        .sync_manager
+        .service
         .resolve_conflict(&id, &payload.op_id, &payload.resolution)
-        .await
-        .map_err(AppError::Internal)?;
+        .await?;
 
     Ok(Json(ResolveConflictResponse { success: true }))
 }

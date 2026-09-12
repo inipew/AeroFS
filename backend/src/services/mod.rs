@@ -15,6 +15,7 @@ pub mod realtime_service;
 pub mod search_service;
 pub mod settings_service;
 pub mod share_service;
+pub mod sync_service;
 pub mod transfer_service;
 pub mod trash_service;
 pub mod upload_lock;
@@ -36,6 +37,7 @@ pub use realtime_service::{RealtimeEpochInfo, RealtimePrincipal, RealtimeService
 pub use search_service::SearchService;
 pub use settings_service::SettingsService;
 pub use share_service::ShareService;
+pub use sync_service::SyncService;
 pub use transfer_service::TransferService;
 pub use trash_service::TrashService;
 pub use upload_lock::{UploadGuard, UploadLockManager, UploadSession};
