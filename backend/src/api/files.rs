@@ -1,11 +1,11 @@
 use crate::api::extractors::{Json, Path, Query};
-use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
+use crate::auth::AuthenticatedUser;
 use crate::domain::{
     parse_single_byte_range, ByteRange, DirectoryListing, FileMetadata, RangeError, SortField,
     SortOrder, VfsPath,
 };
-use crate::errors::{AppError, ErrorResponse, VfsError};
-use crate::state::AppState;
+use crate::errors::{AppError, ErrorResponse};
+use crate::state::FileApiState;
 use axum::{
     body::Body,
     extract::{Multipart, State},
@@ -140,7 +140,7 @@ pub struct CreateUploadSessionResponse {
     tag = "files"
 )]
 pub async fn list_files(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<crate::domain::ConnectionId>,
     Query(query): Query<ListFilesQuery>,
@@ -178,7 +178,7 @@ pub async fn list_files(
     tag = "files"
 )]
 pub async fn presign_download_file(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<PresignRequest>,
@@ -219,7 +219,7 @@ pub async fn presign_download_file(
     tag = "files"
 )]
 pub async fn presign_upload_file(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<PresignRequest>,
@@ -260,7 +260,7 @@ pub async fn presign_upload_file(
     tag = "files"
 )]
 pub async fn presign_complete_upload(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<PresignRequest>,
@@ -298,7 +298,7 @@ pub async fn presign_complete_upload(
     tag = "files"
 )]
 pub async fn stat_file(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
@@ -337,13 +337,13 @@ pub use stat_file as get_metadata;
     tag = "files"
 )]
 pub async fn get_file_content(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     req_headers: HeaderMap,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(query): Query<PathQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let connection = crate::domain::ConnectionId::new(connection_id.clone())
+    let connection = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let read = state
         .files
@@ -425,18 +425,6 @@ pub async fn get_file_content(
         if let Ok(disp_val) = HeaderValue::from_str(&disposition) {
             resp_headers.insert(CONTENT_DISPOSITION, disp_val);
         }
-
-        crate::auth::record_audit_log(
-            &state.db,
-            Some(&user.id),
-            "FILE_DOWNLOAD",
-            Some(&connection_id),
-            Some(&vfs_path.path),
-            "SUCCESS",
-            None,
-            Some(&format!("Downloaded: {}", vfs_path.path)),
-        )
-        .await;
     }
 
     if let Some(if_none_match) = req_headers
@@ -506,7 +494,7 @@ pub async fn get_file_content(
     tag = "files"
 )]
 pub async fn update_file_content(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     headers: HeaderMap,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
@@ -576,7 +564,7 @@ pub async fn update_file_content(
     tag = "files"
 )]
 pub async fn create_file(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
@@ -622,7 +610,7 @@ pub async fn create_file(
     tag = "files"
 )]
 pub async fn create_directory(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateEntryRequest>,
@@ -679,7 +667,7 @@ pub struct DeleteResponse {
     tag = "files"
 )]
 pub async fn delete_files(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<DeleteRequest>,
@@ -737,7 +725,7 @@ pub async fn delete_files(
     tag = "files"
 )]
 pub async fn rename_entry(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
@@ -780,7 +768,7 @@ pub async fn rename_entry(
     tag = "files"
 )]
 pub async fn copy_entry(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<TransferRequest>,
@@ -820,7 +808,7 @@ pub async fn copy_entry(
     tag = "files"
 )]
 pub async fn create_upload_session(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<CreateUploadSessionRequest>,
@@ -871,7 +859,7 @@ pub async fn create_upload_session(
     tag = "files"
 )]
 pub async fn upload_session_content(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path((connection_id, job_id)): Path<(String, String)>,
     body: Body,
@@ -908,7 +896,7 @@ pub async fn upload_session_content(
     tag = "files"
 )]
 pub async fn upload_file(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     mut multipart: Multipart,
@@ -994,12 +982,12 @@ pub struct ChmodResponse {
     tag = "files"
 )]
 pub async fn chmod_file(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Json(payload): Json<ChmodRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let connection = crate::domain::ConnectionId::new(connection_id.clone())
+    let connection = crate::domain::ConnectionId::new(connection_id)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
     if !payload.recursive.unwrap_or(false) {
         state
@@ -1022,68 +1010,23 @@ pub async fn chmod_file(
         }));
     }
 
-    check_permission(&state.db, &user, &connection_id, PermissionAction::Write).await?;
-    let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
-        VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
-    })?;
-    let vfs_path = VfsPath::new(&connection_id, &payload.path)?;
-    let formatted_mode = format!("{:04o}", payload.mode);
-    provider.set_permissions(&vfs_path, &formatted_mode).await?;
+    let result = state
+        .service
+        .chmod_recursive(&actor(&user), &connection, &payload.path, payload.mode)
+        .await?;
 
-    #[cfg(unix)]
-    {
-        let root = if let Some(custom) =
-            crate::services::SettingsService::get_system_setting(&state, "local_root").await
-        {
-            std::path::PathBuf::from(custom)
-        } else {
-            state.config.filesystem.default_local_root.clone()
-        };
-        if let Ok(safe_path) = crate::filesystem::safepath::SafePath::resolve(
-            &root,
-            &payload.path,
-            state.config.security.allow_symlinks_outside_root,
-        ) {
-            let abs_path = safe_path.absolute();
-            if abs_path.is_dir() {
-                let (succeeded, failed) = apply_chmod_recursive(abs_path, payload.mode).await;
-                if !failed.is_empty() {
-                    return Ok(Json(ChmodResponse {
-                        success: false,
-                        succeeded: Some(succeeded),
-                        failed: Some(failed.clone()),
-                        message: format!(
-                            "Chmod partially completed: {} succeeded, {} failed",
-                            succeeded,
-                            failed.len()
-                        ),
-                    }));
-                }
-            }
-        }
+    if !result.failed.is_empty() {
+        return Ok(Json(ChmodResponse {
+            success: false,
+            succeeded: Some(result.succeeded),
+            failed: Some(result.failed.clone()),
+            message: format!(
+                "Chmod partially completed: {} succeeded, {} failed",
+                result.succeeded,
+                result.failed.len()
+            ),
+        }));
     }
-
-    #[cfg(not(unix))]
-    {
-        return Err(AppError::BadRequest(
-            "CHMOD is only supported on Unix systems".into(),
-        ));
-    }
-
-    crate::auth::record_audit_log(
-        &state.db,
-        Some(&user.id),
-        "FILE_CHMOD",
-        Some(&connection_id),
-        Some(&vfs_path.path),
-        "SUCCESS",
-        None,
-        Some(&format!(
-            "Changed permissions to {:o} on {}",
-            payload.mode, vfs_path.path
-        )),
-    )
-    .await;
 
     Ok(Json(ChmodResponse {
         success: true,
@@ -1091,30 +1034,6 @@ pub async fn chmod_file(
         failed: None,
         message: format!("Permissions updated for {}", payload.path),
     }))
-}
-
-#[cfg(unix)]
-async fn apply_chmod_recursive(dir: &std::path::Path, mode: u32) -> (usize, Vec<String>) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut succeeded = 0;
-    let mut failed = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(curr_dir) = stack.pop() {
-        if let Ok(mut entries) = tokio::fs::read_dir(&curr_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                let perms = std::fs::Permissions::from_mode(mode);
-                match std::fs::set_permissions(&path, perms) {
-                    Ok(_) => succeeded += 1,
-                    Err(e) => failed.push(format!("{}: {}", path.display(), e)),
-                }
-                if path.is_dir() {
-                    stack.push(path);
-                }
-            }
-        }
-    }
-    (succeeded, failed)
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1143,107 +1062,19 @@ pub struct StorageInfoResponse {
     tag = "files"
 )]
 pub async fn get_storage_info(
-    State(state): State<AppState>,
+    State(state): State<FileApiState>,
     _user: AuthenticatedUser,
     Path(connection_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    if connection_id == "local" {
-        let root = if let Some(custom) =
-            crate::services::SettingsService::get_system_setting(&state, "local_root").await
-        {
-            std::path::PathBuf::from(custom)
-        } else {
-            state.config.filesystem.default_local_root.clone()
-        };
-
-        #[cfg(unix)]
-        {
-            let mut stat = std::mem::MaybeUninit::uninit();
-            if let Ok(c_path) = std::ffi::CString::new(root.to_string_lossy().as_bytes()) {
-                if unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) } == 0 {
-                    let stat = unsafe { stat.assume_init() };
-                    let total = stat.f_blocks * stat.f_frsize;
-                    let free = stat.f_bavail * stat.f_frsize;
-                    let used = total.saturating_sub(free);
-                    let pct = if total > 0 {
-                        ((used as f64 / total as f64) * 100.0) as u8
-                    } else {
-                        0
-                    };
-                    let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
-                    return Ok(Json(StorageInfoResponse {
-                        source_name: "Local Storage".to_string(),
-                        source_size_formatted: format_bytes_str(used),
-                        disk_label: "Disk".to_string(),
-                        disk_usage_text: format!("{}% · {:.0} GiB", pct, total_gib),
-                        used_percent: pct,
-                        total_bytes: total,
-                        used_bytes: used,
-                        free_bytes: free,
-                    }));
-                }
-            }
-        }
-
-        return Ok(Json(StorageInfoResponse {
-            source_name: "Local Storage".to_string(),
-            source_size_formatted: "Local".to_string(),
-            disk_label: "Disk".to_string(),
-            disk_usage_text: "Available".to_string(),
-            used_percent: 0,
-            total_bytes: 0,
-            used_bytes: 0,
-            free_bytes: 0,
-        }));
-    }
-
-    let row: Option<(String, String, Option<String>, Option<i64>)> =
-        sqlx::query_as("SELECT name, provider, host, port FROM connections WHERE id = ?")
-            .bind(&connection_id)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
-
-    if let Some((name, provider, host, port)) = row {
-        let port_str = port.map(|p| p.to_string()).unwrap_or_else(|| "21".into());
-        let host_str = host.unwrap_or_else(|| "Remote".into());
-        return Ok(Json(StorageInfoResponse {
-            source_name: name,
-            source_size_formatted: format!("{} Remote", provider.to_uppercase()),
-            disk_label: format!("{}:{}", host_str, port_str),
-            disk_usage_text: "Connected · Online".to_string(),
-            used_percent: 0,
-            total_bytes: 0,
-            used_bytes: 0,
-            free_bytes: 0,
-        }));
-    }
-
+    let info = state.service.storage_info(&connection_id).await;
     Ok(Json(StorageInfoResponse {
-        source_name: connection_id,
-        source_size_formatted: "Remote".to_string(),
-        disk_label: "Network".to_string(),
-        disk_usage_text: "Connected".to_string(),
-        used_percent: 0,
-        total_bytes: 0,
-        used_bytes: 0,
-        free_bytes: 0,
+        source_name: info.source_name,
+        source_size_formatted: info.source_size_formatted,
+        disk_label: info.disk_label,
+        disk_usage_text: info.disk_usage_text,
+        used_percent: info.used_percent,
+        total_bytes: info.total_bytes,
+        used_bytes: info.used_bytes,
+        free_bytes: info.free_bytes,
     }))
-}
-
-fn format_bytes_str(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 * 1024 {
-        format!(
-            "{:.1} TiB",
-            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
-        )
-    } else if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
 }
