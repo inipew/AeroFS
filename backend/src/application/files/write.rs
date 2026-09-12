@@ -51,7 +51,7 @@ impl WriteFile {
         actor: &Actor,
         command: WriteFileCommand,
     ) -> Result<FileMetadata, AppError> {
-        use crate::domain::policy::resolve_destination_permissions;
+        use crate::domain::policy::resolve_destination_permissions_strict;
 
         self.authorization
             .authorize(actor, &command.connection, FileAction::Write)
@@ -112,7 +112,7 @@ impl WriteFile {
 
         let capabilities = provider.capabilities();
         let permissions = if capabilities.permissions {
-            resolve_destination_permissions(
+            resolve_destination_permissions_strict(
                 &provider,
                 &path,
                 false,
