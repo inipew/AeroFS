@@ -1,9 +1,9 @@
 use crate::api::extractors::{Json, Path, Query};
 use crate::auth::AuthenticatedUser;
+use crate::domain::{Actor, ConnectionId};
 use crate::errors::{AppError, ErrorResponse};
 use crate::filesystem::search::SearchOutput;
-use crate::services::search_service::SearchService;
-use crate::state::AppState;
+use crate::state::SearchState;
 use axum::{extract::State, response::IntoResponse};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
@@ -38,22 +38,30 @@ pub struct SearchQuery {
     tag = "search"
 )]
 pub async fn search_files(
-    State(state): State<AppState>,
+    State(state): State<SearchState>,
     user: AuthenticatedUser,
     Path(connection_id): Path<String>,
     Query(params): Query<SearchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let output = SearchService::search_files(
-        &state,
-        &user,
-        &connection_id,
-        params.path.as_deref(),
-        &params.query,
-        params.regex.unwrap_or(false),
-        params.max_depth,
-        params.limit,
-    )
-    .await?;
+    let connection = ConnectionId::new(connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let actor = Actor {
+        id: user.id,
+        username: user.username,
+        is_admin: user.is_admin,
+    };
+    let output = state
+        .service
+        .search_files(
+            &actor,
+            &connection,
+            params.path.as_deref(),
+            &params.query,
+            params.regex.unwrap_or(false),
+            params.max_depth,
+            params.limit,
+        )
+        .await?;
 
     Ok(Json(output))
 }
