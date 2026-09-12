@@ -2,6 +2,18 @@ use crate::domain::{Actor, ConnectionId};
 use async_trait::async_trait;
 
 #[async_trait]
+pub trait FileAccessEffects: Send + Sync {
+    async fn accessed(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        path: &str,
+        audit_action: &'static str,
+        details: Option<String>,
+    );
+}
+
+#[async_trait]
 pub trait FileMutationEffects: Send + Sync {
     async fn invalidate(&self, connection: &ConnectionId, path: &str);
     async fn invalidate_prefix(&self, connection: &ConnectionId, path: &str);
@@ -15,6 +27,13 @@ pub trait FileMutationEffects: Send + Sync {
         details: Option<String>,
     );
     async fn file_renamed(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        from: &str,
+        to: &str,
+    );
+    async fn file_copied(
         &self,
         actor: &Actor,
         connection: &ConnectionId,
