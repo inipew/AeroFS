@@ -37,17 +37,19 @@ pub enum TransferPhase {
     Completed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferExecutionMode {
+    #[default]
     Inline,
     Background,
     Resumable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferStaging {
+    #[default]
     None,
     LocalTemp,
     ProviderTemp,
@@ -73,7 +75,9 @@ pub struct TransferJob {
     pub destination_path: String,
     pub status: TransferStatus,
     pub phase: TransferPhase,
+    #[serde(default)]
     pub execution_mode: TransferExecutionMode,
+    #[serde(default)]
     pub staging: TransferStaging,
     pub transferred_bytes: u64,
     pub total_bytes: u64,
