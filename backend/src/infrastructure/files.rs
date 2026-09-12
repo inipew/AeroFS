@@ -127,6 +127,21 @@ impl SqliteFileMutationEffects {
             event_journal,
         }
     }
+
+    fn recovery_required(
+        connection: &ConnectionId,
+        path: &str,
+        operation: &str,
+        error: impl std::fmt::Display,
+    ) -> AppError {
+        AppError::Internal(anyhow::anyhow!(
+            "filesystem mutation committed but durable event append failed; recovery required: connection='{}', path='{}', operation='{}', error={}",
+            connection.as_str(),
+            path,
+            operation,
+            error
+        ))
+    }
 }
 
 #[async_trait]
@@ -173,7 +188,7 @@ impl FileMutationEffects for SqliteFileMutationEffects {
         audit_action: &'static str,
         event_action: &'static str,
         details: Option<String>,
-    ) {
+    ) -> Result<(), AppError> {
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&actor.id),
@@ -185,19 +200,23 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             details.as_deref(),
         )
         .await;
-        if let Err(error) = self
-            .event_journal
+        self.event_journal
             .append(
                 crate::events::DomainEvent::file_change(connection.as_str(), path, event_action),
                 None,
             )
             .await
-        {
-            tracing::error!(?error, connection = %connection.as_str(), path, event_action, "failed to append file change event");
-        }
+            .map_err(|error| Self::recovery_required(connection, path, event_action, error))?;
+        Ok(())
     }
 
-    async fn file_renamed(&self, actor: &Actor, connection: &ConnectionId, from: &str, to: &str) {
+    async fn file_renamed(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        from: &str,
+        to: &str,
+    ) -> Result<(), AppError> {
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&actor.id),
@@ -209,19 +228,23 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             Some(&format!("Renamed {} -> {}", from, to)),
         )
         .await;
-        if let Err(error) = self
-            .event_journal
+        self.event_journal
             .append(
                 crate::events::DomainEvent::file_rename(connection.as_str(), from, to),
                 None,
             )
             .await
-        {
-            tracing::error!(?error, connection = %connection.as_str(), from, to, "failed to append file rename event");
-        }
+            .map_err(|error| Self::recovery_required(connection, to, "rename", error))?;
+        Ok(())
     }
 
-    async fn file_copied(&self, actor: &Actor, connection: &ConnectionId, from: &str, to: &str) {
+    async fn file_copied(
+        &self,
+        actor: &Actor,
+        connection: &ConnectionId,
+        from: &str,
+        to: &str,
+    ) -> Result<(), AppError> {
         crate::auth::audit::record_audit_log(
             &self.db,
             Some(&actor.id),
@@ -233,15 +256,13 @@ impl FileMutationEffects for SqliteFileMutationEffects {
             Some(&format!("Copied {} -> {}", from, to)),
         )
         .await;
-        if let Err(error) = self
-            .event_journal
+        self.event_journal
             .append(
                 crate::events::DomainEvent::file_change(connection.as_str(), to, "copy"),
                 None,
             )
             .await
-        {
-            tracing::error!(?error, connection = %connection.as_str(), from, to, "failed to append file copy event");
-        }
+            .map_err(|error| Self::recovery_required(connection, to, "copy", error))?;
+        Ok(())
     }
 }
