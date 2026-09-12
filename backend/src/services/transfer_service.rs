@@ -1,8 +1,9 @@
 use crate::auth::AuthenticatedUser;
 use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
+use crate::ports::transfer::{TransferJobResponse, TransferType};
 use crate::state::AppState;
-use crate::transfer::{TransferJob, TransferJobResponse, TransferType};
+use crate::transfer::TransferJob;
 use std::collections::HashSet;
 
 pub struct TransferService;
