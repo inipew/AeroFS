@@ -7,9 +7,16 @@ use backend::domain::operation::{
 use backend::domain::policy::PermissionInheritanceMode;
 use backend::domain::retry::RetryPolicy;
 use backend::errors::{AppError, VfsError};
+use backend::infrastructure::{
+    archive::SqliteArchiveEffects,
+    files::{RegistryFileSystemResolver, SqliteAuthorization},
+};
+use backend::services::ArchiveService;
 use backend::state::SearchState;
 use backend::AppState;
+use std::sync::Arc;
 use tempfile::tempdir;
+use tokio::sync::Semaphore;
 
 #[test]
 fn test_plan35_structured_error_responses() {
@@ -93,18 +100,28 @@ async fn test_plan35_backpressure_semaphores() {
     let db = init_db(&config.database.url).await.unwrap();
     let state = AppState::new_with_db(config, db).await;
 
-    // 1. Archive is still AppState-owned until H5.
-    assert_eq!(state.archive_semaphore.available_permits(), 4);
+    // 1. Archive backpressure is owned by the archive capability after H5.
+    let limiter = Arc::new(Semaphore::new(state.config.limits.archive_concurrency));
+    let archive = ArchiveService::new(
+        Arc::new(SqliteAuthorization::new(state.db.clone())),
+        Arc::new(RegistryFileSystemResolver::new(state.registry.clone())),
+        Arc::new(SqliteArchiveEffects::new(
+            state.db.clone(),
+            state.transfer_manager.clone(),
+        )),
+        limiter.clone(),
+    );
+    assert_eq!(archive.available_capacity(), 4);
     {
-        let permit1 = state.archive_semaphore.acquire().await.unwrap();
-        let permit2 = state.archive_semaphore.acquire().await.unwrap();
-        assert_eq!(state.archive_semaphore.available_permits(), 2);
+        let permit1 = limiter.acquire().await.unwrap();
+        let permit2 = limiter.acquire().await.unwrap();
+        assert_eq!(archive.available_capacity(), 2);
         drop(permit1);
         drop(permit2);
     }
-    assert_eq!(state.archive_semaphore.available_permits(), 4);
+    assert_eq!(archive.available_capacity(), 4);
 
-    // 2. Search limiter is now encapsulated by the narrow search capability.
+    // 2. Search limiter is encapsulated by the narrow search capability.
     let search = SearchState::from_ref(&state);
     assert_eq!(search.service.available_capacity(), 8);
 }
