@@ -13,6 +13,7 @@ pub struct UpdatePreferencesResponse {
     pub preferences: UserPreferences,
 }
 
+/// Get user preferences for currently authenticated user
 #[utoipa::path(
     get,
     path = "/api/v1/user/preferences",
@@ -31,6 +32,7 @@ pub async fn get_user_preferences(
     Ok(Json(state.service.get_user_preferences(&user.id).await?))
 }
 
+/// Update user preferences for currently authenticated user
 #[utoipa::path(
     put,
     path = "/api/v1/user/preferences",
