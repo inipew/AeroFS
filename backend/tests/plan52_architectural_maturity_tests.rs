@@ -115,6 +115,7 @@ async fn stat_file(
 async fn test_archive_targz_streaming_zero_ram_buffering() {
     let (state, admin, _temp) = setup_test_context().await;
     let archive = ArchiveState::from_ref(&state);
+    let file_api = FileApiState::from_ref(&state);
     let actor = actor_from_user(&admin);
     let connection = ConnectionId::local();
 
@@ -165,13 +166,13 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
     assert!(extract_res.success);
 
     let (read_f1, _) =
-        EditorService::read_for_editing(&state, &admin, "local", "/extracted_dest/file1.txt")
+        EditorService::read_for_editing(&file_api, &admin, "local", "/extracted_dest/file1.txt")
             .await
             .unwrap();
     assert_eq!(read_f1.as_bytes(), f1_data);
 
     let (read_f2, _) =
-        EditorService::read_for_editing(&state, &admin, "local", "/extracted_dest/file2.txt")
+        EditorService::read_for_editing(&file_api, &admin, "local", "/extracted_dest/file2.txt")
             .await
             .unwrap();
     assert_eq!(read_f2.as_bytes(), f2_data);

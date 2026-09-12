@@ -128,6 +128,7 @@ async fn test_sftp_password_rejection_notice() {
 #[tokio::test]
 async fn test_resume_integrity_restart_on_invalid_part() {
     let (state, admin, _runtime) = setup_test_context().await;
+    let file_api = FileApiState::from_ref(&state);
     let src_content = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
     write_file(
@@ -158,7 +159,7 @@ async fn test_resume_integrity_restart_on_invalid_part() {
     );
 
     let (content, _) =
-        EditorService::read_for_editing(&state, &admin, "local", "/dst_resume_test.txt")
+        EditorService::read_for_editing(&file_api, &admin, "local", "/dst_resume_test.txt")
             .await
             .unwrap();
     assert_eq!(content.as_bytes(), src_content);

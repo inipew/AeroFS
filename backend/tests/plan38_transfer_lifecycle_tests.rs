@@ -145,6 +145,7 @@ fn test_transfer_phase_serialization_and_roundtrip() {
 #[tokio::test]
 async fn test_transfer_phase_transitions_and_completion() {
     let (state, admin, _runtime) = setup_test_context().await;
+    let file_api = FileApiState::from_ref(&state);
 
     let test_data = vec![b'A'; 100 * 1024];
     write_file(
@@ -174,9 +175,10 @@ async fn test_transfer_phase_transitions_and_completion() {
     assert_eq!(job.total_bytes, test_data.len() as u64);
     assert!(job.checksum.is_some());
 
-    let edit_res = EditorService::read_for_editing(&state, &admin, "local", "/dest_lifecycle.txt")
-        .await
-        .unwrap();
+    let edit_res =
+        EditorService::read_for_editing(&file_api, &admin, "local", "/dest_lifecycle.txt")
+            .await
+            .unwrap();
     assert_eq!(edit_res.0.len(), test_data.len());
 }
 

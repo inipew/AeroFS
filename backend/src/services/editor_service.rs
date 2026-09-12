@@ -1,7 +1,7 @@
 use crate::auth::AuthenticatedUser;
 use crate::domain::{Actor, ConnectionId, FileMetadata};
 use crate::errors::AppError;
-use crate::state::AppState;
+use crate::state::FileApiState;
 
 fn actor(user: &AuthenticatedUser) -> Actor {
     Actor {
@@ -15,23 +15,17 @@ pub struct EditorService;
 
 impl EditorService {
     pub async fn read_for_editing(
-        state: &AppState,
+        state: &FileApiState,
         user: &AuthenticatedUser,
         connection_id: &str,
         path: &str,
     ) -> Result<(String, Option<String>), AppError> {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
-        let meta = if let Some(metadata) = state
-            .file_api
-            .service
-            .cached_metadata(connection_id, path)
-            .await
-        {
+        let meta = if let Some(metadata) = state.service.cached_metadata(connection_id, path).await {
             metadata
         } else {
             let metadata = state
-                .file_api
                 .files
                 .stat_file
                 .execute(
@@ -43,14 +37,12 @@ impl EditorService {
                 )
                 .await?;
             state
-                .file_api
                 .service
                 .cache_metadata(connection_id, path, metadata.clone())
                 .await;
             metadata
         };
         let content = state
-            .file_api
             .service
             .read_text_for_editing(&connection, path, meta.size)
             .await?;
@@ -58,7 +50,7 @@ impl EditorService {
     }
 
     pub async fn save_from_editing(
-        state: &AppState,
+        state: &FileApiState,
         user: &AuthenticatedUser,
         connection_id: &str,
         path: &str,
@@ -68,7 +60,6 @@ impl EditorService {
         let connection = ConnectionId::new(connection_id.to_string())
             .map_err(|e| AppError::BadRequest(e.to_string()))?;
         state
-            .file_api
             .files
             .write_file
             .execute(

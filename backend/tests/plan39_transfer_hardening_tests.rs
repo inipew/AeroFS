@@ -239,14 +239,19 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
         .expect("directory transfer did not complete in time");
     assert_eq!(job.phase, TransferPhase::Completed);
 
-    let f1 = EditorService::read_for_editing(&state, &admin, "local", "/dir_dest/file1.txt")
+    let f1 = EditorService::read_for_editing(&file_api, &admin, "local", "/dir_dest/file1.txt")
         .await
         .unwrap();
     assert_eq!(f1.0, "Content 1");
 
-    let f2 = EditorService::read_for_editing(&state, &admin, "local", "/dir_dest/nested/file2.txt")
-        .await
-        .unwrap();
+    let f2 = EditorService::read_for_editing(
+        &file_api,
+        &admin,
+        "local",
+        "/dir_dest/nested/file2.txt",
+    )
+    .await
+    .unwrap();
     assert_eq!(f2.0, "Content 2");
 }
 
@@ -278,13 +283,7 @@ async fn test_connection_deletion_drains_active_transfers() {
         .unwrap();
 
     let test_data = vec![b'Z'; 5 * 1024 * 1024];
-    write_file(
-        &state,
-        &admin,
-        "/drain_source.dat",
-        test_data,
-    )
-    .await;
+    write_file(&state, &admin, "/drain_source.dat", test_data).await;
 
     let job_id = TransferService::create_transfer(
         &state,
