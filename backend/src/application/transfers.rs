@@ -3,9 +3,11 @@ use crate::errors::AppError;
 use crate::ports::{
     authorization::{Authorization, FileAction},
     filesystem::FileSystemResolver,
-    transfer::{TransferControl, TransferEffects, TransferQueue, TransferSubmission},
+    transfer::{
+        TransferControl, TransferEffects, TransferJobResponse, TransferQueue, TransferSubmission,
+        TransferType,
+    },
 };
-use crate::transfer::{TransferJobResponse, TransferType};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

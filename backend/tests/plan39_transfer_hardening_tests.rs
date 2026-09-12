@@ -4,9 +4,9 @@ use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ProviderKind};
 use backend::events::DomainEvent;
+use backend::ports::transfer::{TransferJobResponse, TransferPhase, TransferStatus, TransferType};
 use backend::services::{CreateConnectionRequest, EditorService, FileService, TransferService};
 use backend::state::{ConnectionState, RealtimeState, TransferState};
-use backend::transfer::{TransferPhase, TransferStatus, TransferType};
 use backend::AppState;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -46,7 +46,7 @@ async fn wait_for_status(
     user: &AuthenticatedUser,
     job_id: &str,
     accepted: &[TransferStatus],
-) -> Option<backend::transfer::TransferJobResponse> {
+) -> Option<TransferJobResponse> {
     let transfers = TransferState::from_ref(state);
     let actor = actor(user);
     for _ in 0..50 {

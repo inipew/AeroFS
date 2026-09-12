@@ -4,15 +4,99 @@ use crate::auth::UserInfo;
 use crate::db::DbPool;
 use crate::domain::Actor;
 use crate::errors::AppError;
-use crate::ports::transfer::{TransferControl, TransferEffects, TransferQueue, TransferSubmission};
+use crate::ports::transfer::{
+    TransferCapabilities as PortTransferCapabilities, TransferControl, TransferEffects,
+    TransferExecutionMode as PortTransferExecutionMode, TransferJob as PortTransferJob,
+    TransferJobResponse as PortTransferJobResponse, TransferPhase as PortTransferPhase,
+    TransferQueue, TransferStaging as PortTransferStaging, TransferStatus as PortTransferStatus,
+    TransferSubmission, TransferType as PortTransferType,
+};
 use crate::services::UploadLockManager;
 use crate::transfer::{
     CancelTransferError, RetryTransferError, TransferCommand, TransferEngine, TransferJob,
-    TransferJobResponse, TransferManager, TransferType,
+    TransferManager, TransferType,
 };
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+fn to_engine_type(value: PortTransferType) -> TransferType {
+    match value {
+        PortTransferType::Copy => TransferType::Copy,
+        PortTransferType::Move => TransferType::Move,
+        PortTransferType::Upload => TransferType::Upload,
+        PortTransferType::Sync => TransferType::Sync,
+    }
+}
+
+fn to_port_type(value: TransferType) -> PortTransferType {
+    match value {
+        TransferType::Copy => PortTransferType::Copy,
+        TransferType::Move => PortTransferType::Move,
+        TransferType::Upload => PortTransferType::Upload,
+        TransferType::Sync => PortTransferType::Sync,
+    }
+}
+
+fn to_port_response(job: TransferJob) -> PortTransferJobResponse {
+    use crate::transfer::{TransferExecutionMode, TransferPhase, TransferStaging, TransferStatus};
+
+    let capabilities = job.capabilities();
+    PortTransferJobResponse {
+        capabilities: PortTransferCapabilities {
+            can_cancel: capabilities.can_cancel,
+            can_pause: capabilities.can_pause,
+            can_resume: capabilities.can_resume,
+            can_retry: capabilities.can_retry,
+        },
+        job: PortTransferJob {
+            id: job.id,
+            user_id: job.user_id,
+            name: job.name,
+            transfer_type: to_port_type(job.transfer_type),
+            source_connection_id: job.source_connection_id,
+            source_path: job.source_path,
+            destination_connection_id: job.destination_connection_id,
+            destination_path: job.destination_path,
+            status: match job.status {
+                TransferStatus::Queued => PortTransferStatus::Queued,
+                TransferStatus::Running => PortTransferStatus::Running,
+                TransferStatus::CancellationRequested => PortTransferStatus::CancellationRequested,
+                TransferStatus::Cancelled => PortTransferStatus::Cancelled,
+                TransferStatus::Interrupted => PortTransferStatus::Interrupted,
+                TransferStatus::Completed => PortTransferStatus::Completed,
+                TransferStatus::Failed => PortTransferStatus::Failed,
+            },
+            phase: match job.phase {
+                TransferPhase::Preparing => PortTransferPhase::Preparing,
+                TransferPhase::Transferring => PortTransferPhase::Transferring,
+                TransferPhase::Finalizing => PortTransferPhase::Finalizing,
+                TransferPhase::Verifying => PortTransferPhase::Verifying,
+                TransferPhase::CleaningUp => PortTransferPhase::CleaningUp,
+                TransferPhase::Completed => PortTransferPhase::Completed,
+            },
+            execution_mode: match job.execution_mode {
+                TransferExecutionMode::Inline => PortTransferExecutionMode::Inline,
+                TransferExecutionMode::Background => PortTransferExecutionMode::Background,
+                TransferExecutionMode::Resumable => PortTransferExecutionMode::Resumable,
+            },
+            staging: match job.staging {
+                TransferStaging::None => PortTransferStaging::None,
+                TransferStaging::LocalTemp => PortTransferStaging::LocalTemp,
+                TransferStaging::ProviderTemp => PortTransferStaging::ProviderTemp,
+            },
+            transferred_bytes: job.transferred_bytes,
+            total_bytes: job.total_bytes,
+            speed_bytes_per_sec: job.speed_bytes_per_sec,
+            eta_seconds: job.eta_seconds,
+            checksum: job.checksum,
+            error_message: job.error_message,
+            dismissed_at: job.dismissed_at,
+            created_at: job.created_at,
+            updated_at: job.updated_at,
+        },
+    }
+}
 
 #[derive(Clone)]
 pub struct TransferEngineQueue {
@@ -32,7 +116,7 @@ impl TransferQueue for TransferEngineQueue {
             .submit(TransferCommand {
                 user_id: submission.user_id,
                 name: submission.name,
-                transfer_type: submission.transfer_type,
+                transfer_type: to_engine_type(submission.transfer_type),
                 source_connection_id: submission.source_connection.to_string(),
                 source_path: submission.source_path,
                 destination_connection_id: submission.destination_connection.to_string(),
@@ -135,7 +219,7 @@ impl SqliteTransferControl {
 
 #[async_trait]
 impl TransferControl for SqliteTransferControl {
-    async fn list(&self, actor: &Actor) -> Result<Vec<TransferJobResponse>, AppError> {
+    async fn list(&self, actor: &Actor) -> Result<Vec<PortTransferJobResponse>, AppError> {
         let mut jobs = self
             .manager
             .list_jobs(Some(&actor.id), actor.is_admin, false)
@@ -154,7 +238,7 @@ impl TransferControl for SqliteTransferControl {
             jobs.retain(|job| Self::visible(actor, job, &allowed));
         }
 
-        Ok(jobs.into_iter().map(|job| job.to_response()).collect())
+        Ok(jobs.into_iter().map(to_port_response).collect())
     }
 
     async fn cancel(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
@@ -196,10 +280,11 @@ impl TransferControl for SqliteTransferControl {
     }
 
     async fn retry(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
-        let job =
-            self.manager.get_job(job_id).await.ok_or_else(|| {
-                AppError::NotFound(format!("Transfer job '{}' not found", job_id))
-            })?;
+        let job = self
+            .manager
+            .get_job(job_id)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("Transfer job '{}' not found", job_id)))?;
 
         if job.dismissed_at.is_some() {
             return Err(AppError::BadRequest(format!(

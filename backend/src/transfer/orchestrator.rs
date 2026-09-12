@@ -95,10 +95,4 @@ impl TransferEngine {
     ) -> Result<bool, RetryTransferError> {
         self.manager.retry_job(job_id, user_id, is_admin).await
     }
-
-    /// Compatibility escape hatch for code not migrated yet. New code should
-    /// use explicit TransferEngine methods instead of reaching into the manager.
-    pub fn legacy_manager(&self) -> &TransferManager {
-        &self.manager
-    }
 }

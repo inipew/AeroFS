@@ -1,9 +1,8 @@
 use crate::api::extractors::{Json, Path};
 use crate::auth::AuthenticatedUser;
 use crate::errors::{AppError, ErrorResponse};
+use crate::ports::transfer::{TransferJobResponse, TransferType};
 use crate::state::TransferState;
-use crate::transfer::model::TransferJobResponse;
-use crate::transfer::TransferType;
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

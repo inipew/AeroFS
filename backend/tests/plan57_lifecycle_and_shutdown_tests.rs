@@ -223,8 +223,8 @@ async fn test_shutdown_guard_rejects_mutations_with_503() {
 async fn test_transfer_submit_job_rejected_during_shutdown() {
     use backend::application::transfers::CreateTransferCommand;
     use backend::domain::{Actor, ConnectionId};
+    use backend::ports::transfer::TransferType;
     use backend::state::RuntimePhase;
-    use backend::transfer::TransferType;
 
     let (state, runtime, _temp) = setup_test_context().await;
     runtime.set_phase(RuntimePhase::Running);
