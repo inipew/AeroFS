@@ -50,6 +50,29 @@ fn file_http_has_no_raw_storage_dependencies() {
 }
 
 #[test]
+fn file_helper_services_do_not_accept_root_app_state() {
+    for path in [
+        "src/services/editor_service.rs",
+        "src/services/preview_service.rs",
+        "src/services/operation_service.rs",
+    ] {
+        let src = compact(&source(path));
+        assert!(
+            !src.contains("usecrate::state::AppState"),
+            "{path} must not import the root AppState"
+        );
+        assert!(
+            !src.contains("state:&AppState"),
+            "{path} must depend on a narrow capability instead of root AppState"
+        );
+        assert!(
+            src.contains("FileApiState"),
+            "{path} should depend on the narrow file capability"
+        );
+    }
+}
+
+#[test]
 fn download_audit_is_owned_by_read_use_case() {
     let api = source("src/api/files.rs");
     let read = source("src/application/files/read_file.rs");
