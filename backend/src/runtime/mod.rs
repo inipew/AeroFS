@@ -2,4 +2,4 @@ pub mod budget;
 pub mod supervisor;
 
 pub use budget::ResourceBudget;
-pub use supervisor::TaskSupervisor;
+pub use supervisor::{RestartPolicy, TaskCriticality, TaskHealthSnapshot, TaskSupervisor};
