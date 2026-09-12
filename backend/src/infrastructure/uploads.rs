@@ -1,4 +1,3 @@
-use crate::domain::CommitSemantics;
 use crate::errors::AppError;
 use crate::ports::upload::{
     CreateInlineUploadJob, InlineUploadContext, PreparedInlineUpload, UploadByteStream,
@@ -41,11 +40,7 @@ impl TransferUploadExecution {
                 UploadStaging::LocalTemp => TransferStaging::LocalTemp,
                 UploadStaging::ProviderTemp => TransferStaging::ProviderTemp,
             },
-            commit: match plan.commit {
-                CommitSemantics::Direct => CommitSemantics::Direct,
-                CommitSemantics::AtomicRename => CommitSemantics::AtomicRename,
-                CommitSemantics::ProviderAtomic => CommitSemantics::ProviderAtomic,
-            },
+            commit: plan.commit,
         }
     }
 }
