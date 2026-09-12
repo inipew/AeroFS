@@ -4,7 +4,7 @@ use crate::events::EventJournal;
 use crate::infrastructure::CredentialStore;
 use crate::runtime::{ResourceBudget, TaskSupervisor};
 use crate::services::connection_service::ConnectionService;
-use crate::sync::SyncManager;
+use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
 use crate::vfs::FileSystem;
@@ -215,58 +215,14 @@ impl AppState {
             registry.providers_map(),
         ));
 
-        let mut completion_rx = transfer_manager.completion_receiver();
-        let sync_manager_clone = sync_manager.clone();
-        let shutdown_token_cl = runtime.shutdown_token.clone();
-        runtime.supervisor.spawn("sync_completion_listener", async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown_token_cl.cancelled() => break,
-                    result = completion_rx.recv() => {
-                        match result {
-                            Ok((transfer_job_id, success)) => {
-                                let _ = sync_manager_clone.notify_transfer_completed(&transfer_job_id, success).await;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                }
-            }
-        });
-
-        let mut event_rx = event_journal.subscribe();
-        let sync_manager_ev = sync_manager.clone();
-        let shutdown_token_ev = runtime.shutdown_token.clone();
-        runtime.supervisor.spawn("sync_event_subscriber", async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown_token_ev.cancelled() => break,
-                    ev = event_rx.recv() => {
-                        match ev {
-                            Ok(envelope) => {
-                                match envelope.event {
-                                    crate::events::DomainEvent::TransferCompleted(ref v) => {
-                                        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                                            let _ = sync_manager_ev.notify_transfer_completed(id, true).await;
-                                        }
-                                    }
-                                    crate::events::DomainEvent::TransferFailed(ref v)
-                                    | crate::events::DomainEvent::TransferCancelled(ref v) => {
-                                        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                                            let _ = sync_manager_ev.notify_transfer_completed(id, false).await;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                }
-            }
-        });
+        // EventJournal is the only completion signal consumed by Sync. The
+        // TransferManager completion broadcast remains solely for compatibility.
+        SyncEventSubscriber::spawn(
+            &runtime.supervisor,
+            event_journal.clone(),
+            sync_manager.clone(),
+            runtime.shutdown_token.clone(),
+        );
 
         let metadata_cache = Arc::new(crate::services::MetadataCache::default());
         let upload_locks = Arc::new(crate::services::UploadLockManager::default());
