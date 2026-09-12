@@ -139,6 +139,8 @@ pub struct EventEnvelope {
     pub epoch: String,
     pub sequence: u64,
     pub timestamp: DateTime<Utc>,
+    #[serde(skip)]
+    pub journal_id: Option<i64>,
     #[serde(flatten)]
     pub event: DomainEvent,
 }
@@ -165,27 +167,25 @@ pub struct EventJournal {
 }
 
 impl EventJournal {
-    /// Initialize EventJournal with a unique generation epoch and load initial sequence.
+    /// Initialize EventJournal with a unique generation epoch.
     pub async fn init(db: Pool<Sqlite>) -> anyhow::Result<Self> {
         let epoch = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        // Upsert server_epoch record
-        let _ = sqlx::query(
-            "INSERT INTO server_epoch (id, epoch, created_at) VALUES (1, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch, created_at = excluded.created_at",
+        sqlx::query(
+            "INSERT INTO server_epoch (id, epoch, created_at) VALUES (1, ?, ?)\n             ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch, created_at = excluded.created_at",
         )
         .bind(&epoch)
         .bind(&now)
         .execute(&db)
-        .await;
+        .await?;
 
         let (event_tx, _) = broadcast::channel::<EventEnvelope>(1000);
 
         Ok(Self {
             db,
             epoch,
-            sequence_counter: Arc::new(AtomicU64::new(1)),
+            sequence_counter: Arc::new(AtomicU64::new(0)),
             event_tx,
         })
     }
@@ -202,36 +202,27 @@ impl EventJournal {
         self.event_tx.subscribe()
     }
 
-    /// Append a domain event into the durable SQLite journal and broadcast it live to subscribers.
+    /// Append an event to durable storage before publishing it to live subscribers.
+    /// Progress ticks intentionally stay transient, while lifecycle/file events receive
+    /// a global journal row id usable by durable internal consumers across server epochs.
     pub async fn append(
         &self,
         event: DomainEvent,
         aggregate_id: Option<&str>,
     ) -> anyhow::Result<EventEnvelope> {
-        let seq = self.sequence_counter.fetch_add(1, Ordering::SeqCst);
+        let seq = self.sequence_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let event_id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-
-        let envelope = EventEnvelope {
-            id: event_id.clone(),
-            epoch: self.epoch.clone(),
-            sequence: seq,
-            timestamp: now,
-            event: event.clone(),
-        };
-
-        // Broadcast to live WebSocket listeners
-        let _ = self.event_tx.send(envelope.clone());
-
-        // Don't persist transient high-frequency progress ticks to disk, only lifecycle and file change events
         let is_progress = matches!(event, DomainEvent::TransferProgress(_));
-        if !is_progress {
+
+        let journal_id = if is_progress {
+            None
+        } else {
             let payload = serde_json::to_string(&event)?;
             let event_type = event.event_type_name();
-            let _ = sqlx::query(
-                "INSERT INTO event_journal (epoch, sequence, event_type, aggregate_id, payload, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+            let result = sqlx::query(
+                "INSERT INTO event_journal (epoch, sequence, event_type, aggregate_id, payload, created_at)\n                 VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(&self.epoch)
             .bind(seq as i64)
@@ -240,13 +231,92 @@ impl EventJournal {
             .bind(payload)
             .bind(&now_str)
             .execute(&self.db)
-            .await;
-        }
+            .await?;
+            Some(result.last_insert_rowid())
+        };
 
+        let envelope = EventEnvelope {
+            id: event_id,
+            epoch: self.epoch.clone(),
+            sequence: seq,
+            timestamp: now,
+            journal_id,
+            event,
+        };
+
+        // Publish only after persistence succeeds so durable consumers never observe
+        // a lifecycle event that cannot subsequently be replayed.
+        let _ = self.event_tx.send(envelope.clone());
         Ok(envelope)
     }
 
-    /// Replay missed events starting from `last_sequence` within `client_epoch`.
+    /// Read durable journal rows globally by SQLite row id. Unlike websocket replay,
+    /// this cursor intentionally spans server epochs and is meant for internal consumers.
+    pub async fn durable_events_after(
+        &self,
+        after_id: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<EventEnvelope>> {
+        let rows = sqlx::query(
+            "SELECT id, epoch, sequence, payload, created_at FROM event_journal\n             WHERE id > ? ORDER BY id ASC LIMIT ?",
+        )
+        .bind(after_id)
+        .bind(limit as i64)
+        .fetch_all(&self.db)
+        .await?;
+
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            let journal_id: i64 = row.get("id");
+            let epoch: String = row.get("epoch");
+            let sequence: i64 = row.get("sequence");
+            let payload: String = row.get("payload");
+            let created_at: String = row.get("created_at");
+            let timestamp = DateTime::parse_from_rfc3339(&created_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            if let Ok(event) = serde_json::from_str::<DomainEvent>(&payload) {
+                events.push(EventEnvelope {
+                    id: format!("journal-{journal_id}"),
+                    epoch,
+                    sequence: sequence as u64,
+                    timestamp,
+                    journal_id: Some(journal_id),
+                    event,
+                });
+            }
+        }
+        Ok(events)
+    }
+
+    pub async fn consumer_cursor(&self, consumer: &str) -> anyhow::Result<i64> {
+        let value: Option<i64> = sqlx::query_scalar(
+            "SELECT last_event_id FROM event_consumer_cursors WHERE consumer = ?",
+        )
+        .bind(consumer)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(value.unwrap_or(0))
+    }
+
+    pub async fn store_consumer_cursor(
+        &self,
+        consumer: &str,
+        last_event_id: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO event_consumer_cursors (consumer, last_event_id, updated_at)\n             VALUES (?, ?, ?)\n             ON CONFLICT(consumer) DO UPDATE SET\n               last_event_id = CASE\n                 WHEN excluded.last_event_id > event_consumer_cursors.last_event_id\n                 THEN excluded.last_event_id ELSE event_consumer_cursors.last_event_id END,\n               updated_at = excluded.updated_at",
+        )
+        .bind(consumer)
+        .bind(last_event_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// Replay missed websocket events within the current server epoch.
     pub async fn get_since(
         &self,
         client_epoch: Option<&str>,
@@ -255,7 +325,6 @@ impl EventJournal {
     ) -> anyhow::Result<ReplayOutcome> {
         let current_latest = self.latest_sequence();
 
-        // 1. Check if client has a different or missing epoch
         if let Some(ep) = client_epoch {
             if ep != self.epoch {
                 return Ok(ReplayOutcome::EpochMismatch {
@@ -264,23 +333,18 @@ impl EventJournal {
                 });
             }
         } else {
-            // Fresh connect without prior epoch
             return Ok(ReplayOutcome::EpochMismatch {
                 current_epoch: self.epoch.clone(),
                 latest_sequence: current_latest,
             });
         }
 
-        // 2. Client is already up to date
         if last_sequence >= current_latest {
             return Ok(ReplayOutcome::Events(Vec::new()));
         }
 
-        // 3. Query SQLite for persisted events in this epoch
         let rows = sqlx::query(
-            "SELECT sequence, payload, created_at FROM event_journal
-             WHERE epoch = ? AND sequence > ?
-             ORDER BY sequence ASC LIMIT ?",
+            "SELECT id, sequence, payload, created_at FROM event_journal\n             WHERE epoch = ? AND sequence > ?\n             ORDER BY sequence ASC LIMIT ?",
         )
         .bind(&self.epoch)
         .bind(last_sequence as i64)
@@ -288,39 +352,25 @@ impl EventJournal {
         .fetch_all(&self.db)
         .await?;
 
-        if rows.is_empty() {
-            // If requested sequence is too old and purged
-            if last_sequence + 1 < current_latest {
-                return Ok(ReplayOutcome::Expired {
-                    latest_sequence: current_latest,
-                });
-            }
-            return Ok(ReplayOutcome::Events(Vec::new()));
-        }
-
-        // Verify sequence continuity: first row must be last_sequence + 1
-        let first_seq: i64 = rows[0].get("sequence");
-        if first_seq as u64 > last_sequence + 1 {
-            return Ok(ReplayOutcome::Expired {
-                latest_sequence: current_latest,
-            });
-        }
-
+        // Sequence gaps can legitimately be transient transfer_progress events, which
+        // are not persisted. Do not interpret such gaps as journal expiration.
         let mut events = Vec::with_capacity(rows.len());
-        for r in rows {
-            let seq: i64 = r.get("sequence");
-            let payload_str: String = r.get("payload");
-            let created_at_str: String = r.get("created_at");
-            let timestamp = DateTime::parse_from_rfc3339(&created_at_str)
+        for row in rows {
+            let journal_id: i64 = row.get("id");
+            let sequence: i64 = row.get("sequence");
+            let payload: String = row.get("payload");
+            let created_at: String = row.get("created_at");
+            let timestamp = DateTime::parse_from_rfc3339(&created_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
-            if let Ok(event) = serde_json::from_str::<DomainEvent>(&payload_str) {
+            if let Ok(event) = serde_json::from_str::<DomainEvent>(&payload) {
                 events.push(EventEnvelope {
-                    id: Uuid::new_v4().to_string(),
+                    id: format!("journal-{journal_id}"),
                     epoch: self.epoch.clone(),
-                    sequence: seq as u64,
+                    sequence: sequence as u64,
                     timestamp,
+                    journal_id: Some(journal_id),
                     event,
                 });
             }
