@@ -2,57 +2,119 @@ name: CI
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - master
+      - main
   pull_request:
-    branches: [ "main", "master" ]
+    branches:
+      - master
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  contract:
-    name: Contract Verification
+  frontend:
+    name: Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: oven-sh/setup-bun@v2
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.0
+
       - name: Install frontend dependencies
-        run: |
-          cd frontend
-          bun install --frozen-lockfile
-      - name: Verify OpenAPI contract parity
-        run: |
-          cd frontend
-          bun run api:check
+        working-directory: frontend
+        run: bun install --frozen-lockfile
 
-  backend-test:
-    name: Backend Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run cargo test
-        run: |
-          cd backend
-          cargo test
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: bun run typecheck
 
-  frontend-test:
-    name: Frontend Typecheck & Tests
+      - name: Test frontend
+        working-directory: frontend
+        run: bun test
+
+      - name: Build frontend assets
+        working-directory: frontend
+        run: bun run build
+
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # The backend embeds ../frontend/dist at compile time via rust-embed.
+      # Build the production frontend before compiling any backend target.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-      - name: Install dependencies
-        run: |
-          cd frontend
-          bun install --frozen-lockfile
-      - name: Typecheck
-        run: |
-          cd frontend
-          bun run typecheck
-      - name: Run tests
-        run: |
-          cd frontend
-          bun test
+          bun-version: 1.4.0
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build embedded frontend assets
+        working-directory: frontend
+        run: bun run build
+
+      - name: Test backend
+        working-directory: backend
+        run: cargo test --locked
+
+  contract:
+    name: OpenAPI Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      # api:export compiles the backend, which embeds frontend/dist.
+      - name: Build embedded frontend assets
+        working-directory: frontend
+        run: bun run build
+
+      - name: Export OpenAPI schema
+        working-directory: frontend
+        run: bun run api:export
+
+      - name: Generate frontend API types
+        working-directory: frontend
+        run: bun run api:generate
+
+      - name: Verify committed API contract is current
+        run: git diff --exit-code -- backend/openapi.json frontend/src/api/generated/openapi.ts
