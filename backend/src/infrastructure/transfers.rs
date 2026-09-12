@@ -1,10 +1,18 @@
 use crate::auth::audit::record_audit_log;
+use crate::auth::permissions::{check_permission, PermissionAction};
+use crate::auth::UserInfo;
 use crate::db::DbPool;
 use crate::domain::Actor;
 use crate::errors::AppError;
-use crate::ports::transfer::{TransferEffects, TransferQueue, TransferSubmission};
-use crate::transfer::{TransferCommand, TransferEngine};
+use crate::ports::transfer::{TransferControl, TransferEffects, TransferQueue, TransferSubmission};
+use crate::services::UploadLockManager;
+use crate::transfer::{
+    CancelTransferError, RetryTransferError, TransferCommand, TransferEngine, TransferJob,
+    TransferJobResponse, TransferManager, TransferType,
+};
 use async_trait::async_trait;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct TransferEngineQueue {
@@ -68,5 +76,243 @@ impl TransferEffects for SqliteTransferEffects {
             )),
         )
         .await;
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteTransferControl {
+    db: DbPool,
+    manager: TransferManager,
+    upload_locks: Arc<UploadLockManager>,
+}
+
+impl SqliteTransferControl {
+    pub fn new(db: DbPool, manager: TransferManager, upload_locks: Arc<UploadLockManager>) -> Self {
+        Self {
+            db,
+            manager,
+            upload_locks,
+        }
+    }
+
+    fn user(actor: &Actor) -> UserInfo {
+        UserInfo {
+            id: actor.id.clone(),
+            username: actor.username.clone(),
+            is_admin: actor.is_admin,
+        }
+    }
+
+    fn visible(actor: &Actor, job: &TransferJob, allowed: &HashSet<String>) -> bool {
+        actor.is_admin
+            || job.user_id.as_deref() == Some(actor.id.as_str())
+            || (allowed.contains(&job.source_connection_id)
+                && allowed.contains(&job.destination_connection_id))
+    }
+
+    async fn verify_connection_enabled(&self, connection_id: &str) -> Result<(), AppError> {
+        if connection_id == "local" {
+            return Ok(());
+        }
+        let row: Option<(i64,)> = sqlx::query_as("SELECT enabled FROM connections WHERE id = ?")
+            .bind(connection_id)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(|error| {
+                AppError::Internal(anyhow::anyhow!(
+                    "Database error checking connection status: {}",
+                    error
+                ))
+            })?;
+        match row {
+            Some((enabled,)) if enabled != 0 => Ok(()),
+            Some(_) => Err(AppError::BadRequest(format!(
+                "Storage connection '{}' is disabled",
+                connection_id
+            ))),
+            None => Err(AppError::NotFound(format!(
+                "Storage connection '{}' not found",
+                connection_id
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+impl TransferControl for SqliteTransferControl {
+    async fn list(&self, actor: &Actor) -> Result<Vec<TransferJobResponse>, AppError> {
+        let mut jobs = self
+            .manager
+            .list_jobs(Some(&actor.id), actor.is_admin, false)
+            .await;
+
+        if !actor.is_admin {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT connection_id FROM permissions WHERE user_id = ? AND (can_read = 1 OR can_write = 1)",
+            )
+            .bind(&actor.id)
+            .fetch_all(&self.db)
+            .await
+            .unwrap_or_default();
+            let mut allowed: HashSet<String> = rows.into_iter().map(|row| row.0).collect();
+            allowed.insert("local".to_string());
+            jobs.retain(|job| Self::visible(actor, job, &allowed));
+        }
+
+        Ok(jobs.into_iter().map(|job| job.to_response()).collect())
+    }
+
+    async fn cancel(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
+        match self
+            .manager
+            .cancel_job(job_id, Some(&actor.id), actor.is_admin)
+            .await
+        {
+            Ok(_) => {
+                self.upload_locks.release(job_id).await;
+                record_audit_log(
+                    &self.db,
+                    Some(&actor.id),
+                    "TRANSFER_CANCEL",
+                    None,
+                    None,
+                    "SUCCESS",
+                    None,
+                    Some(&format!("Cancelled transfer job {}", job_id)),
+                )
+                .await;
+                Ok(())
+            }
+            Err(CancelTransferError::NotFound(id)) => Err(AppError::NotFound(format!(
+                "Transfer job '{}' not found",
+                id
+            ))),
+            Err(CancelTransferError::Unauthorized) => Err(AppError::Forbidden(
+                "Permission denied: cannot cancel another user's transfer".into(),
+            )),
+            Err(CancelTransferError::NotCancellable(id)) => Err(AppError::Conflict(format!(
+                "Transfer job '{}' cannot be cancelled in its current state",
+                id
+            ))),
+            Err(CancelTransferError::Internal(error)) => {
+                Err(AppError::Internal(anyhow::anyhow!(error)))
+            }
+        }
+    }
+
+    async fn retry(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
+        let job = self
+            .manager
+            .get_job(job_id)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("Transfer job '{}' not found", job_id)))?;
+
+        if job.dismissed_at.is_some() {
+            return Err(AppError::BadRequest(format!(
+                "Transfer job '{}' has been dismissed and cannot be retried",
+                job_id
+            )));
+        }
+        if !actor.is_admin && job.user_id.as_deref() != Some(actor.id.as_str()) {
+            return Err(AppError::Forbidden(
+                "Permission denied: cannot retry another user's transfer".into(),
+            ));
+        }
+
+        if !actor.is_admin {
+            let user = Self::user(actor);
+            check_permission(&self.db, &user, &job.source_connection_id, PermissionAction::Read)
+                .await?;
+            if job.transfer_type == TransferType::Move {
+                check_permission(
+                    &self.db,
+                    &user,
+                    &job.source_connection_id,
+                    PermissionAction::Delete,
+                )
+                .await?;
+            }
+            check_permission(
+                &self.db,
+                &user,
+                &job.destination_connection_id,
+                PermissionAction::Write,
+            )
+            .await?;
+            check_permission(
+                &self.db,
+                &user,
+                &job.destination_connection_id,
+                PermissionAction::Create,
+            )
+            .await?;
+        }
+
+        self.verify_connection_enabled(&job.source_connection_id).await?;
+        self.verify_connection_enabled(&job.destination_connection_id).await?;
+
+        match self
+            .manager
+            .retry_job(job_id, Some(&actor.id), actor.is_admin)
+            .await
+        {
+            Ok(_) => {
+                record_audit_log(
+                    &self.db,
+                    Some(&actor.id),
+                    "TRANSFER_RETRY",
+                    None,
+                    None,
+                    "SUCCESS",
+                    None,
+                    Some(&format!("Retried transfer job {}", job_id)),
+                )
+                .await;
+                Ok(())
+            }
+            Err(RetryTransferError::NotFound(id)) => Err(AppError::NotFound(format!(
+                "Transfer job '{}' not found",
+                id
+            ))),
+            Err(RetryTransferError::Unauthorized) => Err(AppError::Forbidden(
+                "Permission denied: cannot retry another user's transfer".into(),
+            )),
+            Err(RetryTransferError::InvalidStatus(id, message)) => Err(AppError::BadRequest(
+                format!("Cannot retry transfer '{}': {}", id, message),
+            )),
+            Err(RetryTransferError::SourceUnavailable(message))
+            | Err(RetryTransferError::ProviderUnavailable(message)) => {
+                Err(AppError::BadRequest(message))
+            }
+            Err(RetryTransferError::Dismissed(id)) => Err(AppError::BadRequest(format!(
+                "Cannot retry transfer '{}': transfer has been dismissed",
+                id
+            ))),
+            Err(RetryTransferError::Internal(error)) => {
+                Err(AppError::Internal(anyhow::anyhow!(error)))
+            }
+        }
+    }
+
+    async fn dismiss(&self, actor: &Actor, job_id: &str) -> Result<(), AppError> {
+        match self
+            .manager
+            .dismiss_job(job_id, Some(&actor.id), actor.is_admin)
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(AppError::NotFound(format!(
+                "Transfer job '{}' not found",
+                job_id
+            ))),
+            Err(error) => Err(AppError::Forbidden(error)),
+        }
+    }
+
+    async fn clear_finished(&self, actor: &Actor) -> Result<usize, AppError> {
+        self.manager
+            .clear_finished_jobs(Some(&actor.id), actor.is_admin)
+            .await
+            .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))
     }
 }
