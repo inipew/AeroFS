@@ -1,4 +1,5 @@
 use crate::domain::VfsPath;
+use crate::errors::VfsError;
 use crate::vfs::FileSystem;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,53 +14,83 @@ pub enum PermissionInheritanceMode {
     ProviderDefault,
 }
 
-/// Resolves permission string for a destination path according to inheritance policy
+/// Compatibility resolver for mutation flows that have not yet adopted strict
+/// permission failure semantics. Provider failures are treated as no resolved
+/// permission. New mutation code should use `resolve_destination_permissions_strict`.
 pub async fn resolve_destination_permissions(
     dst_fs: &Arc<dyn FileSystem>,
     dst_vfs: &VfsPath,
     is_dir: bool,
     mode: PermissionInheritanceMode,
 ) -> Option<String> {
-    match mode {
-        PermissionInheritanceMode::ProviderDefault => None,
-        PermissionInheritanceMode::InheritExistingOrParent => {
-            // 1. If target already exists, preserve its current permissions
-            if let Ok(existing_meta) = dst_fs.stat(dst_vfs).await {
-                if let Some(perms) = existing_meta.permissions {
-                    return Some(perms);
-                }
-            }
-            // 2. Otherwise inherit from parent directory
-            inherit_from_parent(dst_fs, dst_vfs, is_dir).await
-        }
-        PermissionInheritanceMode::InheritParent => {
-            inherit_from_parent(dst_fs, dst_vfs, is_dir).await
+    match resolve_destination_permissions_strict(dst_fs, dst_vfs, is_dir, mode).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(path = %dst_vfs.path, ?error, "permission inheritance lookup failed");
+            None
         }
     }
 }
 
-async fn inherit_from_parent(
+/// Strict permission resolver used by mutation paths where a provider lookup
+/// failure must not be mistaken for an absent permission value.
+pub async fn resolve_destination_permissions_strict(
     dst_fs: &Arc<dyn FileSystem>,
     dst_vfs: &VfsPath,
     is_dir: bool,
-) -> Option<String> {
-    let parent = dst_vfs.parent()?;
-    let parent_meta = dst_fs.stat(&parent).await.ok()?;
-    let parent_perms = parent_meta.permissions?;
+    mode: PermissionInheritanceMode,
+) -> Result<Option<String>, VfsError> {
+    match mode {
+        PermissionInheritanceMode::ProviderDefault => Ok(None),
+        PermissionInheritanceMode::InheritExistingOrParent => {
+            match dst_fs.stat(dst_vfs).await {
+                Ok(existing_meta) => {
+                    if let Some(perms) = existing_meta.permissions {
+                        return Ok(Some(perms));
+                    }
+                }
+                Err(VfsError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+            inherit_from_parent_strict(dst_fs, dst_vfs, is_dir).await
+        }
+        PermissionInheritanceMode::InheritParent => {
+            inherit_from_parent_strict(dst_fs, dst_vfs, is_dir).await
+        }
+    }
+}
 
-    // Parse unix octal if available (e.g. "0755", "755")
+async fn inherit_from_parent_strict(
+    dst_fs: &Arc<dyn FileSystem>,
+    dst_vfs: &VfsPath,
+    is_dir: bool,
+) -> Result<Option<String>, VfsError> {
+    let Some(parent) = dst_vfs.parent() else {
+        return Ok(None);
+    };
+    let parent_meta = match dst_fs.stat(&parent).await {
+        Ok(metadata) => metadata,
+        // `create_dir` may create missing ancestors. A missing parent therefore
+        // means there is currently nothing to inherit, not that the provider is
+        // unhealthy. Other stat failures remain observable to the caller.
+        Err(VfsError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(parent_perms) = parent_meta.permissions else {
+        return Ok(None);
+    };
+
     let cleaned = parent_perms.trim_start_matches('0');
     if !cleaned.is_empty() {
         if let Ok(octal) = u32::from_str_radix(cleaned, 8) {
             if is_dir {
-                return Some(format!("{:04o}", octal));
+                return Ok(Some(format!("{:04o}", octal)));
             } else {
-                // For files, mask out execute bit from directory mode (e.g. 0755 -> 0644)
                 let file_octal = octal & !0o111;
-                return Some(format!("{:04o}", file_octal));
+                return Ok(Some(format!("{:04o}", file_octal)));
             }
         }
     }
 
-    Some(parent_perms)
+    Ok(Some(parent_perms))
 }

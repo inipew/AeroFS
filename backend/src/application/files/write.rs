@@ -51,7 +51,7 @@ impl WriteFile {
         actor: &Actor,
         command: WriteFileCommand,
     ) -> Result<FileMetadata, AppError> {
-        use crate::domain::policy::resolve_destination_permissions;
+        use crate::domain::policy::resolve_destination_permissions_strict;
 
         self.authorization
             .authorize(actor, &command.connection, FileAction::Write)
@@ -111,14 +111,19 @@ impl WriteFile {
         }
 
         let capabilities = provider.capabilities();
-        let permissions = resolve_destination_permissions(
-            &provider,
-            &path,
-            false,
-            PermissionInheritanceMode::InheritExistingOrParent,
-        )
-        .await;
+        let permissions = if capabilities.permissions {
+            resolve_destination_permissions_strict(
+                &provider,
+                &path,
+                false,
+                PermissionInheritanceMode::InheritExistingOrParent,
+            )
+            .await?
+        } else {
+            None
+        };
         let content = command.content;
+        let mut permissions_applied_before_commit = false;
 
         if capabilities.atomic_rename {
             let temporary = VfsPath::new(
@@ -130,10 +135,12 @@ impl WriteFile {
                 .await
                 .is_ok()
             {
-                if capabilities.permissions {
-                    if let Some(ref permissions) = permissions {
-                        let _ = provider.set_permissions(&temporary, permissions).await;
+                if let Some(ref permissions) = permissions {
+                    if let Err(error) = provider.set_permissions(&temporary, permissions).await {
+                        let _ = provider.delete(&temporary).await;
+                        return Err(error.into());
                     }
+                    permissions_applied_before_commit = true;
                 }
                 if let Err(error) = provider.rename(&temporary, &path).await {
                     tracing::warn!(
@@ -143,6 +150,7 @@ impl WriteFile {
                         error
                     );
                     let _ = provider.delete(&temporary).await;
+                    permissions_applied_before_commit = false;
                     provider
                         .write_stream(&path, Box::new(Cursor::new(content)))
                         .await?;
@@ -158,9 +166,16 @@ impl WriteFile {
                 .await?;
         }
 
-        if capabilities.permissions {
+        if !permissions_applied_before_commit {
             if let Some(ref permissions) = permissions {
-                let _ = provider.set_permissions(&path, permissions).await;
+                if let Err(error) = provider.set_permissions(&path, permissions).await {
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "File '{}' content was written, but applying inherited permissions '{}' failed: {}. Filesystem mutation committed; recovery required",
+                        path.path,
+                        permissions,
+                        error
+                    )));
+                }
             }
         }
 
