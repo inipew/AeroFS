@@ -2,7 +2,7 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
-use backend::{config::AppConfig, create_router, db::init_db, state::RuntimePhase, AppState};
+use backend::{bootstrap::build_application, config::AppConfig, create_router, db::init_db, state::RuntimePhase};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -18,10 +18,9 @@ async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
-    // Mark as running so health_ready returns 200 (mirrors what run_server() does)
-    state.runtime.set_phase(RuntimePhase::Running);
-    let app = create_router(state);
+    let built = build_application(config, db).await;
+    built.runtime.set_phase(RuntimePhase::Running);
+    let app = create_router(built.state);
 
     (app, temp)
 }
@@ -30,7 +29,6 @@ async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
 async fn test_auth_and_file_api_flow() {
     let (app, _temp) = setup_test_app().await;
 
-    // 1. Test Login with wrong credentials -> 401
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -43,7 +41,6 @@ async fn test_auth_and_file_api_flow() {
     let resp = app.clone().oneshot(login_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 2. Test Login with correct credentials -> 200 + Set-Cookie
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -67,7 +64,6 @@ async fn test_auth_and_file_api_flow() {
 
     let session_cookie = cookie_header.split(';').next().unwrap();
 
-    // 3. Test /auth/me with Cookie -> 200 User Info
     let me_req = Request::builder()
         .uri("/api/v1/auth/me")
         .method("GET")
@@ -83,7 +79,6 @@ async fn test_auth_and_file_api_flow() {
     assert_eq!(user_val["username"], "admin");
     assert_eq!(user_val["is_admin"], true);
 
-    // 4. Test List Connections -> 200
     let conn_req = Request::builder()
         .uri("/api/v1/connections")
         .method("GET")
@@ -94,7 +89,6 @@ async fn test_auth_and_file_api_flow() {
     let resp = app.clone().oneshot(conn_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 5. Test Create Directory -> 201
     let mkdir_req = Request::builder()
         .uri("/api/v1/connections/local/directories")
         .method("POST")
@@ -106,7 +100,6 @@ async fn test_auth_and_file_api_flow() {
     let resp = app.clone().oneshot(mkdir_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // 6. Test Create File -> 201
     let mkfile_req = Request::builder()
         .uri("/api/v1/connections/local/files")
         .method("POST")
@@ -120,8 +113,6 @@ async fn test_auth_and_file_api_flow() {
     let resp = app.clone().oneshot(mkfile_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Repeating the same create request must surface the public conflict
-    // contract, rather than leaking provider-specific error semantics.
     let duplicate_file_req = Request::builder()
         .uri("/api/v1/connections/local/files")
         .method("POST")
@@ -139,7 +130,6 @@ async fn test_auth_and_file_api_flow() {
     assert_eq!(duplicate_error["error"]["code"], "ALREADY_EXISTS");
     assert_eq!(duplicate_error["error"]["category"], "conflict");
 
-    // 7. Test List Files in /projects -> 200
     let list_req = Request::builder()
         .uri("/api/v1/connections/local/files?path=/projects")
         .method("GET")
@@ -155,7 +145,6 @@ async fn test_auth_and_file_api_flow() {
     assert_eq!(listing["total_count"], 1);
     assert_eq!(listing["entries"][0]["name"], "notes.txt");
 
-    // 8. Test Delete File -> 200
     let del_req = Request::builder()
         .uri("/api/v1/connections/local/files")
         .method("DELETE")
@@ -174,7 +163,6 @@ async fn test_auth_and_file_api_flow() {
 async fn test_embedded_static_assets_and_spa_fallback() {
     let (app, _temp) = setup_test_app().await;
 
-    // 1. Test root "/" -> returns index.html with 200 OK and text/html
     let req = Request::builder()
         .uri("/")
         .method("GET")
@@ -199,7 +187,6 @@ async fn test_embedded_static_assets_and_spa_fallback() {
             || body_str.contains("id=\"app\"")
     );
 
-    // 2. Test SPA fallback route "/browse/some/deep/folder" -> returns index.html with 200 OK
     let req = Request::builder()
         .uri("/browse/some/deep/folder")
         .method("GET")
@@ -221,7 +208,6 @@ async fn test_embedded_static_assets_and_spa_fallback() {
 async fn test_editor_save_preserves_destination_permissions() {
     let (app, _temp) = setup_test_app().await;
 
-    // Login as admin
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -241,7 +227,6 @@ async fn test_editor_save_preserves_destination_permissions() {
         .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
-    // 1. Create file
     let create_req = Request::builder()
         .uri("/api/v1/connections/local/files")
         .method("POST")
@@ -253,7 +238,6 @@ async fn test_editor_save_preserves_destination_permissions() {
     let resp = app.clone().oneshot(create_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // 2. Chmod file to 0600 (octal 384)
     #[cfg(unix)]
     {
         let chmod_req = Request::builder()
@@ -269,7 +253,6 @@ async fn test_editor_save_preserves_destination_permissions() {
         let resp = app.clone().oneshot(chmod_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // Verify stat returns "0600"
         let stat_req = Request::builder()
             .uri("/api/v1/connections/local/files/metadata?path=/secure.conf")
             .method("GET")
@@ -283,7 +266,6 @@ async fn test_editor_save_preserves_destination_permissions() {
         let meta_val: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(meta_val["permissions"], "0600");
 
-        // 3. Save modified content via editor API
         let update_req = Request::builder()
             .uri("/api/v1/connections/local/files/content")
             .method("PUT")
@@ -301,7 +283,6 @@ async fn test_editor_save_preserves_destination_permissions() {
         let resp = app.clone().oneshot(update_req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // 4. Verify stat still reports exact "0600" (preserved after atomic save!)
         let stat_req2 = Request::builder()
             .uri("/api/v1/connections/local/files/metadata?path=/secure.conf")
             .method("GET")
@@ -321,7 +302,6 @@ async fn test_editor_save_preserves_destination_permissions() {
 async fn test_max_editable_size_enforcement() {
     let (app, _temp) = setup_test_app().await;
 
-    // Login as admin
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -341,7 +321,6 @@ async fn test_max_editable_size_enforcement() {
         .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
-    // Create file
     let create_req = Request::builder()
         .uri("/api/v1/connections/local/files")
         .method("POST")
@@ -353,7 +332,6 @@ async fn test_max_editable_size_enforcement() {
     let resp = app.clone().oneshot(create_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Try to update with 15 MB payload (exceeds default 10 MB limit) -> 413 Payload Too Large
     let huge_content = "A".repeat(15 * 1024 * 1024);
     let update_req = Request::builder()
         .uri("/api/v1/connections/local/files/content")
@@ -377,7 +355,6 @@ async fn test_max_editable_size_enforcement() {
 async fn test_idempotency_key_deduplication() {
     let (app, _temp) = setup_test_app().await;
 
-    // Login as admin
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -399,7 +376,6 @@ async fn test_idempotency_key_deduplication() {
 
     let idempotency_key = "idemp-key-create-dir-12345";
 
-    // First request with Idempotency-Key
     let create_dir_req = Request::builder()
         .uri("/api/v1/connections/local/directories")
         .method("POST")
@@ -414,7 +390,6 @@ async fn test_idempotency_key_deduplication() {
     let resp1 = app.clone().oneshot(create_dir_req).await.unwrap();
     assert_eq!(resp1.status(), StatusCode::CREATED);
 
-    // Second request with exact same Idempotency-Key -> should return cached 201 without AlreadyExists conflict
     let duplicate_req = Request::builder()
         .uri("/api/v1/connections/local/directories")
         .method("POST")
@@ -443,7 +418,6 @@ async fn test_idempotency_key_deduplication() {
 async fn test_health_live_and_ready_endpoints() {
     let (app, _temp) = setup_test_app().await;
 
-    // 1. Test /health/live
     let live_req = Request::builder()
         .uri("/health/live")
         .method("GET")
@@ -456,7 +430,6 @@ async fn test_health_live_and_ready_endpoints() {
     let val: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(val["status"], "alive");
 
-    // 2. Test /health/ready
     let ready_req = Request::builder()
         .uri("/health/ready")
         .method("GET")
@@ -475,7 +448,6 @@ async fn test_health_live_and_ready_endpoints() {
 async fn test_preview_security_headers_isolation() {
     let (app, _temp) = setup_test_app().await;
 
-    // Login as admin
     let login_req = Request::builder()
         .uri("/api/v1/auth/login")
         .method("POST")
@@ -495,7 +467,6 @@ async fn test_preview_security_headers_isolation() {
         .to_string();
     let session_cookie = cookie_header.split(';').next().unwrap();
 
-    // Create an HTML file
     let create_req = Request::builder()
         .uri("/api/v1/connections/local/files")
         .method("POST")
@@ -507,7 +478,6 @@ async fn test_preview_security_headers_isolation() {
     let resp = app.clone().oneshot(create_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Save SVG content
     let update_req = Request::builder()
         .uri("/api/v1/connections/local/files/content")
         .method("PUT")
@@ -525,7 +495,6 @@ async fn test_preview_security_headers_isolation() {
     let resp = app.clone().oneshot(update_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Fetch inline preview of the SVG file -> must contain strict Content-Security-Policy & X-Content-Type-Options
     let get_req = Request::builder()
         .uri("/api/v1/connections/local/files/content?path=/vector.svg")
         .method("GET")
