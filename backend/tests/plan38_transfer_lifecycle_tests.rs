@@ -1,5 +1,6 @@
 use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::Actor;
@@ -7,13 +8,23 @@ use backend::ports::transfer::{
     TransferJobResponse, TransferPhase, TransferStatus, TransferType,
 };
 use backend::services::{EditorService, FileService, TransferService};
-use backend::state::TransferState;
+use backend::state::{AppState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::TransferPhase as EngineTransferPhase;
-use backend::AppState;
 use std::time::Duration;
 use tempfile::tempdir;
 
-async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir) {
+struct TestRuntime {
+    _temp: tempfile::TempDir,
+    runtime: RuntimeOwner,
+}
+
+impl Drop for TestRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown(ShutdownReason::Manual);
+    }
+}
+
+async fn setup_test_context() -> (AppState, AuthenticatedUser, TestRuntime) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("plan38_test.db");
     let storage_dir = temp.path().join("storage");
@@ -24,7 +35,7 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     config.filesystem.default_local_root = storage_dir;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
 
     let admin = AuthenticatedUser(UserInfo {
         id: "admin-id".to_string(),
@@ -32,7 +43,14 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
         is_admin: true,
     });
 
-    (state, admin, temp)
+    (
+        built.state,
+        admin,
+        TestRuntime {
+            _temp: temp,
+            runtime: built.runtime,
+        },
+    )
 }
 
 fn actor(user: &AuthenticatedUser) -> Actor {
@@ -83,7 +101,7 @@ fn test_transfer_phase_serialization_and_roundtrip() {
 
 #[tokio::test]
 async fn test_transfer_phase_transitions_and_completion() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, _runtime) = setup_test_context().await;
 
     let test_data = vec![b'A'; 100 * 1024];
     FileService::create_or_write_file(
@@ -124,7 +142,7 @@ async fn test_transfer_phase_transitions_and_completion() {
 
 #[tokio::test]
 async fn test_move_cleanup_lifecycle() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, _runtime) = setup_test_context().await;
 
     let test_data = b"Transactional Move Lifecycle Test".to_vec();
     FileService::create_or_write_file(
