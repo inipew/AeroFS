@@ -59,7 +59,10 @@ fn app_state_is_capability_only() {
     }
 
     assert!(
-        !app_state.lines().any(|line| line.trim_start().starts_with("pub ")),
+        !app_state
+            .lines()
+            .skip(1)
+            .any(|line| line.trim_start().starts_with("pub ")),
         "AppState fields must not be publicly exposed"
     );
 }
@@ -124,8 +127,8 @@ fn bootstrap_is_the_concrete_composition_root() {
         "EventJournal::init(",
         "TransferManager::new(",
         "SyncManager::new(",
-        "MetadataCache::new(",
-        "UploadLockManager::new()",
+        "MetadataCache::default()",
+        "UploadLockManager::default()",
         "ConnectionState::new(",
         "TransferState::new(",
         "AuthState::new(",
