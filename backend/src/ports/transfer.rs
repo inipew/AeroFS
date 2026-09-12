@@ -37,6 +37,7 @@ pub enum TransferPhase {
     Completed,
 }
 
+/// Execution mode for a transfer — Inline vs Background vs Resumable (§Upload-as-Transfer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferExecutionMode {
@@ -46,6 +47,7 @@ pub enum TransferExecutionMode {
     Resumable,
 }
 
+/// Staging strategy — implementation detail of TransferEngine, not a separate subsystem
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferStaging {
@@ -75,8 +77,10 @@ pub struct TransferJob {
     pub destination_path: String,
     pub status: TransferStatus,
     pub phase: TransferPhase,
+    /// Execution mode — Inline (sync HTTP), Background (queued), Resumable (checkpointed)
     #[serde(default)]
     pub execution_mode: TransferExecutionMode,
+    /// Staging strategy — implementation detail of TransferEngine
     #[serde(default)]
     pub staging: TransferStaging,
     pub transferred_bytes: u64,
@@ -90,6 +94,7 @@ pub struct TransferJob {
     pub updated_at: DateTime<Utc>,
 }
 
+/// DTO for REST responses and WebSocket events, exposing TransferJob with calculated capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferJobResponse {
     #[serde(flatten)]
