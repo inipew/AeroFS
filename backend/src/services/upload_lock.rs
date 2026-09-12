@@ -1,6 +1,8 @@
-use crate::domain::VfsPath;
+use crate::domain::{ConnectionId, VfsPath};
 use crate::errors::AppError;
+use crate::ports::mutation::{MutationCoordinator, MutationLease};
 use crate::transfer::TransferPlan;
+use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -196,6 +198,18 @@ impl UploadLockManager {
 
     pub async fn release(&self, job_id: &str) {
         self.release_sync(job_id);
+    }
+}
+
+#[async_trait]
+impl MutationCoordinator for UploadLockManager {
+    async fn try_acquire(
+        &self,
+        connection: &ConnectionId,
+        path: &str,
+    ) -> Result<Box<dyn MutationLease>, AppError> {
+        let guard = UploadLockManager::try_acquire(self, connection.as_str(), path).await?;
+        Ok(Box::new(guard))
     }
 }
 
