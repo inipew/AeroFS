@@ -64,5 +64,6 @@ impl SearchService {
             limit,
         )
         .await
+        .map_err(Into::into)
     }
 }
