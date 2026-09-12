@@ -39,6 +39,25 @@ fn mock_regular_user() -> AuthenticatedUser {
     })
 }
 
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
+}
+
+fn connection_service(state: &AppState) -> ConnectionService {
+    ConnectionService::new(
+        state.db.clone(),
+        state.config.clone(),
+        state.registry.clone(),
+        state.credentials.clone(),
+        state.metadata_cache.clone(),
+        state.transfer_manager.clone(),
+    )
+}
+
 async fn setup_test_app() -> (AppState, tempfile::TempDir) {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("arch_test.db");
@@ -109,46 +128,47 @@ async fn test_plan36_connection_service_lifecycle() {
     let (state, temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
     let regular = mock_regular_user();
+    let admin_actor = actor(&admin);
+    let regular_actor = actor(&regular);
+    let service = connection_service(&state);
 
-    let conns = ConnectionService::list_connections(&state, &admin)
-        .await
-        .unwrap();
+    let conns = service.list_connections(&admin_actor).await.unwrap();
     assert!(!conns.is_empty());
 
     let new_storage = temp.path().join("extra_storage");
     std::fs::create_dir_all(&new_storage).unwrap();
 
-    let conn_id = ConnectionService::create_connection(
-        &state,
-        &admin,
-        backend::services::connection_service::CreateConnectionRequest {
-            name: "Extra Local".to_string(),
-            provider: backend::domain::ProviderKind::Local,
-            host: None,
-            port: None,
-            username: None,
-            secret: None,
-            base_path: Some(new_storage.to_string_lossy().to_string()),
-            read_only: Some(false),
-        },
-    )
-    .await
-    .unwrap();
-
-    let res = ConnectionService::get_connection(&state, &regular, &conn_id).await;
-    assert!(res.is_err());
-
-    let detail = ConnectionService::get_connection(&state, &admin, &conn_id)
+    let conn_id = service
+        .create_connection(
+            &admin_actor,
+            backend::services::connection_service::CreateConnectionRequest {
+                name: "Extra Local".to_string(),
+                provider: backend::domain::ProviderKind::Local,
+                host: None,
+                port: None,
+                username: None,
+                secret: None,
+                base_path: Some(new_storage.to_string_lossy().to_string()),
+                read_only: Some(false),
+            },
+        )
         .await
         .unwrap();
+
+    let res = service.get_connection(&regular_actor, &conn_id).await;
+    assert!(res.is_err());
+
+    let detail = service.get_connection(&admin_actor, &conn_id).await.unwrap();
     assert_eq!(detail.connection.name, "Extra Local");
 
-    let test_res = ConnectionService::test_connection(&state, &admin, &conn_id)
+    let test_res = service
+        .test_connection(&admin_actor, &conn_id)
         .await
         .unwrap();
     assert!(test_res.success);
 
-    ConnectionService::delete_connection(&state, &admin, &conn_id)
+    service
+        .delete_connection(&admin_actor, &conn_id)
         .await
         .unwrap();
     assert!(!state.registry.contains(&conn_id).await);

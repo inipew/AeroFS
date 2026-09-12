@@ -2,7 +2,7 @@ use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{
-    Capabilities, CommitSemantics, FileKind, FileMetadata, OperationKind, RetryPolicy,
+    Actor, Capabilities, CommitSemantics, FileKind, FileMetadata, OperationKind, RetryPolicy,
     WriteStrategy,
 };
 use backend::errors::{AppError, VfsError};
@@ -37,6 +37,25 @@ async fn setup_test_context() -> (AppState, AuthenticatedUser, tempfile::TempDir
     });
 
     (state, admin, temp)
+}
+
+fn connection_service(state: &AppState) -> ConnectionService {
+    ConnectionService::new(
+        state.db.clone(),
+        state.config.clone(),
+        state.registry.clone(),
+        state.credentials.clone(),
+        state.metadata_cache.clone(),
+        state.transfer_manager.clone(),
+    )
+}
+
+fn actor(user: &AuthenticatedUser) -> Actor {
+    Actor {
+        id: user.id().to_string(),
+        username: user.username().to_string(),
+        is_admin: user.is_admin(),
+    }
 }
 
 #[tokio::test]
@@ -149,6 +168,8 @@ async fn test_single_flight_cache_request_coalescing() {
 #[tokio::test]
 async fn test_connection_hot_swap_runtime_replacement() {
     let (state, admin, _temp) = setup_test_context().await;
+    let service = connection_service(&state);
+    let admin_actor = actor(&admin);
 
     // 1. Create a connection
     let create_payload = CreateConnectionRequest {
@@ -162,7 +183,8 @@ async fn test_connection_hot_swap_runtime_replacement() {
         read_only: Some(false),
     };
 
-    let conn_id = ConnectionService::create_connection(&state, &admin, create_payload)
+    let conn_id = service
+        .create_connection(&admin_actor, create_payload)
         .await
         .unwrap();
 
@@ -180,12 +202,14 @@ async fn test_connection_hot_swap_runtime_replacement() {
         enabled: Some(true),
     };
 
-    let update_res =
-        ConnectionService::update_connection(&state, &admin, &conn_id, update_payload).await;
+    let update_res = service
+        .update_connection(&admin_actor, &conn_id, update_payload)
+        .await;
     assert!(update_res.is_ok(), "Hot-swap update must succeed");
 
     // 3. Verify connection reflects updated name
-    let detail = ConnectionService::get_connection(&state, &admin, &conn_id)
+    let detail = service
+        .get_connection(&admin_actor, &conn_id)
         .await
         .unwrap();
     assert_eq!(detail.connection.name, "Updated FTP Server");
