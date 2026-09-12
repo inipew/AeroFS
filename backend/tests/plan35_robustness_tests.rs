@@ -1,4 +1,5 @@
 use axum::extract::FromRef;
+use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::operation::{
@@ -7,8 +8,7 @@ use backend::domain::operation::{
 use backend::domain::policy::PermissionInheritanceMode;
 use backend::domain::retry::RetryPolicy;
 use backend::errors::{AppError, VfsError};
-use backend::state::{ArchiveState, SearchState};
-use backend::AppState;
+use backend::state::{ArchiveState, SearchState, ShutdownReason};
 use tempfile::tempdir;
 
 #[test]
@@ -85,11 +85,14 @@ async fn test_plan35_backpressure_semaphores() {
     let expected_search = config.limits.search_concurrency;
 
     let db = init_db(&config.database.url).await.unwrap();
-    let state = AppState::new_with_db(config, db).await;
+    let built = build_application(config, db).await;
+    let state = built.state;
 
     let archive = ArchiveState::from_ref(&state);
     assert_eq!(archive.service.available_capacity(), expected_archive);
 
     let search = SearchState::from_ref(&state);
     assert_eq!(search.service.available_capacity(), expected_search);
+
+    built.runtime.request_shutdown(ShutdownReason::Manual);
 }
