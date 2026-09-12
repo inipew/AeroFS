@@ -5,6 +5,4 @@ pub mod files;
 pub mod transfers;
 pub mod upload;
 
-// Re-exports for handlers
-pub use files::FileApplicationService;
 pub use upload::UploadApplicationService;
