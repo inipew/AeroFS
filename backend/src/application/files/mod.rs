@@ -16,6 +16,9 @@ pub use mutation::{
     CopyEntry, CopyEntryCommand, CreateDirectory, CreateDirectoryCommand, DeleteEntries,
     DeleteEntriesCommand, DeleteEntriesResult, RenameEntry, RenameEntryCommand,
 };
+pub use presign::{
+    CompletePresigned, CompletePresignedCommand, PresignCommand, PresignDownload, PresignUpload,
+};
 pub use read::ReadOptions;
 pub use read_file::{ReadFile, ReadFileCommand, ReadFileResult};
 pub use stat::{StatFile, StatFileCommand};
@@ -35,8 +38,6 @@ use crate::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-/// File use-cases exposed to HTTP/CLI adapters. Concrete dependencies are
-/// assembled once in the composition root, never reconstructed per request.
 #[derive(Clone)]
 pub struct FileUseCases {
     pub list_directory: ListDirectory,
@@ -47,11 +48,14 @@ pub struct FileUseCases {
     pub rename_entry: RenameEntry,
     pub copy_entry: CopyEntry,
     pub delete_entries: DeleteEntries,
+    pub presign_download: PresignDownload,
+    pub presign_upload: PresignUpload,
+    pub complete_presigned: CompletePresigned,
 }
 
-/// Compatibility facade for endpoints not migrated yet. New file operations
-/// should be implemented as explicit use-cases and only adapted here while
-/// their HTTP handlers are migrated incrementally.
+/// Transitional compatibility facade retained for non-HTTP callers. Phase 9
+/// routes HTTP file operations through `FileUseCases`; Phase 10 removes this
+/// facade from the composition root entirely.
 #[derive(Clone)]
 pub struct FileApplicationService {
     pub registry: Arc<ProviderRegistry>,
