@@ -1,10 +1,10 @@
-use crate::bootstrap::build_app_state;
+use crate::bootstrap::build_application;
 use crate::cli::args::{Cli, ServeArgs};
 use crate::cli::daemon_lock::DaemonLock;
 use crate::config::AppConfig;
 use crate::create_router;
 use crate::db::init_db;
-use crate::state::{AppRuntime, RuntimePhase, ShutdownReason};
+use crate::state::{RuntimeOwner, RuntimePhase, ShutdownReason};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -54,22 +54,23 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     );
 
     tracing::info!("runtime.phase=starting");
-    let state = build_app_state(config, db).await;
-    let app = create_router(state.clone());
+    let built = build_application(config, db).await;
+    let state = built.state;
+    let runtime = built.runtime;
+    let app = create_router(state);
 
-    state.runtime.set_phase(RuntimePhase::Binding);
+    runtime.set_phase(RuntimePhase::Binding);
     let listener = TcpListener::bind(addr).await?;
-    state.runtime.set_phase(RuntimePhase::Running);
+    runtime.set_phase(RuntimePhase::Running);
 
     if !cli.quiet {
         println!("🚀 AeroFS server listening on http://{}", addr);
     }
     tracing::info!("🚀 AeroFS server listening on http://{}", addr);
 
-    let shutdown_token = state.runtime.shutdown_token.clone();
-    let force_shutdown_token = state.runtime.force_shutdown_token.clone();
-    let task_tracker = state.runtime.task_tracker.clone();
-    let runtime = state.runtime.clone();
+    let shutdown_token = runtime.shutdown_token.clone();
+    let force_shutdown_token = runtime.force_shutdown_token.clone();
+    let task_tracker = runtime.task_tracker.clone();
 
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown_start_time =
@@ -148,7 +149,7 @@ pub async fn run_server(cli: Cli, args: ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal(runtime: AppRuntime) {
+async fn shutdown_signal(runtime: RuntimeOwner) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await

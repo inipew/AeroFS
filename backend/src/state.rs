@@ -83,6 +83,7 @@ impl ShutdownReason {
     }
 }
 
+/// Read-only runtime projection safe to expose to request-facing capabilities.
 #[derive(Clone)]
 pub struct RuntimeView {
     phase: Arc<AtomicU8>,
@@ -105,8 +106,9 @@ impl RuntimeView {
     }
 }
 
+/// Process-owned runtime control plane. This must stay outside HTTP `AppState`.
 #[derive(Clone)]
-pub struct AppRuntime {
+pub struct RuntimeOwner {
     pub shutdown_token: CancellationToken,
     pub force_shutdown_token: CancellationToken,
     pub supervisor: TaskSupervisor,
@@ -115,7 +117,7 @@ pub struct AppRuntime {
     shutdown_reason: Arc<AtomicU8>,
 }
 
-impl Default for AppRuntime {
+impl Default for RuntimeOwner {
     fn default() -> Self {
         let supervisor = TaskSupervisor::new();
         let task_tracker = supervisor.tracker().clone();
@@ -130,7 +132,7 @@ impl Default for AppRuntime {
     }
 }
 
-impl AppRuntime {
+impl RuntimeOwner {
     pub fn view(&self) -> RuntimeView {
         RuntimeView {
             phase: self.phase.clone(),
@@ -147,10 +149,7 @@ impl AppRuntime {
     }
 
     pub fn is_shutting_down(&self) -> bool {
-        matches!(
-            self.phase(),
-            RuntimePhase::ShuttingDown | RuntimePhase::Stopped
-        )
+        self.view().is_shutting_down()
     }
 
     pub fn shutdown_reason(&self) -> Option<ShutdownReason> {
@@ -174,6 +173,21 @@ impl AppRuntime {
             );
             false
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeState {
+    pub view: RuntimeView,
+}
+
+impl RuntimeState {
+    pub fn new(view: RuntimeView) -> Self {
+        Self { view }
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.view.is_shutting_down()
     }
 }
 
@@ -264,8 +278,8 @@ impl FileApiState {
     }
 }
 
-/// Runtime container handed to adapters.
-/// Concrete dependency construction belongs in `crate::bootstrap`.
+/// Runtime container handed to request adapters.
+/// Process lifecycle ownership belongs to `crate::bootstrap::BuiltApplication`.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
@@ -280,10 +294,10 @@ pub struct AppState {
     pub resource_budget: Arc<ResourceBudget>,
     pub event_journal: Arc<EventJournal>,
     pub sync_manager: Arc<SyncManager>,
-    pub runtime: AppRuntime,
     pub files: FileUseCases,
     pub transfers: TransferUseCases,
     pub uploads: UploadApplicationService,
+    pub(crate) runtime: RuntimeState,
     pub(crate) search: SearchState,
     pub(crate) health: HealthState,
     pub(crate) realtime: RealtimeState,
@@ -291,6 +305,12 @@ pub struct AppState {
     pub(crate) archive: ArchiveState,
     pub(crate) settings: SettingsState,
     pub(crate) file_api: FileApiState,
+}
+
+impl axum::extract::FromRef<AppState> for RuntimeState {
+    fn from_ref(state: &AppState) -> Self {
+        state.runtime.clone()
+    }
 }
 
 impl axum::extract::FromRef<AppState> for SearchState {
@@ -337,7 +357,7 @@ impl axum::extract::FromRef<AppState> for FileApiState {
 
 impl AppState {
     /// Compatibility constructor for tests and non-server callers.
-    /// Production startup should use `bootstrap::build_app_state` directly.
+    /// Production startup should use `bootstrap::build_application`.
     pub async fn new_with_db(config: AppConfig, db: DbPool) -> Self {
         crate::bootstrap::build_app_state(config, db).await
     }

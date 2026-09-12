@@ -24,8 +24,8 @@ use crate::services::{
     RealtimeService, SearchService, SettingsService, SyncService,
 };
 use crate::state::{
-    AppRuntime, AppState, ArchiveState, FileApiState, HealthState, RealtimeState, SearchState,
-    SettingsState, SyncState,
+    AppState, ArchiveState, FileApiState, HealthState, RealtimeState, RuntimeOwner, RuntimeState,
+    SearchState, SettingsState, SyncState,
 };
 use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
@@ -33,10 +33,17 @@ use crate::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// Fully composed process application. Request adapters receive only `state`;
+/// process lifecycle code retains `runtime` ownership.
+pub struct BuiltApplication {
+    pub state: AppState,
+    pub runtime: RuntimeOwner,
+}
+
 /// Build the full application graph once at process startup.
 /// This is the composition root: concrete adapters are selected here and are
 /// injected into application use-cases through their ports.
-pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
+pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplication {
     let cred_key = config
         .security
         .credential_encryption_key
@@ -50,7 +57,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
 
     let credentials = Arc::new(CredentialStore::new(cred_key));
     let registry = Arc::new(ProviderRegistry::new());
-    let runtime = AppRuntime::default();
+    let runtime = RuntimeOwner::default();
     let event_journal = Arc::new(
         EventJournal::init(db.clone())
             .await
@@ -188,7 +195,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
 
     let health = HealthState::new(HealthService::new(
         db.clone(),
-        local_root,
+        local_root.clone(),
         registry.clone(),
         runtime.view(),
     ));
@@ -249,8 +256,6 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         )),
     );
 
-    // Connection lifecycle is a dedicated capability. Startup provider loading
-    // uses the same explicit dependency graph as request-time connection actions.
     let connections = ConnectionService::new(
         db.clone(),
         config.clone(),
@@ -263,7 +268,7 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
 
     let state = AppState {
         config,
-        db,
+        db: db.clone(),
         registry,
         credentials,
         transfer_manager,
@@ -272,12 +277,12 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         upload_locks,
         global_io_semaphore: Arc::new(Semaphore::new(cfg_limits_global)),
         resource_budget,
-        event_journal,
+        event_journal: event_journal.clone(),
         sync_manager,
-        runtime,
         files,
         transfers,
         uploads,
+        runtime: RuntimeState::new(runtime.view()),
         search,
         health,
         realtime,
@@ -287,15 +292,24 @@ pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
         file_api,
     };
 
-    spawn_runtime_tasks(&state);
-    state
+    spawn_runtime_tasks(&runtime, local_root, event_journal, db);
+    BuiltApplication { state, runtime }
 }
 
-fn spawn_runtime_tasks(state: &AppState) {
-    let local_root = state.config.filesystem.default_local_root.clone();
-    let cleanup_token = state.runtime.shutdown_token.clone();
-    state
-        .runtime
+/// Compatibility constructor for tests and non-server callers. Production code
+/// must retain the `RuntimeOwner` returned by `build_application`.
+pub async fn build_app_state(config: AppConfig, db: DbPool) -> AppState {
+    build_application(config, db).await.state
+}
+
+fn spawn_runtime_tasks(
+    runtime: &RuntimeOwner,
+    local_root: std::path::PathBuf,
+    journal: Arc<EventJournal>,
+    housekeeping_db: DbPool,
+) {
+    let cleanup_token = runtime.shutdown_token.clone();
+    runtime
         .supervisor
         .spawn("stale_staging_cleanup", async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -315,10 +329,8 @@ fn spawn_runtime_tasks(state: &AppState) {
             }
         });
 
-    let journal = state.event_journal.clone();
-    let vacuum_token = state.runtime.shutdown_token.clone();
-    state
-        .runtime
+    let vacuum_token = runtime.shutdown_token.clone();
+    runtime
         .supervisor
         .spawn("event_journal_vacuum", async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -339,9 +351,8 @@ fn spawn_runtime_tasks(state: &AppState) {
             }
         });
 
-    let housekeeping_db = state.db.clone();
-    let housekeeping_token = state.runtime.shutdown_token.clone();
-    state.runtime.supervisor.spawn("housekeeping", async move {
+    let housekeeping_token = runtime.shutdown_token.clone();
+    runtime.supervisor.spawn("housekeeping", async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         interval.tick().await;
         loop {
