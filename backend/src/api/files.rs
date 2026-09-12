@@ -1,8 +1,8 @@
 use crate::api::extractors::{Json, Path, Query};
 use crate::auth::{check_permission, AuthenticatedUser, PermissionAction};
 use crate::domain::{
-    parse_single_byte_range, ByteRange, DirectoryListing, FileMetadata, RangeError,
-    SortField, SortOrder, VfsPath,
+    parse_single_byte_range, ByteRange, DirectoryListing, FileMetadata, RangeError, SortField,
+    SortOrder, VfsPath,
 };
 use crate::errors::{AppError, ErrorResponse, VfsError};
 use crate::state::AppState;
@@ -154,7 +154,13 @@ pub async fn list_files(
         cursor: query.cursor,
         limit: query.limit,
     };
-    Ok(Json(state.files.list_directory.execute(&actor(&user), command).await?))
+    Ok(Json(
+        state
+            .files
+            .list_directory
+            .execute(&actor(&user), command)
+            .await?,
+    ))
 }
 
 /// Generate a pre-signed URL for direct browser-to-storage download
@@ -178,12 +184,24 @@ pub async fn presign_download_file(
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<PresignResponse>, AppError> {
     let expire_secs = payload.expire_seconds.unwrap_or(3600);
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let url = crate::application::FileApplicationService::from_state(&state)
-        .presign_download_typed(&user.0, &conn, payload.path, Some(expire_secs))
+    let connection = crate::domain::ConnectionId::new(connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let url = state
+        .files
+        .presign_download
+        .execute(
+            &actor(&user),
+            crate::application::files::PresignCommand {
+                connection,
+                path: payload.path,
+                expire_secs,
+            },
+        )
         .await?;
-    Ok(Json(PresignResponse { url, expires_in_seconds: expire_secs }))
+    Ok(Json(PresignResponse {
+        url,
+        expires_in_seconds: expire_secs,
+    }))
 }
 
 /// Generate a pre-signed URL for direct browser-to-storage upload
@@ -207,12 +225,24 @@ pub async fn presign_upload_file(
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<PresignResponse>, AppError> {
     let expire_secs = payload.expire_seconds.unwrap_or(3600);
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let url = crate::application::FileApplicationService::from_state(&state)
-        .presign_upload_typed(&user.0, &conn, payload.path, Some(expire_secs))
+    let connection = crate::domain::ConnectionId::new(connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let url = state
+        .files
+        .presign_upload
+        .execute(
+            &actor(&user),
+            crate::application::files::PresignCommand {
+                connection,
+                path: payload.path,
+                expire_secs,
+            },
+        )
         .await?;
-    Ok(Json(PresignResponse { url, expires_in_seconds: expire_secs }))
+    Ok(Json(PresignResponse {
+        url,
+        expires_in_seconds: expire_secs,
+    }))
 }
 
 /// Complete and verify a direct pre-signed upload
@@ -235,18 +265,22 @@ pub async fn presign_complete_upload(
     Path(connection_id): Path<String>,
     Json(payload): Json<PresignRequest>,
 ) -> Result<Json<FileMetadata>, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let meta = crate::application::FileApplicationService::from_state(&state)
-        .complete_presigned_typed(
-            &user.0,
-            &conn,
-            payload.path,
-            payload.expected_size,
-            payload.expected_checksum,
+    let connection = crate::domain::ConnectionId::new(connection_id)
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let metadata = state
+        .files
+        .complete_presigned
+        .execute(
+            &actor(&user),
+            crate::application::files::CompletePresignedCommand {
+                connection,
+                path: payload.path,
+                expected_size: payload.expected_size,
+                expected_checksum: payload.expected_checksum,
+            },
         )
         .await?;
-    Ok(Json(meta))
+    Ok(Json(metadata))
 }
 
 /// Get detailed metadata for a file or directory
@@ -276,7 +310,10 @@ pub async fn stat_file(
         .stat_file
         .execute(
             &actor(&user),
-            crate::application::files::StatFileCommand { connection: conn, path: query.path },
+            crate::application::files::StatFileCommand {
+                connection: conn,
+                path: query.path,
+            },
         )
         .await?;
     Ok(Json(meta))
@@ -324,19 +361,26 @@ pub async fn get_file_content(
     let vfs_path = read.path;
     let meta = read.metadata;
     let file_size = meta.size;
-    let mime = meta.mime_type.clone().unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime = meta
+        .mime_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     resp_headers.insert(
         CONTENT_TYPE,
-        HeaderValue::from_str(&mime).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(&mime)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     resp_headers.insert(
         ETAG,
         HeaderValue::from_str(&meta.etag).unwrap_or_else(|_| HeaderValue::from_static("\"\"")),
     );
-    resp_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store, no-cache, must-revalidate"));
+    resp_headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
     resp_headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
 
     if let Some(mtime) = meta.modified_at {
@@ -368,7 +412,11 @@ pub async fn get_file_content(
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
             .collect::<String>();
-        let fallback = if ascii_fallback.is_empty() { "download".to_string() } else { ascii_fallback };
+        let fallback = if ascii_fallback.is_empty() {
+            "download".to_string()
+        } else {
+            ascii_fallback
+        };
         let encoded_utf8 = urlencoding::encode(&meta.name);
         let disposition = format!(
             "attachment; filename=\"{}\"; filename*=UTF-8''{}",
@@ -391,7 +439,10 @@ pub async fn get_file_content(
         .await;
     }
 
-    if let Some(if_none_match) = req_headers.get(header::IF_NONE_MATCH).and_then(|h| h.to_str().ok()) {
+    if let Some(if_none_match) = req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|h| h.to_str().ok())
+    {
         let clean_client = if_none_match.trim().trim_matches('"');
         let clean_server = meta.etag.trim().trim_matches('"');
         if clean_client == clean_server || if_none_match == "*" {
@@ -403,7 +454,9 @@ pub async fn get_file_content(
         match parse_single_byte_range(range_val, file_size) {
             Ok(byte_range) => {
                 let chunk_len = byte_range.length();
-                let stream = provider.read_range(&vfs_path, byte_range.start, chunk_len).await?;
+                let stream = provider
+                    .read_range(&vfs_path, byte_range.start, chunk_len)
+                    .await?;
                 let body = Body::from_stream(ReaderStream::new(stream));
                 resp_headers.insert(CONTENT_LENGTH, HeaderValue::from(chunk_len));
                 if let Ok(cr_val) = HeaderValue::from_str(&byte_range.content_range_header()) {
@@ -416,10 +469,16 @@ pub async fn get_file_content(
             | Err(RangeError::InvalidFormat(_)) => {
                 let mut unsat_headers = HeaderMap::new();
                 unsat_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-                if let Ok(cr_val) = HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size)) {
+                if let Ok(cr_val) =
+                    HeaderValue::from_str(&ByteRange::unsatisfiable_header(file_size))
+                {
                     unsat_headers.insert(header::CONTENT_RANGE, cr_val);
                 }
-                return Ok((StatusCode::RANGE_NOT_SATISFIABLE, unsat_headers, Body::empty()));
+                return Ok((
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    unsat_headers,
+                    Body::empty(),
+                ));
             }
         }
     }
@@ -461,7 +520,10 @@ pub async fn update_file_content(
     let expected_etag = if force_overwrite {
         None
     } else {
-        headers.get(header::IF_MATCH).and_then(|h| h.to_str().ok()).map(str::to_string)
+        headers
+            .get(header::IF_MATCH)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string)
     };
     let conn = crate::domain::ConnectionId::new(connection_id)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
@@ -481,14 +543,20 @@ pub async fn update_file_content(
         .await?;
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("ETag"));
+    resp_headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("ETag"),
+    );
     if let Ok(val) = HeaderValue::from_str(&meta.etag) {
         resp_headers.insert(header::ETAG, val);
     }
     Ok((
         StatusCode::OK,
         resp_headers,
-        Json(SuccessResponse { success: true, message: format!("File updated: {}", meta.path) }),
+        Json(SuccessResponse {
+            success: true,
+            message: format!("File updated: {}", meta.path),
+        }),
     ))
 }
 
@@ -531,7 +599,10 @@ pub async fn create_file(
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(SuccessResponse { success: true, message: format!("File created: {}", meta.path) }),
+        Json(SuccessResponse {
+            success: true,
+            message: format!("File created: {}", meta.path),
+        }),
     ))
 }
 
@@ -563,12 +634,18 @@ pub async fn create_directory(
         .create_directory
         .execute(
             &actor(&user),
-            crate::application::files::CreateDirectoryCommand { connection: conn, path: payload.path },
+            crate::application::files::CreateDirectoryCommand {
+                connection: conn,
+                path: payload.path,
+            },
         )
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(SuccessResponse { success: true, message: format!("Directory created: {}", meta.path) }),
+        Json(SuccessResponse {
+            success: true,
+            message: format!("Directory created: {}", meta.path),
+        }),
     ))
 }
 
@@ -614,7 +691,10 @@ pub async fn delete_files(
         .delete_entries
         .execute(
             &actor(&user),
-            crate::application::files::DeleteEntriesCommand { connection: conn, paths: payload.paths },
+            crate::application::files::DeleteEntriesCommand {
+                connection: conn,
+                paths: payload.paths,
+            },
         )
         .await?;
     let failed: Vec<DeleteResultItem> = result
@@ -626,9 +706,18 @@ pub async fn delete_files(
     let message = if success {
         format!("Deleted {} item(s)", result.succeeded.len())
     } else {
-        format!("Deleted {} item(s), {} failed", result.succeeded.len(), failed.len())
+        format!(
+            "Deleted {} item(s), {} failed",
+            result.succeeded.len(),
+            failed.len()
+        )
     };
-    Ok(Json(DeleteResponse { success, succeeded: result.succeeded, failed, message }))
+    Ok(Json(DeleteResponse {
+        success,
+        succeeded: result.succeeded,
+        failed,
+        message,
+    }))
 }
 
 /// Rename an entry
@@ -668,7 +757,10 @@ pub async fn rename_entry(
             },
         )
         .await?;
-    Ok(Json(SuccessResponse { success: true, message: format!("Renamed to: {}", to) }))
+    Ok(Json(SuccessResponse {
+        success: true,
+        message: format!("Renamed to: {}", to),
+    }))
 }
 
 /// Copy an entry
@@ -707,7 +799,10 @@ pub async fn copy_entry(
             },
         )
         .await?;
-    Ok(Json(SuccessResponse { success: true, message: format!("Copied to: {}", copied_to) }))
+    Ok(Json(SuccessResponse {
+        success: true,
+        message: format!("Copied to: {}", copied_to),
+    }))
 }
 
 /// Admit a streaming upload and return a job-bound URL for its bytes.
@@ -734,7 +829,8 @@ pub async fn create_upload_session(
     let provider = state.get_provider(&connection_id).await.ok_or_else(|| {
         VfsError::ConnectionError(format!("Connection '{}' not found", connection_id))
     })?;
-    let target = crate::application::UploadApplicationService::validate_target(&connection_id, &payload.path)?;
+    let target =
+        crate::application::UploadApplicationService::validate_target(&connection_id, &payload.path)?;
     let session = crate::application::UploadApplicationService::create_session(
         &state,
         &user.id,
@@ -748,7 +844,10 @@ pub async fn create_upload_session(
     Ok((
         StatusCode::ACCEPTED,
         Json(CreateUploadSessionResponse {
-            upload_url: format!("/api/v1/connections/{}/uploads/{}/content", connection_id, session.job_id),
+            upload_url: format!(
+                "/api/v1/connections/{}/uploads/{}/content",
+                connection_id, session.job_id
+            ),
             job_id: session.job_id,
         }),
     ))
@@ -789,7 +888,10 @@ pub async fn upload_session_content(
         stream,
     )
     .await?;
-    Ok(Json(SuccessResponse { success: true, message: format!("Uploaded: {}", path) }))
+    Ok(Json(SuccessResponse {
+        success: true,
+        message: format!("Uploaded: {}", path),
+    }))
 }
 
 /// Streaming multipart upload — owned by TransferEngine (Upload-as-Transfer).
@@ -835,18 +937,19 @@ pub async fn upload_file(
                 &connection_id,
                 format!("{}/{}", dest_dir.trim_end_matches('/'), clean_name),
             )?;
-            let uploaded_path = crate::application::UploadApplicationService::execute_inline_stream(
-                &state,
-                &user.id,
-                &connection_id,
-                &provider,
-                target_path,
-                &clean_name,
-                None,
-                max_upload_bytes,
-                &mut field,
-            )
-            .await?;
+            let uploaded_path =
+                crate::application::UploadApplicationService::execute_inline_stream(
+                    &state,
+                    &user.id,
+                    &connection_id,
+                    &provider,
+                    target_path,
+                    &clean_name,
+                    None,
+                    max_upload_bytes,
+                    &mut field,
+                )
+                .await?;
             uploaded_files.push(uploaded_path);
         }
     }
@@ -888,11 +991,20 @@ pub async fn chmod_file(
     Path(connection_id): Path<String>,
     Json(payload): Json<ChmodRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let conn = crate::domain::ConnectionId::new(connection_id.clone())
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let connection = crate::domain::ConnectionId::new(connection_id.clone())
+        .map_err(|error| AppError::BadRequest(error.to_string()))?;
     if !payload.recursive.unwrap_or(false) {
-        crate::application::FileApplicationService::from_state(&state)
-            .chmod_typed(&user.0, &conn, payload.path.clone(), payload.mode)
+        state
+            .files
+            .chmod_entry
+            .execute(
+                &actor(&user),
+                crate::application::files::ChmodEntryCommand {
+                    connection,
+                    path: payload.path.clone(),
+                    mode: payload.mode,
+                },
+            )
             .await?;
         return Ok(Json(ChmodResponse {
             success: true,
@@ -912,7 +1024,9 @@ pub async fn chmod_file(
 
     #[cfg(unix)]
     {
-        let root = if let Some(custom) = crate::services::SettingsService::get_system_setting(&state, "local_root").await {
+        let root = if let Some(custom) =
+            crate::services::SettingsService::get_system_setting(&state, "local_root").await
+        {
             std::path::PathBuf::from(custom)
         } else {
             state.config.filesystem.default_local_root.clone()
@@ -930,7 +1044,11 @@ pub async fn chmod_file(
                         success: false,
                         succeeded: Some(succeeded),
                         failed: Some(failed.clone()),
-                        message: format!("Chmod partially completed: {} succeeded, {} failed", succeeded, failed.len()),
+                        message: format!(
+                            "Chmod partially completed: {} succeeded, {} failed",
+                            succeeded,
+                            failed.len()
+                        ),
                     }));
                 }
             }
@@ -939,7 +1057,9 @@ pub async fn chmod_file(
 
     #[cfg(not(unix))]
     {
-        return Err(AppError::BadRequest("CHMOD is only supported on Unix systems".into()));
+        return Err(AppError::BadRequest(
+            "CHMOD is only supported on Unix systems".into(),
+        ));
     }
 
     crate::auth::record_audit_log(
@@ -950,7 +1070,10 @@ pub async fn chmod_file(
         Some(&vfs_path.path),
         "SUCCESS",
         None,
-        Some(&format!("Changed permissions to {:o} on {}", payload.mode, vfs_path.path)),
+        Some(&format!(
+            "Changed permissions to {:o} on {}",
+            payload.mode, vfs_path.path
+        )),
     )
     .await;
 
@@ -1017,7 +1140,9 @@ pub async fn get_storage_info(
     Path(connection_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if connection_id == "local" {
-        let root = if let Some(custom) = crate::services::SettingsService::get_system_setting(&state, "local_root").await {
+        let root = if let Some(custom) =
+            crate::services::SettingsService::get_system_setting(&state, "local_root").await
+        {
             std::path::PathBuf::from(custom)
         } else {
             state.config.filesystem.default_local_root.clone()
@@ -1032,7 +1157,11 @@ pub async fn get_storage_info(
                     let total = stat.f_blocks * stat.f_frsize;
                     let free = stat.f_bavail * stat.f_frsize;
                     let used = total.saturating_sub(free);
-                    let pct = if total > 0 { ((used as f64 / total as f64) * 100.0) as u8 } else { 0 };
+                    let pct = if total > 0 {
+                        ((used as f64 / total as f64) * 100.0) as u8
+                    } else {
+                        0
+                    };
                     let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
                     return Ok(Json(StorageInfoResponse {
                         source_name: "Local Storage".to_string(),
@@ -1096,7 +1225,10 @@ pub async fn get_storage_info(
 
 fn format_bytes_str(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 * 1024 {
-        format!("{:.1} TiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0))
+        format!(
+            "{:.1} TiB",
+            bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0)
+        )
     } else if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {
