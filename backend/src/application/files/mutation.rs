@@ -39,7 +39,7 @@ impl CreateDirectory {
         actor: &Actor,
         command: CreateDirectoryCommand,
     ) -> Result<FileMetadata, AppError> {
-        use crate::domain::policy::resolve_destination_permissions;
+        use crate::domain::policy::resolve_destination_permissions_strict;
 
         self.authorization
             .authorize(actor, &command.connection, FileAction::Create)
@@ -48,7 +48,7 @@ impl CreateDirectory {
         let path = VfsPath::new(command.connection.as_str(), command.path.clone())?;
         let capabilities = provider.capabilities();
         let permissions = if capabilities.permissions {
-            resolve_destination_permissions(
+            resolve_destination_permissions_strict(
                 &provider,
                 &path,
                 true,
