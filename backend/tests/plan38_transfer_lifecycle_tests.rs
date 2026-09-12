@@ -89,7 +89,7 @@ async fn stat_file(
     state: &AppState,
     user: &AuthenticatedUser,
     path: &str,
-) -> Result<backend::domain::FileEntry, backend::errors::AppError> {
+) -> Result<backend::domain::FileMetadata, backend::errors::AppError> {
     let file_api = FileApiState::from_ref(state);
     file_api
         .files
