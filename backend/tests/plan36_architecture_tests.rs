@@ -1,3 +1,4 @@
+use axum::extract::FromRef;
 use backend::auth::{AuthenticatedUser, UserInfo};
 use backend::config::AppConfig;
 use backend::db::init_db;
@@ -5,13 +6,13 @@ use backend::domain::conflict::{ConflictPolicy, ConflictResolver};
 use backend::domain::operation::{FailureStrategy, OperationIntentType, OperationStatus};
 use backend::domain::policy::PermissionInheritanceMode;
 use backend::domain::settings::UserPreferences;
-use backend::domain::VfsPath;
+use backend::domain::{Actor, ConnectionId, VfsPath};
 use backend::infrastructure::CredentialStore;
 use backend::services::{
     AuditService, AuthService, AuthorizationService, ConnectionService, EditorService, FileService,
-    HealthService, OperationService, PreferencesService, PreviewService, SearchService,
-    SettingsService, ShareService, TrashService,
+    OperationService, PreferencesService, PreviewService, SettingsService, ShareService, TrashService,
 };
+use backend::state::{HealthState, RuntimePhase, SearchState};
 use backend::vfs::factory::ProviderFactory;
 use backend::vfs::registry::ProviderRegistry;
 use backend::AppState;
@@ -51,7 +52,6 @@ async fn setup_test_app() -> (AppState, tempfile::TempDir) {
 
     let db = init_db(&config.database.url).await.unwrap();
 
-    // Ensure user_regular is inserted for tests
     let now = chrono::Utc::now().to_rfc3339();
     let _ = sqlx::query("INSERT OR IGNORE INTO users (id, username, password_hash, is_admin, created_at, updated_at) VALUES ('user_regular', 'dhimas', 'dummy_hash', 0, ?, ?)")
         .bind(&now)
@@ -110,13 +110,11 @@ async fn test_plan36_connection_service_lifecycle() {
     let admin = get_seeded_admin(&state.db).await;
     let regular = mock_regular_user();
 
-    // 1. List connections
     let conns = ConnectionService::list_connections(&state, &admin)
         .await
         .unwrap();
     assert!(!conns.is_empty());
 
-    // 2. Create local connection
     let new_storage = temp.path().join("extra_storage");
     std::fs::create_dir_all(&new_storage).unwrap();
 
@@ -137,11 +135,9 @@ async fn test_plan36_connection_service_lifecycle() {
     .await
     .unwrap();
 
-    // 3. Regular user without permissions cannot get remote/extra connection
     let res = ConnectionService::get_connection(&state, &regular, &conn_id).await;
     assert!(res.is_err());
 
-    // 4. Admin can get it and test it
     let detail = ConnectionService::get_connection(&state, &admin, &conn_id)
         .await
         .unwrap();
@@ -152,7 +148,6 @@ async fn test_plan36_connection_service_lifecycle() {
         .unwrap();
     assert!(test_res.success);
 
-    // 5. Delete connection
     ConnectionService::delete_connection(&state, &admin, &conn_id)
         .await
         .unwrap();
@@ -164,11 +159,9 @@ async fn test_plan36_settings_and_preferences_services() {
     let (state, _temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
 
-    // 1. SettingsService
     let settings = SettingsService::get_settings(&state, &admin).await.unwrap();
     assert_eq!(settings.settings.general.theme, "dark");
 
-    // 2. PreferencesService
     let prefs = UserPreferences {
         theme: "dracula".to_string(),
         list_density: "compact".to_string(),
@@ -184,7 +177,6 @@ async fn test_plan36_settings_and_preferences_services() {
     assert_eq!(fetched.theme, "dracula");
     assert_eq!(fetched.list_density, "compact");
 
-    // 3. Dynamic Local Root change
     let new_root = _temp.path().join("switched_root");
     std::fs::create_dir_all(&new_root).unwrap();
     std::fs::write(new_root.join("new_marker.txt"), "hello switched root").unwrap();
@@ -216,7 +208,6 @@ async fn test_plan36_authorization_service_intent_matrix() {
     let regular = mock_regular_user();
     let admin = get_seeded_admin(&state.db).await;
 
-    // Admin should be authorized for any intent
     let res = AuthorizationService::authorize_intent(
         &state.db,
         &admin,
@@ -227,7 +218,6 @@ async fn test_plan36_authorization_service_intent_matrix() {
     .await;
     assert!(res.is_ok());
 
-    // Regular user without permissions on remote connection should fail
     let res = AuthorizationService::authorize_intent(
         &state.db,
         &regular,
@@ -261,7 +251,6 @@ async fn test_plan36_operation_service_lifecycle() {
     let (state, _temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
 
-    // Create file
     let path = "/test_op.txt";
     FileService::create_or_write_file(
         &state,
@@ -296,7 +285,6 @@ async fn test_plan36_operation_service_lifecycle() {
 async fn test_plan36_auth_service_lifecycle() {
     let (state, _temp) = setup_test_app().await;
 
-    // Valid login
     let (user_info, session_id) = AuthService::login(&state, "admin", "admin12345", "127.0.0.1")
         .await
         .unwrap();
@@ -304,12 +292,10 @@ async fn test_plan36_auth_service_lifecycle() {
     assert!(user_info.is_admin);
     assert!(!session_id.is_empty());
 
-    // Logout
     AuthService::logout(&state, &session_id, Some(&user_info.id), "127.0.0.1")
         .await
         .unwrap();
 
-    // Invalid login fails
     let fail_res = AuthService::login(&state, "admin", "wrongpassword", "127.0.0.1").await;
     assert!(fail_res.is_err());
 }
@@ -319,10 +305,12 @@ async fn test_plan36_specialized_services() {
     let (state, _temp) = setup_test_app().await;
     let admin = get_seeded_admin(&state.db).await;
 
-    // 1. HealthService
-    let health = HealthService::check_health(&state).await;
-    assert_eq!(health.status, "healthy");
+    // 1. Health now uses a narrow capability instead of AppState.
+    state.runtime.set_phase(RuntimePhase::Running);
+    let health_state = HealthState::from_ref(&state);
+    let health = health_state.service.readiness().await.unwrap();
     assert!(health.active_providers >= 1);
+    assert_eq!(health.phase, "running");
 
     // 2. EditorService
     let edit_path = "/code.rs";
@@ -348,19 +336,27 @@ async fn test_plan36_specialized_services() {
         .unwrap();
     assert_eq!(preview_meta.name, "code.rs");
 
-    // 4. SearchService
-    let search_out = SearchService::search_files(
-        &state,
-        &admin,
-        "local",
-        Some("/"),
-        "code",
-        false,
-        Some(5),
-        Some(10),
-    )
-    .await
-    .unwrap();
+    // 4. Search now uses SearchState and typed application identity/path inputs.
+    let search_state = SearchState::from_ref(&state);
+    let actor = Actor {
+        id: admin.id.clone(),
+        username: admin.username.clone(),
+        is_admin: admin.is_admin,
+    };
+    let connection = ConnectionId::new("local").unwrap();
+    let search_out = search_state
+        .service
+        .search_files(
+            &actor,
+            &connection,
+            Some("/"),
+            "code",
+            false,
+            Some(5),
+            Some(10),
+        )
+        .await
+        .unwrap();
     assert!(!search_out.results.is_empty());
 
     // 5. TrashService
