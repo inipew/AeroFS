@@ -66,6 +66,7 @@ async fn sync_transfer_completion_projection_is_idempotent() {
         registry.providers_map(),
         db.clone(),
         4,
+        Arc::new(backend::runtime::ResourceBudget::default()),
         event_journal.clone(),
         CancellationToken::new(),
         &tracker,

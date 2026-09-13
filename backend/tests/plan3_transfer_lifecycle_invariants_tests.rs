@@ -52,6 +52,7 @@ async fn setup_fixture() -> TransferFixture {
         registry.providers_map(),
         db.clone(),
         4,
+        Arc::new(backend::runtime::ResourceBudget::default()),
         journal,
         shutdown.clone(),
         &tracker,

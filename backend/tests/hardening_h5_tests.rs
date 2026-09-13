@@ -25,13 +25,13 @@ fn archive_http_uses_only_archive_capability() {
 }
 
 #[test]
-fn archive_service_owns_ports_and_limiter() {
+fn archive_service_owns_ports_and_shared_resource_budget() {
     let src = source("src/services/archive_service.rs");
     for expected in [
         "Arc<dyn Authorization>",
         "Arc<dyn FileSystemResolver>",
         "Arc<dyn ArchiveEffects>",
-        "Arc<Semaphore>",
+        "Arc<ResourceBudget>",
     ] {
         assert!(
             src.contains(expected),
@@ -46,10 +46,11 @@ fn archive_service_owns_ports_and_limiter() {
         "record_audit_log",
         "TransferManager",
         "WsEvent",
+        "Arc<Semaphore>",
     ] {
         assert!(
             !src.contains(forbidden),
-            "archive service leaked concrete dependency: {forbidden}"
+            "archive service leaked concrete or independent limiter dependency: {forbidden}"
         );
     }
 }
@@ -72,7 +73,10 @@ fn bootstrap_composes_archive_capability_once() {
         1
     );
     assert!(src.contains("SqliteArchiveEffects::new("));
-    assert!(src.contains("Semaphore::new(cfg_limits_archive)"));
+    assert!(src.contains("ResourceBudget::with_limits("));
+    assert!(src.contains("config.limits.archive_concurrency"));
+    assert!(src.contains("resource_budget.clone()"));
+    assert!(!src.contains("Semaphore::new(cfg_limits_archive)"));
 }
 
 #[test]
