@@ -660,42 +660,89 @@ impl ConnectionService {
                 "Default local connection cannot be deleted".into(),
             ));
         }
-        let mut tx = self
-            .db
-            .begin()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
-        sqlx::query("DELETE FROM connection_credentials WHERE connection_id = ?")
+
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM connections WHERE id = ?")
             .bind(id)
-            .execute(&mut *tx)
+            .fetch_optional(&self.db)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to delete connection credential: {}", e))?;
-        let result = sqlx::query("DELETE FROM connections WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to delete connection: {}", e))?;
-        if result.rows_affected() == 0 {
+            .map_err(|e| anyhow::anyhow!("Failed to verify connection before deletion: {}", e))?;
+        if exists.is_none() {
             return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
         }
-        tx.commit()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to commit connection deletion: {}", e))?;
 
-        let active_jobs = self.transfer_manager.list_jobs(None, true, false).await;
-        for job in active_jobs {
-            if (job.source_connection_id == id || job.destination_connection_id == id)
-                && matches!(
-                    job.status,
-                    TransferStatus::Running
-                        | TransferStatus::Queued
-                        | TransferStatus::CancellationRequested
-                )
-            {
-                let _ = self.transfer_manager.cancel_job(&job.id, None, true).await;
-            }
-        }
+        // Unpublish the provider first. Existing transfers keep their Arc<FileSystem>,
+        // but new file/transfer admissions can no longer resolve this connection.
+        let previous_runtime = self.registry.get_runtime(id).await;
         self.registry.remove(id).await;
+
+        let deletion_result: Result<(), AppError> = async {
+            let active_jobs = self.transfer_manager.list_jobs(None, true, false).await;
+            for job in active_jobs {
+                if (job.source_connection_id == id || job.destination_connection_id == id)
+                    && job.status.is_active()
+                {
+                    if let Err(error) = self.transfer_manager.cancel_job(&job.id, None, true).await {
+                        let current = self.transfer_manager.get_job(&job.id).await;
+                        if current.map(|job| job.status.is_terminal()).unwrap_or(true) {
+                            continue;
+                        }
+                        return Err(AppError::Internal(anyhow::anyhow!(
+                            "Failed to request cancellation for transfer '{}' before deleting connection '{}': {}",
+                            job.id,
+                            id,
+                            error
+                        )));
+                    }
+                }
+            }
+
+            let mut tx = self
+                .db
+                .begin()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to begin connection deletion transaction: {}", e))?;
+
+            // Durable cancellation barrier. TransferManager owns the live cancellation
+            // tokens; this transaction guarantees that after connection deletion commits,
+            // no persisted job referencing it remains queued/running.
+            let now = Utc::now().to_rfc3339();
+            sqlx::query(
+                "UPDATE transfer_jobs SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancellation_requested' END, updated_at = ? WHERE (source_connection_id = ? OR destination_connection_id = ?) AND status IN ('queued', 'running', 'cancellation_requested')",
+            )
+            .bind(&now)
+            .bind(id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to persist transfer cancellation barrier: {}", e))?;
+
+            sqlx::query("DELETE FROM connection_credentials WHERE connection_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to delete connection credential: {}", e))?;
+            let result = sqlx::query("DELETE FROM connections WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to delete connection: {}", e))?;
+            if result.rows_affected() == 0 {
+                return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
+            }
+            tx.commit()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to commit connection deletion: {}", e))?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = deletion_result {
+            if let Some(runtime) = previous_runtime {
+                self.registry.register_runtime(id.to_string(), runtime).await;
+            }
+            return Err(error);
+        }
+
         self.metadata_cache.invalidate_prefix(id, "/").await;
         Ok(())
     }
