@@ -166,35 +166,50 @@ impl ConnectionService {
     }
 
     /// Load all enabled storage connections and register their providers.
-    pub async fn load_all_providers_from_db(&self) {
+    ///
+    /// Persistent-state read failures are startup-fatal: silently treating an
+    /// unreadable settings/connection table as "no configuration" would make
+    /// the runtime diverge from durable state. Individual provider build or
+    /// credential-decrypt failures are isolated to that connection and exposed
+    /// through the registry error state so other providers can still start.
+    pub async fn load_all_providers_from_db(&self) -> Result<(), AppError> {
         let local_root = sqlx::query_as::<_, (String,)>(
             "SELECT value FROM system_settings WHERE key = 'local_root'",
         )
         .fetch_optional(&self.db)
         .await
-        .ok()
-        .flatten()
+        .map_err(|e| anyhow::anyhow!("Failed to load local_root setting: {}", e))?
         .map(|r| std::path::PathBuf::from(r.0))
         .unwrap_or_else(|| self.config.filesystem.default_local_root.clone());
 
-        if let Err(e) = tokio::fs::create_dir_all(&local_root).await {
-            tracing::error!("Failed to create local root dir {:?}: {}", local_root, e);
-        }
-        let local_cfg = self.config.storage.get_provider_config("local");
-        match ProviderFactory::build_local_with_config(
-            "local",
-            local_root.clone(),
-            Some(&local_cfg),
-        ) {
-            Ok(local_fs) => {
-                self.registry.register("local".to_string(), local_fs).await;
-                tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
+        match tokio::fs::create_dir_all(&local_root).await {
+            Ok(()) => {
+                let local_cfg = self.config.storage.get_provider_config("local");
+                match ProviderFactory::build_local_with_config(
+                    "local",
+                    local_root.clone(),
+                    Some(&local_cfg),
+                ) {
+                    Ok(local_fs) => {
+                        self.registry.register("local".to_string(), local_fs).await;
+                        tracing::info!("Default Local Storage provider loaded at {:?}", local_root);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to init Local Storage provider: {}", e);
+                        self.registry
+                            .set_connection_error("local", &e.to_string())
+                            .await;
+                    }
+                }
             }
             Err(e) => {
-                tracing::error!("Failed to init Local Storage provider: {}", e);
-                self.registry
-                    .set_connection_error("local", &e.to_string())
-                    .await;
+                let error = format!(
+                    "Failed to create local root directory '{}': {}",
+                    local_root.display(),
+                    e
+                );
+                tracing::error!(%error);
+                self.registry.set_connection_error("local", &error).await;
             }
         }
 
@@ -212,7 +227,7 @@ impl ConnectionService {
         )
         .fetch_all(&self.db)
         .await
-        .unwrap_or_default();
+        .map_err(|e| anyhow::anyhow!("Failed to load enabled storage connections: {}", e))?;
 
         for (id, name, provider_type, host, port, username, base_path) in rows {
             if id == "local" {
@@ -224,8 +239,25 @@ impl ConnectionService {
             .bind(&id)
             .fetch_optional(&self.db)
             .await
-            .unwrap_or(None);
-            let decrypted_secret = secret_row.and_then(|r| self.credentials.decrypt(&r.0).ok());
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to load credential for storage connection '{}': {}",
+                    id,
+                    e
+                )
+            })?;
+            let decrypted_secret = match secret_row {
+                Some((encrypted,)) => match self.credentials.decrypt(&encrypted) {
+                    Ok(secret) => Some(secret),
+                    Err(error) => {
+                        let message = format!("Failed to decrypt persisted credential: {}", error);
+                        tracing::error!(connection_id = %id, %message);
+                        self.registry.set_connection_error(&id, &message).await;
+                        continue;
+                    }
+                },
+                None => None,
+            };
             let conn = Connection {
                 id: id.clone(),
                 name: name.clone(),
@@ -269,6 +301,7 @@ impl ConnectionService {
                 }
             }
         }
+        Ok(())
     }
 
     pub async fn list_connections(&self, actor: &Actor) -> Result<Vec<Connection>, AppError> {
@@ -551,8 +584,13 @@ impl ConnectionService {
             .bind(id)
             .fetch_optional(&self.db)
             .await
-            .unwrap_or(None);
-            row.and_then(|(encrypted,)| self.credentials.decrypt(&encrypted).ok())
+            .map_err(|e| anyhow::anyhow!("Failed to load existing credential: {}", e))?;
+            match row {
+                Some((encrypted,)) => Some(self.credentials.decrypt(&encrypted).map_err(|e| {
+                    anyhow::anyhow!("Failed to decrypt existing credential for '{}': {}", id, e)
+                })?),
+                None => None,
+            }
         };
 
         if new_enabled {
