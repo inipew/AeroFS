@@ -48,9 +48,20 @@ async fn handle_socket(
 
     tracing::info!("ws.connected: user_id={}", user_id);
 
-    let authorized_connections = Arc::new(RwLock::new(
-        service.authorized_connections(&principal).await,
-    ));
+    let initial_connections = match service.authorized_connections(&principal).await {
+        Ok(connections) => connections,
+        Err(error) => {
+            tracing::error!(%error, user_id, "ws authorization snapshot failed");
+            let _ = sender
+                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1011,
+                    reason: "authorization unavailable".into(),
+                })))
+                .await;
+            return;
+        }
+    };
+    let authorized_connections = Arc::new(RwLock::new(initial_connections));
 
     let epoch = service.epoch_info();
     let epoch_info = serde_json::json!({
@@ -69,45 +80,59 @@ async fn handle_socket(
     }
 
     if let Some(sequence) = last_seq {
-        if let Ok(outcome) = service.replay(last_epoch.as_deref(), sequence, 100).await {
-            match outcome {
-                ReplayOutcome::Events(missed) => {
-                    let connections = authorized_connections.read().await.clone();
-                    for envelope in missed {
-                        if service.is_event_authorized(&envelope.event, &principal, &connections) {
-                            if let Ok(json) = serde_json::to_string(&envelope) {
-                                if sender.send(Message::Text(json.into())).await.is_err() {
-                                    return;
-                                }
+        match service.replay(last_epoch.as_deref(), sequence, 100).await {
+            Ok(ReplayOutcome::Events(missed)) => {
+                let connections = authorized_connections.read().await.clone();
+                for envelope in missed {
+                    if service.is_event_authorized(&envelope.event, &principal, &connections) {
+                        if let Ok(json) = serde_json::to_string(&envelope) {
+                            if sender.send(Message::Text(json.into())).await.is_err() {
+                                return;
                             }
                         }
                     }
                 }
-                ReplayOutcome::Expired { latest_sequence } => {
-                    let resync = serde_json::json!({
-                        "type": "resync_required",
-                        "data": {
-                            "reason": "sequence_expired",
-                            "latest_sequence": latest_sequence,
-                        }
-                    });
-                    let _ = sender.send(Message::Text(resync.to_string().into())).await;
-                }
-                ReplayOutcome::EpochMismatch {
-                    current_epoch,
-                    latest_sequence,
-                } => {
-                    let full_sync = serde_json::json!({
-                        "type": "full_sync",
-                        "data": {
-                            "reason": "epoch_changed",
-                            "epoch": current_epoch,
-                            "latest_sequence": latest_sequence,
-                        }
-                    });
-                    let _ = sender
-                        .send(Message::Text(full_sync.to_string().into()))
-                        .await;
+            }
+            Ok(ReplayOutcome::Expired { latest_sequence }) => {
+                let resync = serde_json::json!({
+                    "type": "resync_required",
+                    "data": {
+                        "reason": "sequence_expired",
+                        "latest_sequence": latest_sequence,
+                    }
+                });
+                let _ = sender.send(Message::Text(resync.to_string().into())).await;
+            }
+            Ok(ReplayOutcome::EpochMismatch {
+                current_epoch,
+                latest_sequence,
+            }) => {
+                let full_sync = serde_json::json!({
+                    "type": "full_sync",
+                    "data": {
+                        "reason": "epoch_changed",
+                        "epoch": current_epoch,
+                        "latest_sequence": latest_sequence,
+                    }
+                });
+                let _ = sender
+                    .send(Message::Text(full_sync.to_string().into()))
+                    .await;
+            }
+            Err(error) => {
+                tracing::error!(%error, user_id, "ws replay failed");
+                let resync = serde_json::json!({
+                    "type": "resync_required",
+                    "data": {
+                        "reason": "replay_unavailable",
+                    }
+                });
+                if sender
+                    .send(Message::Text(resync.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
                 }
             }
         }
@@ -146,10 +171,26 @@ async fn handle_socket(
                             } = envelope.event
                             {
                                 if target_user_id == &send_principal.user_id {
-                                    let refreshed = send_service
-                                        .authorized_connections(&send_principal)
-                                        .await;
-                                    *send_connections.write().await = refreshed;
+                                    match send_service.authorized_connections(&send_principal).await {
+                                        Ok(refreshed) => {
+                                            *send_connections.write().await = refreshed;
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(%error, user_id = %send_principal.user_id, "ws authorization refresh failed");
+                                            let resync = serde_json::json!({
+                                                "type": "resync_required",
+                                                "data": {
+                                                    "reason": "authorization_refresh_failed",
+                                                }
+                                            });
+                                            let _ = sender.send(Message::Text(resync.to_string().into())).await;
+                                            let _ = sender.send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                                code: 1011,
+                                                reason: "authorization unavailable".into(),
+                                            }))).await;
+                                            break;
+                                        }
+                                    }
                                 }
                             }
 
