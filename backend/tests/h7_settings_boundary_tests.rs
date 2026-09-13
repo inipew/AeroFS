@@ -125,3 +125,34 @@ fn settings_update_prepares_before_persisting_and_activates_after_commit() {
         "set_max_concurrent_transfers(app_settings.transfers.max_concurrent_transfers)"
     ));
 }
+
+#[test]
+fn settings_reads_propagate_store_failures_instead_of_falling_back() {
+    let src = compact(&source("src/services/settings_service.rs"));
+
+    assert!(src.contains(
+        "pubasyncfnget_system_setting(&self,key:&str)->Result<Option<String>,AppError>{self.store.get(key).await}"
+    ));
+    assert!(
+        !src.contains("tracing::warn!(%error,key,\"failedtoreadsystemsetting\")"),
+        "settings read failures must not be converted into missing values"
+    );
+
+    for key in [
+        "local_root",
+        "temp_dir",
+        "allow_symlinks",
+        "show_hidden_default",
+        "read_only_default",
+        "max_editable_size",
+        "theme",
+        "default_view",
+        "default_layout",
+        "max_concurrent_transfers",
+    ] {
+        assert!(
+            src.contains(&format!("get_system_setting(\"{key}\").await?")),
+            "get_settings must propagate failures while reading {key}"
+        );
+    }
+}
