@@ -1,11 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
+const TRANSFER_PROGRESS_BROADCAST_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -157,6 +160,74 @@ pub enum ReplayOutcome {
     },
 }
 
+#[derive(Debug, Clone)]
+struct ProgressEmissionState {
+    last_emitted_at: Instant,
+    phase: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct ProgressBroadcastGate {
+    transfers: HashMap<String, ProgressEmissionState>,
+}
+
+impl ProgressBroadcastGate {
+    fn should_emit(&mut self, transfer_id: &str, payload: &serde_json::Value, now: Instant) -> bool {
+        let phase = payload
+            .get("phase")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let status = payload
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let transferred = payload
+            .get("transferred_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let total = payload
+            .get("total_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let is_final_progress = total > 0 && transferred >= total;
+
+        match self.transfers.get_mut(transfer_id) {
+            None => {
+                self.transfers.insert(
+                    transfer_id.to_string(),
+                    ProgressEmissionState {
+                        last_emitted_at: now,
+                        phase,
+                        status,
+                    },
+                );
+                true
+            }
+            Some(state) => {
+                let phase_changed = state.phase != phase;
+                let status_changed = state.status != status;
+                let interval_elapsed =
+                    now.saturating_duration_since(state.last_emitted_at)
+                        >= TRANSFER_PROGRESS_BROADCAST_INTERVAL;
+
+                if phase_changed || status_changed || is_final_progress || interval_elapsed {
+                    state.last_emitted_at = now;
+                    state.phase = phase;
+                    state.status = status;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn clear(&mut self, transfer_id: &str) {
+        self.transfers.remove(transfer_id);
+    }
+}
+
 /// Durable Event Journal backed by SQLite and real-time in-memory broadcast.
 #[derive(Clone)]
 pub struct EventJournal {
@@ -164,6 +235,7 @@ pub struct EventJournal {
     epoch: String,
     sequence_counter: Arc<AtomicU64>,
     event_tx: broadcast::Sender<EventEnvelope>,
+    progress_gate: Arc<StdMutex<ProgressBroadcastGate>>,
 }
 
 impl EventJournal {
@@ -187,6 +259,7 @@ impl EventJournal {
             epoch,
             sequence_counter: Arc::new(AtomicU64::new(0)),
             event_tx,
+            progress_gate: Arc::new(StdMutex::new(ProgressBroadcastGate::default())),
         })
     }
 
@@ -203,18 +276,41 @@ impl EventJournal {
     }
 
     /// Append an event to durable storage before publishing it to live subscribers.
-    /// Progress ticks intentionally stay transient, while lifecycle/file events receive
-    /// a global journal row id usable by durable internal consumers across server epochs.
+    /// Progress ticks intentionally stay transient. Their live broadcast is coalesced per
+    /// transfer to reduce websocket/serialization fan-out while phase/status changes and
+    /// the final byte update remain immediate. Lifecycle/file events stay fully durable.
     pub async fn append(
         &self,
         event: DomainEvent,
         aggregate_id: Option<&str>,
     ) -> anyhow::Result<EventEnvelope> {
+        let should_publish = match (&event, aggregate_id) {
+            (DomainEvent::TransferProgress(payload), Some(transfer_id)) => self
+                .progress_gate
+                .lock()
+                .map(|mut gate| gate.should_emit(transfer_id, payload, Instant::now()))
+                .unwrap_or(true),
+            _ => true,
+        };
+
+        if matches!(
+            &event,
+            DomainEvent::TransferCompleted(_)
+                | DomainEvent::TransferFailed(_)
+                | DomainEvent::TransferCancelled(_)
+        ) {
+            if let Some(transfer_id) = aggregate_id {
+                if let Ok(mut gate) = self.progress_gate.lock() {
+                    gate.clear(transfer_id);
+                }
+            }
+        }
+
         let seq = self.sequence_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let event_id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-        let is_progress = matches!(event, DomainEvent::TransferProgress(_));
+        let is_progress = matches!(&event, DomainEvent::TransferProgress(_));
 
         let journal_id = if is_progress {
             None
@@ -245,8 +341,12 @@ impl EventJournal {
         };
 
         // Publish only after persistence succeeds so durable consumers never observe
-        // a lifecycle event that cannot subsequently be replayed.
-        let _ = self.event_tx.send(envelope.clone());
+        // a lifecycle event that cannot subsequently be replayed. Suppressed progress
+        // still consumes a transient sequence number; replay already treats those gaps
+        // as legitimate non-durable progress events.
+        if should_publish {
+            let _ = self.event_tx.send(envelope.clone());
+        }
         Ok(envelope)
     }
 
@@ -443,7 +543,17 @@ impl EventJournal {
 
 #[cfg(test)]
 mod tests {
-    use super::DomainEvent;
+    use super::{DomainEvent, ProgressBroadcastGate, TRANSFER_PROGRESS_BROADCAST_INTERVAL};
+    use std::time::{Duration, Instant};
+
+    fn progress(phase: &str, status: &str, transferred: u64, total: u64) -> serde_json::Value {
+        serde_json::json!({
+            "phase": phase,
+            "status": status,
+            "transferred_bytes": transferred,
+            "total_bytes": total,
+        })
+    }
 
     #[test]
     fn transfer_cancelled_has_a_distinct_wire_type() {
@@ -453,5 +563,66 @@ mod tests {
             serde_json::to_value(event).unwrap()["type"],
             "transfer_cancelled"
         );
+    }
+
+    #[test]
+    fn progress_gate_coalesces_high_frequency_ticks() {
+        let start = Instant::now();
+        let mut gate = ProgressBroadcastGate::default();
+        let payload = progress("transferring", "running", 1, 100);
+
+        assert!(gate.should_emit("job-1", &payload, start));
+        assert!(!gate.should_emit(
+            "job-1",
+            &progress("transferring", "running", 2, 100),
+            start + Duration::from_millis(100),
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("transferring", "running", 3, 100),
+            start + TRANSFER_PROGRESS_BROADCAST_INTERVAL,
+        ));
+    }
+
+    #[test]
+    fn progress_gate_bypasses_interval_for_phase_status_and_final_progress() {
+        let start = Instant::now();
+        let mut gate = ProgressBroadcastGate::default();
+
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("transferring", "running", 10, 100),
+            start,
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("finalizing", "running", 20, 100),
+            start + Duration::from_millis(10),
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("finalizing", "cancellation_requested", 20, 100),
+            start + Duration::from_millis(20),
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("finalizing", "cancellation_requested", 100, 100),
+            start + Duration::from_millis(30),
+        ));
+    }
+
+    #[test]
+    fn progress_gate_clear_resets_transfer_state() {
+        let start = Instant::now();
+        let mut gate = ProgressBroadcastGate::default();
+        let payload = progress("transferring", "running", 1, 100);
+
+        assert!(gate.should_emit("job-1", &payload, start));
+        gate.clear("job-1");
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("transferring", "running", 2, 100),
+            start + Duration::from_millis(1),
+        ));
     }
 }
