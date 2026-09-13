@@ -3,7 +3,6 @@ use crate::cli::context::CliContext;
 use crate::cli::error::CliError;
 use crate::cli::output::prompt_confirm;
 use crate::domain::Actor;
-use crate::services::TransferService;
 use crate::state::TransferState;
 use axum::extract::FromRef;
 use serde::Serialize;
@@ -29,8 +28,6 @@ struct TransferActionOutput {
 }
 
 pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliError> {
-    let pool = ctx.db().await?;
-
     match cmd.action {
         TransferAction::List {
             status,
@@ -38,15 +35,16 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             user,
             connection,
         } => {
-            let jobs = TransferService::list_transfers_filtered(
-                &pool,
-                status.as_deref(),
-                limit,
-                user.as_deref(),
-                connection.as_deref(),
-            )
-            .await
-            .map_err(|e| CliError::database(format!("Failed to list transfers: {}", e)))?;
+            let history = ctx.transfer_history().await?;
+            let jobs = history
+                .list_transfers_filtered(
+                    status.as_deref(),
+                    limit,
+                    user.as_deref(),
+                    connection.as_deref(),
+                )
+                .await
+                .map_err(|e| CliError::database(format!("Failed to list transfers: {}", e)))?;
 
             ctx.output.print_success("transfer.list", &jobs, || {
                 if jobs.is_empty() {
@@ -73,7 +71,9 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             Ok(())
         }
         TransferAction::Show { id } => {
-            let job = TransferService::get_transfer(&pool, &id)
+            let history = ctx.transfer_history().await?;
+            let job = history
+                .get_transfer(&id)
                 .await
                 .map_err(|e| CliError::database(format!("Failed to retrieve transfer: {}", e)))?;
 
@@ -211,7 +211,9 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
             }
 
             if dry_run {
-                let count = TransferService::purge_transfers_older_than(&pool, days, true)
+                let history = ctx.transfer_history().await?;
+                let count = history
+                    .purge_transfers_older_than(days, true)
                     .await
                     .map_err(|e| CliError::database(format!("Dry-run query error: {}", e)))?;
 
@@ -240,7 +242,9 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     return Ok(());
                 }
 
-                let count = TransferService::purge_transfers_older_than(&pool, days, false)
+                let history = ctx.transfer_history().await?;
+                let count = history
+                    .purge_transfers_older_than(days, false)
                     .await
                     .map_err(|e| CliError::database(format!("Purge execution error: {}", e)))?;
 
@@ -260,7 +264,9 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
         }
         TransferAction::Repair { dry_run, yes } => {
             if dry_run {
-                let count = TransferService::repair_stuck_transfers(&pool, true)
+                let history = ctx.transfer_history().await?;
+                let count = history
+                    .repair_stuck_transfers(true)
                     .await
                     .map_err(|e| CliError::database(format!("Query error: {}", e)))?;
 
@@ -288,7 +294,9 @@ pub async fn handle(cmd: TransferCommand, ctx: &CliContext) -> Result<(), CliErr
                     return Ok(());
                 }
 
-                let count = TransferService::repair_stuck_transfers(&pool, false)
+                let history = ctx.transfer_history().await?;
+                let count = history
+                    .repair_stuck_transfers(false)
                     .await
                     .map_err(|e| CliError::database(format!("Repair error: {}", e)))?;
 
