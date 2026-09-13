@@ -28,6 +28,7 @@ use crate::infrastructure::{
     uploads::TransferUploadExecution,
     CredentialStore,
 };
+use crate::runtime::ResourceBudget;
 use crate::services::{
     ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
     PreferencesService, RealtimeService, SearchService, SettingsService, ShareService, SyncService,
@@ -42,7 +43,6 @@ use crate::sync::{SyncEventSubscriber, SyncManager};
 use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 pub struct BuiltApplication {
     pub state: AppState,
@@ -86,10 +86,23 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             .expect("Failed to initialize durable event journal"),
     );
 
+    // One admission controller owns all heavy I/O capacity. Local/network caps equal the
+    // configured global cap, so they classify pressure without introducing an undocumented
+    // tighter limit; global_io_concurrency remains the authoritative aggregate ceiling.
+    let resource_budget = Arc::new(ResourceBudget::with_limits(
+        config.limits.global_io_concurrency,
+        config.limits.global_io_concurrency,
+        config.limits.global_io_concurrency,
+        config.limits.max_concurrent_transfers,
+        config.limits.archive_concurrency,
+        config.limits.search_concurrency,
+    ));
+
     let transfer_manager = TransferManager::new(
         registry.providers_map(),
         db.clone(),
         config.limits.max_concurrent_transfers,
+        resource_budget.clone(),
         event_journal.clone(),
         runtime.shutdown_token.clone(),
         &runtime.task_tracker,
@@ -121,8 +134,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     );
 
     let upload_locks = Arc::new(crate::services::UploadLockManager::default());
-    let cfg_limits_archive = config.limits.archive_concurrency;
-    let cfg_limits_search = config.limits.search_concurrency;
     let max_upload_size = config.limits.max_upload_size;
     let local_root = config.filesystem.default_local_root.clone();
     let config = Arc::new(config);
@@ -289,7 +300,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         search: SearchState::new(SearchService::new(
             file_authorization.clone(),
             file_filesystem.clone(),
-            Arc::new(Semaphore::new(cfg_limits_search)),
+            resource_budget.clone(),
         )),
         health: HealthState::new(HealthService::new(Arc::new(RuntimeReadinessProbe::new(
             db.clone(),
@@ -314,7 +325,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
                 db.clone(),
                 transfer_manager,
             )),
-            Arc::new(Semaphore::new(cfg_limits_archive)),
+            resource_budget,
         )),
         settings,
         audit: AuditState::new(AuditService::new(Arc::new(SqliteAuditRepository::new(
