@@ -1,16 +1,17 @@
-use crate::auth::audit::{record_audit_log, AuditLogEntry};
+use crate::auth::audit::AuditLogEntry;
 use crate::auth::AuthenticatedUser;
-use crate::db::DbPool;
 use crate::errors::AppError;
+use crate::ports::audit::{AuditRecord, AuditRepository};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AuditService {
-    db: DbPool,
+    repository: Arc<dyn AuditRepository>,
 }
 
 impl AuditService {
-    pub fn new(db: DbPool) -> Self {
-        Self { db }
+    pub fn new(repository: Arc<dyn AuditRepository>) -> Self {
+        Self { repository }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -23,18 +24,18 @@ impl AuditService {
         status: &str,
         ip_address: Option<&str>,
         details: Option<&str>,
-    ) {
-        record_audit_log(
-            &self.db,
-            user_id,
-            action,
-            connection_id,
-            resource_path,
-            status,
-            ip_address,
-            details,
-        )
-        .await;
+    ) -> Result<(), AppError> {
+        self.repository
+            .record(AuditRecord {
+                user_id,
+                action,
+                connection_id,
+                resource_path,
+                status,
+                ip_address,
+                details,
+            })
+            .await
     }
 
     pub async fn list_logs(
@@ -49,42 +50,6 @@ impl AuditService {
             ));
         }
 
-        let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, String, Option<String>, Option<String>, String, Option<String>, Option<String>, String)>(
-            "SELECT a.id, a.user_id, u.username, a.action, a.connection_id, a.path, a.status, a.ip_address, a.details, a.created_at \n             FROM audit_logs a\n             LEFT JOIN users u ON a.user_id = u.id\n             ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
-        )
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    user_id,
-                    username,
-                    action,
-                    connection_id,
-                    path,
-                    status,
-                    ip_address,
-                    details,
-                    created_at,
-                )| AuditLogEntry {
-                    id,
-                    user_id,
-                    username,
-                    action,
-                    connection_id,
-                    path,
-                    status,
-                    ip_address,
-                    details,
-                    created_at,
-                },
-            )
-            .collect())
+        self.repository.list(limit, offset).await
     }
 }
