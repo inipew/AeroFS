@@ -1,11 +1,7 @@
-use crate::auth::audit::record_audit_log;
 use crate::config::AppConfig;
-use crate::db::DbPool;
 use crate::domain::{settings::*, Actor};
 use crate::errors::AppError;
-use crate::transfer::TransferManager;
-use crate::vfs::{factory::ProviderFactory, registry::ProviderRegistry};
-use chrono::Utc;
+use crate::ports::settings::{SettingsAudit, SettingsRuntime, SystemSettingsStore};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use utoipa::ToSchema;
@@ -33,77 +29,44 @@ pub struct UpdateSettingsRequest {
     pub read_only_default: Option<bool>,
 }
 
-async fn upsert_setting(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    key: &str,
-    val: &str,
-    now: &str,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)\n         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-    )
-    .bind(key)
-    .bind(val)
-    .bind(now)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
-    Ok(())
-}
-
 #[derive(Clone)]
 pub struct SettingsService {
-    db: DbPool,
     config: Arc<AppConfig>,
-    registry: Arc<ProviderRegistry>,
-    transfer_manager: TransferManager,
+    store: Arc<dyn SystemSettingsStore>,
+    runtime: Arc<dyn SettingsRuntime>,
+    audit: Arc<dyn SettingsAudit>,
 }
 
 impl SettingsService {
     pub fn new(
-        db: DbPool,
         config: Arc<AppConfig>,
-        registry: Arc<ProviderRegistry>,
-        transfer_manager: TransferManager,
+        store: Arc<dyn SystemSettingsStore>,
+        runtime: Arc<dyn SettingsRuntime>,
+        audit: Arc<dyn SettingsAudit>,
     ) -> Self {
         Self {
-            db,
             config,
-            registry,
-            transfer_manager,
+            store,
+            runtime,
+            audit,
         }
     }
 
     pub async fn get_system_setting(&self, key: &str) -> Option<String> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM system_settings WHERE key = ?")
-                .bind(key)
-                .fetch_optional(&self.db)
-                .await
-                .unwrap_or(None);
-
-        row.map(|r| r.0)
+        match self.store.get(key).await {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, key, "failed to read system setting");
+                None
+            }
+        }
     }
 
     pub async fn set_system_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)\n             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        )
-        .bind(key)
-        .bind(value)
-        .bind(&now)
-        .execute(&self.db)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn refresh_local_root_runtime(&self, new_root: PathBuf) -> anyhow::Result<()> {
-        tokio::fs::create_dir_all(&new_root).await?;
-        let local_fs = ProviderFactory::build_local("local", new_root)?;
-        self.registry.register("local".to_string(), local_fs).await;
-        Ok(())
+        self.store
+            .upsert_many(&[(key.to_string(), value.to_string())])
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
     }
 
     pub async fn update_local_root(
@@ -111,9 +74,20 @@ impl SettingsService {
         new_root: PathBuf,
         _allow_symlinks: bool,
     ) -> anyhow::Result<()> {
-        self.refresh_local_root_runtime(new_root.clone()).await?;
-        self.set_system_setting("local_root", &new_root.to_string_lossy())
+        let prepared = self
+            .runtime
+            .prepare_local_root(new_root.clone())
             .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        self.store
+            .upsert_many(&[(
+                "local_root".to_string(),
+                new_root.to_string_lossy().to_string(),
+            )])
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        prepared.activate().await;
+        Ok(())
     }
 
     pub async fn get_settings(&self, _actor: &Actor) -> Result<SettingsResponse, AppError> {
@@ -263,154 +237,85 @@ impl SettingsService {
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from);
 
-        let mut tx = self
-            .db
-            .begin()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to begin settings transaction: {}", e))?;
+        let prepared_root = match target_root {
+            Some(root) => Some(self.runtime.prepare_local_root(root).await?),
+            None => None,
+        };
 
-        let now = Utc::now().to_rfc3339();
-
+        let mut values = Vec::new();
         if let Some(app_settings) = &payload.settings {
-            upsert_setting(
-                &mut tx,
-                "local_root",
-                &app_settings.connections.default_local_root,
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "temp_dir",
-                &app_settings.connections.temp_dir,
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "allow_symlinks",
-                if app_settings.security.allow_symlinks_outside_root {
-                    "true"
-                } else {
-                    "false"
-                },
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "show_hidden_default",
-                if app_settings.general.show_hidden_default {
-                    "true"
-                } else {
-                    "false"
-                },
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "read_only_default",
-                if app_settings.security.read_only_default {
-                    "true"
-                } else {
-                    "false"
-                },
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "max_editable_size",
-                &app_settings.file_manager.max_editable_size.to_string(),
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "max_concurrent_transfers",
-                &app_settings.transfers.max_concurrent_transfers.to_string(),
-                &now,
-            )
-            .await?;
-            upsert_setting(&mut tx, "theme", &app_settings.general.theme, &now).await?;
-            upsert_setting(
-                &mut tx,
-                "default_view",
-                &app_settings.general.default_view,
-                &now,
-            )
-            .await?;
-            upsert_setting(
-                &mut tx,
-                "default_layout",
-                &app_settings.file_manager.default_layout,
-                &now,
-            )
-            .await?;
+            values.extend([
+                (
+                    "local_root".to_string(),
+                    app_settings.connections.default_local_root.clone(),
+                ),
+                (
+                    "temp_dir".to_string(),
+                    app_settings.connections.temp_dir.clone(),
+                ),
+                (
+                    "allow_symlinks".to_string(),
+                    app_settings
+                        .security
+                        .allow_symlinks_outside_root
+                        .to_string(),
+                ),
+                (
+                    "show_hidden_default".to_string(),
+                    app_settings.general.show_hidden_default.to_string(),
+                ),
+                (
+                    "read_only_default".to_string(),
+                    app_settings.security.read_only_default.to_string(),
+                ),
+                (
+                    "max_editable_size".to_string(),
+                    app_settings.file_manager.max_editable_size.to_string(),
+                ),
+                (
+                    "max_concurrent_transfers".to_string(),
+                    app_settings.transfers.max_concurrent_transfers.to_string(),
+                ),
+                ("theme".to_string(), app_settings.general.theme.clone()),
+                (
+                    "default_view".to_string(),
+                    app_settings.general.default_view.clone(),
+                ),
+                (
+                    "default_layout".to_string(),
+                    app_settings.file_manager.default_layout.clone(),
+                ),
+            ]);
         }
 
-        if let Some(lr) = &payload.local_root {
-            upsert_setting(&mut tx, "local_root", lr, &now).await?;
+        if let Some(value) = &payload.local_root {
+            values.push(("local_root".to_string(), value.clone()));
         }
-        if let Some(td) = &payload.temp_dir {
-            upsert_setting(&mut tx, "temp_dir", td, &now).await?;
+        if let Some(value) = &payload.temp_dir {
+            values.push(("temp_dir".to_string(), value.clone()));
         }
-        if let Some(sym) = payload.allow_symlinks {
-            upsert_setting(
-                &mut tx,
-                "allow_symlinks",
-                if sym { "true" } else { "false" },
-                &now,
-            )
-            .await?;
+        if let Some(value) = payload.allow_symlinks {
+            values.push(("allow_symlinks".to_string(), value.to_string()));
         }
-        if let Some(sh) = payload.show_hidden_default {
-            upsert_setting(
-                &mut tx,
-                "show_hidden_default",
-                if sh { "true" } else { "false" },
-                &now,
-            )
-            .await?;
+        if let Some(value) = payload.show_hidden_default {
+            values.push(("show_hidden_default".to_string(), value.to_string()));
         }
-        if let Some(ro) = payload.read_only_default {
-            upsert_setting(
-                &mut tx,
-                "read_only_default",
-                if ro { "true" } else { "false" },
-                &now,
-            )
-            .await?;
+        if let Some(value) = payload.read_only_default {
+            values.push(("read_only_default".to_string(), value.to_string()));
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to commit settings transaction: {}", e))?;
+        self.store.upsert_many(&values).await?;
 
-        if let Some(root_path) = target_root {
-            if let Err(error) = self.refresh_local_root_runtime(root_path).await {
-                tracing::warn!(%error, "failed to refresh local provider after settings update");
-            }
+        if let Some(prepared) = prepared_root {
+            prepared.activate().await;
         }
 
         if let Some(app_settings) = &payload.settings {
-            self.transfer_manager
+            self.runtime
                 .set_max_concurrent_transfers(app_settings.transfers.max_concurrent_transfers);
         }
 
-        record_audit_log(
-            &self.db,
-            Some(&actor.id),
-            "SETTINGS_UPDATED",
-            None,
-            None,
-            "success",
-            None,
-            Some("Updated system settings"),
-        )
-        .await;
-
+        self.audit.settings_updated(actor).await;
         Ok(())
     }
 }
