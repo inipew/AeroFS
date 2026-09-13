@@ -50,11 +50,11 @@ fn file_http_has_no_raw_storage_dependencies() {
 }
 
 #[test]
-fn file_api_service_uses_ports_for_runtime_configuration_and_storage_metadata() {
+fn file_api_service_uses_ports_for_runtime_configuration_storage_and_cache() {
     let src = source("src/services/file_api_service.rs");
     let compact = compact(&src);
 
-    for forbidden in ["DbPool", "AppConfig", "SettingsService", "sqlx::"] {
+    for forbidden in ["DbPool", "AppConfig", "SettingsService", "MetadataCache", "sqlx::"] {
         assert!(
             !src.contains(forbidden),
             "FileApiService must not depend on concrete runtime dependency `{forbidden}`"
@@ -63,9 +63,19 @@ fn file_api_service_uses_ports_for_runtime_configuration_and_storage_metadata() 
 
     assert!(compact.contains("file_settings:Arc<dynFileSettings>"));
     assert!(compact.contains("connection_storage:Arc<dynConnectionStorageMetadata>"));
+    assert!(compact.contains("metadata_cache:Arc<dynFileMetadataCache>"));
     assert!(compact.contains("self.file_settings.max_editable_size().await?"));
     assert!(compact.contains("self.file_settings.local_root().await?"));
     assert!(compact.contains("self.file_settings.allow_symlinks_outside_root().await?"));
+}
+
+#[test]
+fn metadata_cache_implements_application_cache_port() {
+    let port = source("src/ports/cache.rs");
+    let cache = compact(&source("src/services/cache.rs"));
+
+    assert!(port.contains("pub trait FileMetadataCache"));
+    assert!(cache.contains("implFileMetadataCacheforMetadataCache"));
 }
 
 #[test]
@@ -79,6 +89,22 @@ fn sqlite_file_settings_propagate_database_failures() {
         !compact.contains(".fetch_optional(&self.db).await.unwrap_or(None)"),
         "dynamic file settings must not convert DB failures into default configuration"
     );
+}
+
+#[test]
+fn upload_admission_resolves_runtime_settings_instead_of_startup_snapshots() {
+    let upload = source("src/application/upload.rs");
+    let compact = compact(&upload);
+
+    assert!(compact.contains("settings:Arc<dynFileSettings>"));
+    assert!(
+        !compact.contains("local_root:PathBuf") && !compact.contains("max_editable_size:u64"),
+        "UploadApplicationService must not retain startup snapshots for mutable file settings"
+    );
+    assert!(compact.contains("self.settings.max_editable_size().await?"));
+    assert!(compact.contains("self.settings.local_root().await?"));
+    assert!(compact.contains("inline_threshold:max_editable_size"));
+    assert!(compact.contains("max_upload_bytes:self.max_upload_size"));
 }
 
 #[test]
@@ -173,6 +199,7 @@ fn bootstrap_composes_file_api_boundary() {
     assert!(bootstrap.contains("FileApiState::new("));
     assert!(bootstrap.contains("FileApiService::new("));
     assert!(bootstrap.contains("SqliteConnectionStorageMetadata::new(db.clone())"));
+    assert!(bootstrap.contains("file_settings.clone(),max_upload_size"));
     assert!(state.contains("pubstructFileApiState"));
     assert!(state.contains("impl_from_ref!(FileApiState,file_api)"));
 }
