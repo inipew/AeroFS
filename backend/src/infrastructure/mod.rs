@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod audit;
 pub mod auth;
 pub mod connection_runtime;
 pub mod connections;

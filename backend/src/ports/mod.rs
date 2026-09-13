@@ -1,5 +1,6 @@
 //! Ports owned by the application layer.
 pub mod archive;
+pub mod audit;
 pub mod auth;
 pub mod authorization;
 pub mod cache;
