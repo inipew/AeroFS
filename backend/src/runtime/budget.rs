@@ -156,6 +156,13 @@ impl ResourceBudget {
         })
     }
 
+    /// Scheduler-facing transfer slot. TransferManager uses this exact semaphore rather
+    /// than constructing an independent one, so runtime settings and admission control
+    /// operate on the same capacity source.
+    pub fn transfer_semaphore(&self) -> Arc<Semaphore> {
+        self.transfer.clone()
+    }
+
     pub fn available_archive(&self) -> usize {
         self.archive.available_permits()
     }
