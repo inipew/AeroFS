@@ -4,12 +4,10 @@ use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::{init_db, DbPool};
 use backend::domain::conflict::{ConflictPolicy, ConflictResolver};
-use backend::domain::operation::{FailureStrategy, OperationIntentType, OperationStatus};
-use backend::domain::policy::PermissionInheritanceMode;
+use backend::domain::operation::OperationIntentType;
 use backend::domain::settings::UserPreferences;
-use backend::domain::{Actor, ConnectionId, VfsPath};
+use backend::domain::{Actor, ConnectionId};
 use backend::infrastructure::CredentialStore;
-use backend::services::{EditorService, OperationService, PreviewService};
 use backend::state::{
     AuditState, AuthState, ConnectionState, FileApiState, HealthState, PreferencesState,
     RuntimeOwner, RuntimePhase, SearchState, SettingsState, ShareState, TrashState,
@@ -319,7 +317,7 @@ async fn test_plan36_conflict_resolver() {
 }
 
 #[tokio::test]
-async fn test_plan36_operation_service_lifecycle() {
+async fn test_plan36_file_delete_use_case_lifecycle() {
     let app = setup_test_app().await;
     let admin = get_seeded_admin(&app.db).await;
     let file_api = FileApiState::from_ref(&app.state);
@@ -332,21 +330,20 @@ async fn test_plan36_operation_service_lifecycle() {
     )
     .await;
 
-    let plan = OperationService::create_plan(
-        OperationIntentType::Delete,
-        "local".to_string(),
-        vec![VfsPath::new("local", path).unwrap()],
-        None,
-        None,
-        FailureStrategy::ContinueOnFailure,
-        PermissionInheritanceMode::InheritParent,
-        None,
-    );
-    let exec_res = OperationService::execute_plan(&file_api, &admin, &plan)
+    let result = file_api
+        .files
+        .delete_entries
+        .execute(
+            &actor(&admin),
+            backend::application::files::DeleteEntriesCommand {
+                connection: ConnectionId::new("local").unwrap(),
+                paths: vec![path.to_string()],
+            },
+        )
         .await
         .unwrap();
-    assert_eq!(exec_res.status, OperationStatus::Completed);
-    assert_eq!(exec_res.succeeded_items, vec![path.to_string()]);
+    assert_eq!(result.succeeded, vec![path.to_string()]);
+    assert!(result.failed.is_empty());
 }
 
 #[tokio::test]
@@ -388,27 +385,37 @@ async fn test_plan36_specialized_services() {
     assert_eq!(health.phase, "running");
 
     let edit_path = "/code.rs";
-    EditorService::save_from_editing(
-        &file_api,
+    let edit_content = "fn main() { println!(\"hello\"); }";
+    write_file(
+        &app.state,
         &admin,
-        "local",
         edit_path,
-        "fn main() { println!(\"hello\"); }",
-        None,
+        edit_content.as_bytes().to_vec(),
     )
-    .await
-    .unwrap();
-    let (content, _etag) = EditorService::read_for_editing(&file_api, &admin, "local", edit_path)
-        .await
-        .unwrap();
-    assert_eq!(content, "fn main() { println!(\"hello\"); }");
-    let preview_meta = PreviewService::get_preview_info(&file_api, &admin, "local", edit_path)
+    .await;
+
+    let connection = ConnectionId::new("local").unwrap();
+    let preview_meta = file_api
+        .files
+        .stat_file
+        .execute(
+            &actor(&admin),
+            backend::application::files::StatFileCommand {
+                connection: connection.clone(),
+                path: edit_path.to_string(),
+            },
+        )
         .await
         .unwrap();
     assert_eq!(preview_meta.name, "code.rs");
+    let content = file_api
+        .service
+        .read_text_for_editing(&connection, edit_path, preview_meta.size)
+        .await
+        .unwrap();
+    assert_eq!(content, edit_content);
 
     let search_state = SearchState::from_ref(&app.state);
-    let connection = ConnectionId::new("local").unwrap();
     let search_out = search_state
         .service
         .search_files(
@@ -484,7 +491,8 @@ async fn test_plan36_specialized_services() {
             Some("127.0.0.1"),
             Some("Audit test details"),
         )
-        .await;
+        .await
+        .unwrap();
     let logs = audit.service.list_logs(&admin, 10, 0).await.unwrap();
     assert!(!logs.is_empty());
 }
