@@ -244,7 +244,10 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         metadata_cache,
         transfer_manager.clone(),
     );
-    connection_service.load_all_providers_from_db().await;
+    connection_service
+        .load_all_providers_from_db()
+        .await
+        .expect("Failed to load persisted storage connection state");
 
     let state = AppState {
         router: RouterState::new(is_dev, allowed_origins),
