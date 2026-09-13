@@ -7,6 +7,7 @@ pub mod connections;
 pub mod effects;
 pub mod filesystem;
 pub mod mutation;
+pub mod realtime;
 pub mod settings;
 pub mod share;
 pub mod transfer;

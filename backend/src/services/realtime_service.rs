@@ -1,5 +1,6 @@
-use crate::db::DbPool;
+use crate::errors::AppError;
 use crate::events::{DomainEvent, EventEnvelope, EventJournal, ReplayOutcome};
+use crate::ports::realtime::RealtimeAuthorization;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -27,21 +28,21 @@ pub struct RealtimeEpochInfo {
 }
 
 /// Narrow capability used by the WebSocket transport.
-///
-/// The HTTP adapter receives this service through `RealtimeState` and therefore
-/// cannot reach the application database, event journal, or runtime container
-/// directly. Concrete dependencies remain composed once in `bootstrap`.
 #[derive(Clone)]
 pub struct RealtimeService {
-    db: DbPool,
+    authorization: Arc<dyn RealtimeAuthorization>,
     journal: Arc<EventJournal>,
     shutdown_token: CancellationToken,
 }
 
 impl RealtimeService {
-    pub fn new(db: DbPool, journal: Arc<EventJournal>, shutdown_token: CancellationToken) -> Self {
+    pub fn new(
+        authorization: Arc<dyn RealtimeAuthorization>,
+        journal: Arc<EventJournal>,
+        shutdown_token: CancellationToken,
+    ) -> Self {
         Self {
-            db,
+            authorization,
             journal,
             shutdown_token,
         }
@@ -73,27 +74,22 @@ impl RealtimeService {
             .await
     }
 
-    pub async fn authorized_connections(&self, principal: &RealtimePrincipal) -> HashSet<String> {
-        let mut connections = HashSet::new();
-        connections.insert("local".to_string());
+    pub async fn authorized_connections(
+        &self,
+        principal: &RealtimePrincipal,
+    ) -> Result<HashSet<String>, AppError> {
+        let mut connections = HashSet::from(["local".to_string()]);
 
         if principal.is_admin {
-            return connections;
+            return Ok(connections);
         }
 
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT connection_id FROM permissions WHERE user_id = ? AND can_read = 1",
-        )
-        .bind(&principal.user_id)
-        .fetch_all(&self.db)
-        .await
-        .unwrap_or_default();
-
-        for (connection_id,) in rows {
-            connections.insert(connection_id);
-        }
-
-        connections
+        connections.extend(
+            self.authorization
+                .readable_connections(&principal.user_id)
+                .await?,
+        );
+        Ok(connections)
     }
 
     pub fn is_event_authorized(
