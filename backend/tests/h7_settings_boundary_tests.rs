@@ -85,7 +85,7 @@ fn bootstrap_owns_settings_composition() {
     assert!(compact.contains("SqliteSystemSettingsStore::new(db.clone())"));
     assert!(compact.contains("RegistrySettingsRuntime::new("));
     assert!(compact.contains("SqliteSettingsAudit::new(db.clone())"));
-    assert!(compact.contains("letsettings=SettingsState::new(settings_service.clone())"));
+    assert!(compact.contains("letsettings=SettingsState::new(settings_service)"));
     assert!(compact.contains("settings,"));
 }
 
