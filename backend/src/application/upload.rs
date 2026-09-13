@@ -124,6 +124,7 @@ impl UploadApplicationService {
             target_exists,
             target_perms,
             plan: prepared.plan,
+            provider,
         };
         if let Err(error) = self.reservations.reserve(session.clone(), lease).await {
             self.execution.cancel_inline_job(&prepared.job_id).await;
@@ -155,11 +156,10 @@ impl UploadApplicationService {
 
         let session_connection = ConnectionId::new(session.connection_id.clone())
             .map_err(|error| AppError::BadRequest(error.to_string()))?;
-        let provider = self.filesystem.resolve(&session_connection).await?;
         let result = self
             .execution
             .execute_inline(
-                provider,
+                session.provider.clone(),
                 InlineUploadContext {
                     target: session.target.clone(),
                     job_id: session.job_id.clone(),
@@ -167,7 +167,7 @@ impl UploadApplicationService {
                     total_hint: session.total_bytes,
                     max_bytes: session.max_upload_bytes,
                     target_exists: session.target_exists,
-                    target_perms: session.target_perms,
+                    target_perms: session.target_perms.clone(),
                 },
                 Box::pin(byte_stream),
             )
