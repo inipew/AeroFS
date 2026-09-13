@@ -36,11 +36,11 @@ fn sync_http_uses_only_sync_capability() {
 }
 
 #[test]
-fn sync_service_owns_authorization_and_manager_boundary() {
+fn sync_service_owns_authorization_and_control_boundary() {
     let service = source("src/services/sync_service.rs");
     for expected in [
         "authorization: Arc<dyn Authorization>",
-        "manager: Arc<SyncManager>",
+        "control: Arc<dyn SyncControl>",
         "FileAction::Read",
         "FileAction::Write",
         "pub async fn create_job",
@@ -54,7 +54,13 @@ fn sync_service_owns_authorization_and_manager_boundary() {
         );
     }
 
-    for forbidden in ["AppState", "check_permission", "DbPool", "ProviderRegistry"] {
+    for forbidden in [
+        "AppState",
+        "check_permission",
+        "DbPool",
+        "ProviderRegistry",
+        "SyncManager",
+    ] {
         assert!(
             !service.contains(forbidden),
             "sync service leaked concrete dependency: {forbidden}"
@@ -74,7 +80,9 @@ fn bootstrap_composes_sync_capability_once() {
 fn sync_manager_remains_runtime_engine_not_http_dependency() {
     let api = source("src/api/sync.rs");
     let manager = source("src/sync/manager.rs");
+    let adapter = source("src/infrastructure/sync.rs");
     assert!(!api.contains("SyncManager"));
     assert!(manager.contains("pub async fn notify_transfer_completed"));
     assert!(manager.contains("pub async fn recover_interrupted_jobs"));
+    assert!(adapter.contains("impl SyncControl for SyncManager"));
 }

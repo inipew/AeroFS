@@ -9,6 +9,7 @@ pub mod health;
 pub mod realtime;
 pub mod settings;
 pub mod share;
+pub mod sync;
 pub mod transfer_history;
 pub mod transfers;
 pub mod trash;
