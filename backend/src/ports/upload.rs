@@ -24,7 +24,7 @@ pub struct UploadPlan {
     pub commit: CommitSemantics,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct UploadSession {
     pub job_id: String,
     pub user_id: String,
@@ -36,6 +36,29 @@ pub struct UploadSession {
     pub target_exists: bool,
     pub target_perms: Option<String>,
     pub plan: UploadPlan,
+    /// Exact provider generation used for admission, capability planning, and
+    /// permission resolution. Keeping it pinned prevents a later connection
+    /// reconfiguration from executing an admitted session against a different
+    /// provider with stale admission facts.
+    pub provider: Arc<dyn FileSystem>,
+}
+
+impl std::fmt::Debug for UploadSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UploadSession")
+            .field("job_id", &self.job_id)
+            .field("user_id", &self.user_id)
+            .field("connection_id", &self.connection_id)
+            .field("target", &self.target)
+            .field("file_name", &self.file_name)
+            .field("total_bytes", &self.total_bytes)
+            .field("max_upload_bytes", &self.max_upload_bytes)
+            .field("target_exists", &self.target_exists)
+            .field("target_perms", &self.target_perms)
+            .field("plan", &self.plan)
+            .field("provider", &"<pinned FileSystem>")
+            .finish()
+    }
 }
 
 pub trait UploadClaim: Send {
