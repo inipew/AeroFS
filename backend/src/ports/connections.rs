@@ -1,6 +1,7 @@
 use crate::domain::{Capabilities, Connection};
 use crate::errors::AppError;
 use async_trait::async_trait;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretMutation {
@@ -19,6 +20,7 @@ pub enum ConnectionSecretError {
 
 #[async_trait]
 pub trait ConnectionRepository: Send + Sync {
+    async fn local_root_override(&self) -> Result<Option<PathBuf>, AppError>;
     async fn load_enabled(&self) -> Result<Vec<Connection>, AppError>;
     async fn load_secret(&self, id: &str) -> Result<Option<String>, ConnectionSecretError>;
 
@@ -33,6 +35,7 @@ pub trait ConnectionRepository: Send + Sync {
         connection: &Connection,
         secret: SecretMutation,
     ) -> Result<(), AppError>;
+    async fn disable(&self, id: &str) -> Result<(), AppError>;
 
     /// Atomically fence persisted active transfer rows and remove connection state.
     /// Returns false when the connection no longer exists.
