@@ -16,23 +16,28 @@ pub trait FileLister: Send + Sync {
     async fn next_entry(&mut self) -> Result<Option<FileEntry>, VfsError>;
 }
 
-/// OpenDAL-native streaming directory lister
+/// OpenDAL-native streaming directory lister.
+///
+/// Expensive provider-specific metadata (for example POSIX permissions on local
+/// filesystems) is intentionally not enriched here. Directory streams can visit
+/// very large directories even when callers only need one bounded page, so doing
+/// synchronous metadata syscalls per traversed entry would block an async worker
+/// and turn pagination into O(N) local syscalls. Callers that need rich listing
+/// metadata should use `FileSystem::enrich_listing_entries` after pagination.
 pub struct OpenDalLister {
     lister: opendal::Lister,
     base_vfs_path: VfsPath,
-    local_root: Option<PathBuf>,
 }
 
 impl OpenDalLister {
     pub fn new(
         lister: opendal::Lister,
         base_vfs_path: VfsPath,
-        local_root: Option<PathBuf>,
+        _local_root: Option<PathBuf>,
     ) -> Self {
         Self {
             lister,
             base_vfs_path,
-            local_root,
         }
     }
 }
@@ -49,16 +54,7 @@ impl FileLister for OpenDalLister {
                 )
             })?;
 
-            if let Some(mut mapped) = map_opendal_entry(&entry, &self.base_vfs_path) {
-                #[cfg(unix)]
-                if let Some(ref root) = self.local_root {
-                    use std::os::unix::fs::PermissionsExt;
-                    let abs_child = root.join(mapped.path.trim_start_matches('/'));
-                    if let Ok(sym_meta) = std::fs::symlink_metadata(&abs_child) {
-                        let mode = sym_meta.permissions().mode() & 0o7777;
-                        mapped.permissions = Some(format!("{:04o}", mode));
-                    }
-                }
+            if let Some(mapped) = map_opendal_entry(&entry, &self.base_vfs_path) {
                 return Ok(Some(mapped));
             }
         }
@@ -66,12 +62,16 @@ impl FileLister for OpenDalLister {
     }
 }
 
-/// Create a BoxStream from OpenDAL operator and target path using zero-overhead stream unfolding
+/// Create a BoxStream from OpenDAL operator and target path using zero-overhead stream unfolding.
+///
+/// `local_root` remains part of the signature for compatibility with existing
+/// callers, but local permission enrichment is deliberately deferred until the
+/// final bounded result page is known.
 pub async fn create_opendal_stream(
     operator: &Operator,
     list_target: &str,
     base_vfs_path: &VfsPath,
-    local_root: Option<PathBuf>,
+    _local_root: Option<PathBuf>,
 ) -> Result<FileStreamBox, VfsError> {
     let lister = operator.lister(list_target).await.map_err(|e| {
         map_opendal_error(
@@ -82,29 +82,20 @@ pub async fn create_opendal_stream(
 
     let vfs_path_clone = base_vfs_path.clone();
     let stream = futures::stream::unfold(
-        (lister, vfs_path_clone, local_root),
-        |(mut lister, base_path, root)| async move {
+        (lister, vfs_path_clone),
+        |(mut lister, base_path)| async move {
             use futures::StreamExt;
             while let Some(res) = lister.next().await {
                 match res {
                     Ok(entry) => {
-                        if let Some(mut mapped) = map_opendal_entry(&entry, &base_path) {
-                            #[cfg(unix)]
-                            if let Some(ref root_dir) = root {
-                                use std::os::unix::fs::PermissionsExt;
-                                let abs_child = root_dir.join(mapped.path.trim_start_matches('/'));
-                                if let Ok(sym_meta) = std::fs::symlink_metadata(&abs_child) {
-                                    let mode = sym_meta.permissions().mode() & 0o7777;
-                                    mapped.permissions = Some(format!("{:04o}", mode));
-                                }
-                            }
-                            return Some((Ok(mapped), (lister, base_path, root)));
+                        if let Some(mapped) = map_opendal_entry(&entry, &base_path) {
+                            return Some((Ok(mapped), (lister, base_path)));
                         }
                     }
                     Err(e) => {
                         let err =
                             map_opendal_error(e, &format!("Lister error for '{}'", base_path.path));
-                        return Some((Err(err), (lister, base_path, root)));
+                        return Some((Err(err), (lister, base_path)));
                     }
                 }
             }

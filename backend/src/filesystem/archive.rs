@@ -10,10 +10,13 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Instant;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use utoipa::ToSchema;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
+
+const ARCHIVE_STREAM_CHUNK: usize = 64 * 1024;
+const ARCHIVE_STREAM_CHANNEL_CAPACITY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -96,30 +99,54 @@ fn get_cache_key(archive_path: &VfsPath) -> String {
     format!("{}:{}", archive_path.connection_id, archive_path.path)
 }
 
-/// Helper: Stream an AsyncRead into a std::io::Write (e.g. temporary file) in 64 KiB chunks
-async fn stream_async_to_sync_writer<W: std::io::Write>(
+enum ArchiveWriteCommand {
+    StartEntry { path: String, size: Option<u64> },
+    Data(Vec<u8>),
+    EndEntry { written: u64 },
+    Finish,
+    Abort,
+}
+
+async fn send_reader_to_archive_worker(
     mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-    writer: &mut W,
+    tx: &tokio::sync::mpsc::Sender<ArchiveWriteCommand>,
 ) -> Result<u64, VfsError> {
-    let mut buf = [0u8; 64 * 1024];
+    let mut buffer = vec![0u8; ARCHIVE_STREAM_CHUNK];
     let mut total = 0u64;
     loop {
         let n = reader
-            .read(&mut buf)
+            .read(&mut buffer)
             .await
-            .map_err(|e| VfsError::IoError(format!("Read error: {}", e)))?;
+            .map_err(|error| VfsError::IoError(format!("Archive source read error: {}", error)))?;
         if n == 0 {
             break;
         }
-        writer
-            .write_all(&buf[..n])
-            .map_err(|e| VfsError::IoError(format!("Write error: {}", e)))?;
-        total += n as u64;
+        total = total.saturating_add(n as u64);
+        tx.send(ArchiveWriteCommand::Data(buffer[..n].to_vec()))
+            .await
+            .map_err(|_| {
+                VfsError::IoError("Archive compressor stopped before input completed".into())
+            })?;
     }
-    writer
-        .flush()
-        .map_err(|e| VfsError::IoError(format!("Flush error: {}", e)))?;
     Ok(total)
+}
+
+async fn download_archive_to_temp(
+    provider: &Arc<dyn FileSystem>,
+    archive_path: &VfsPath,
+    temp_path: &Path,
+) -> Result<u64, VfsError> {
+    let mut reader = provider.read_stream(archive_path).await?;
+    let mut file = tokio::fs::File::create(temp_path)
+        .await
+        .map_err(|error| VfsError::IoError(format!("Failed opening temp file: {}", error)))?;
+    let copied = tokio::io::copy(&mut reader, &mut file)
+        .await
+        .map_err(|error| VfsError::IoError(format!("Failed writing temp archive: {}", error)))?;
+    file.flush()
+        .await
+        .map_err(|error| VfsError::IoError(format!("Failed flushing temp archive: {}", error)))?;
+    Ok(copied)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
@@ -249,7 +276,7 @@ async fn collect_archive_files(
     Ok(files)
 }
 
-/// Compress selected files into a ZIP archive via streaming
+/// Compress selected files into a ZIP archive via a bounded async-to-blocking bridge.
 pub async fn compress_zip(
     provider: &Arc<dyn FileSystem>,
     connection_id: &str,
@@ -260,30 +287,78 @@ pub async fn compress_zip(
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed to create temp zip file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
-
     let files_to_pack =
         collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
 
-    {
-        let file = std::fs::File::create(&temp_path)
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<ArchiveWriteCommand>(ARCHIVE_STREAM_CHANNEL_CAPACITY);
+    let worker_path = temp_path.clone();
+    let worker = tokio::task::spawn_blocking(move || -> Result<(), VfsError> {
+        let file = std::fs::File::create(&worker_path)
             .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
         let mut zip = ZipWriter::new(file);
         let options =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        for (rel_path, full_vfs) in files_to_pack {
-            let reader = provider.read_stream(&full_vfs).await?;
-            zip.start_file(&rel_path, options)
-                .map_err(|e| VfsError::IoError(format!("Zip entry error: {}", e)))?;
-
-            // Stream file in 64 KiB chunks directly into zip compressor
-            stream_async_to_sync_writer(reader, &mut zip).await?;
+        loop {
+            match rx.blocking_recv() {
+                Some(ArchiveWriteCommand::StartEntry { path, .. }) => {
+                    zip.start_file(path, options)
+                        .map_err(|e| VfsError::IoError(format!("Zip entry error: {}", e)))?;
+                }
+                Some(ArchiveWriteCommand::Data(data)) => {
+                    zip.write_all(&data)
+                        .map_err(|e| VfsError::IoError(format!("Zip write error: {}", e)))?;
+                }
+                Some(ArchiveWriteCommand::EndEntry { .. }) => {}
+                Some(ArchiveWriteCommand::Finish) => {
+                    zip.finish()
+                        .map_err(|e| VfsError::IoError(format!("Zip finalize error: {}", e)))?;
+                    return Ok(());
+                }
+                Some(ArchiveWriteCommand::Abort) => return Ok(()),
+                None => {
+                    return Err(VfsError::IoError(
+                        "Zip producer stopped before archive finalization".into(),
+                    ));
+                }
+            }
         }
-        zip.finish()
-            .map_err(|e| VfsError::IoError(format!("Zip finalize error: {}", e)))?;
-    }
+    });
 
-    // Stream finished archive file to target VFS path
+    let producer_result: Result<(), VfsError> = async {
+        for (rel_path, full_vfs) in files_to_pack {
+            tx.send(ArchiveWriteCommand::StartEntry {
+                path: rel_path,
+                size: None,
+            })
+            .await
+            .map_err(|_| VfsError::IoError("Zip compressor stopped unexpectedly".into()))?;
+            let reader = provider.read_stream(&full_vfs).await?;
+            let written = send_reader_to_archive_worker(reader, &tx).await?;
+            tx.send(ArchiveWriteCommand::EndEntry { written })
+                .await
+                .map_err(|_| VfsError::IoError("Zip compressor stopped unexpectedly".into()))?;
+        }
+        tx.send(ArchiveWriteCommand::Finish)
+            .await
+            .map_err(|_| VfsError::IoError("Zip compressor stopped unexpectedly".into()))?;
+        Ok(())
+    }
+    .await;
+    if producer_result.is_err() {
+        let _ = tx.send(ArchiveWriteCommand::Abort).await;
+    }
+    drop(tx);
+
+    let worker_result = worker
+        .await
+        .map_err(|e| VfsError::IoError(format!("Zip compressor task panicked: {}", e)))?;
+    if let Err(error) = worker_result {
+        return Err(error);
+    }
+    producer_result?;
+
     let async_file = tokio::fs::File::open(&temp_path)
         .await
         .map_err(|e| VfsError::IoError(format!("Failed opening output zip file: {}", e)))?;
@@ -306,13 +381,8 @@ pub async fn extract_zip(
         .map_err(|e| VfsError::IoError(format!("Failed to create temp extract file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
 
-    // 1. Stream archive to temp file with 64 KiB chunks
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
-        let reader = provider.read_stream(archive_path).await?;
-        stream_async_to_sync_writer(reader, &mut file).await?;
-    }
+    // 1. Stream archive to temp file using Tokio file I/O; no synchronous write on an async worker.
+    download_archive_to_temp(provider, archive_path, &temp_path).await?;
 
     // 2. Extract entries to temporary directory in blocking task (fast, bounded memory)
     let temp_dir_obj = tempfile::tempdir()
@@ -495,7 +565,7 @@ pub async fn extract_zip(
     Ok((extracted_count, skipped_count))
 }
 
-/// Compress selected files into a TAR.GZ archive via streaming
+/// Compress selected files into a TAR.GZ archive via a bounded async-to-blocking bridge.
 pub async fn compress_targz(
     provider: &Arc<dyn FileSystem>,
     connection_id: &str,
@@ -506,52 +576,126 @@ pub async fn compress_targz(
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed to create temp targz file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
-
     let files_to_pack =
         collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
 
-    {
-        let file = std::fs::File::create(&temp_path)
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<ArchiveWriteCommand>(ARCHIVE_STREAM_CHANNEL_CAPACITY);
+    let worker_path = temp_path.clone();
+    let worker = tokio::task::spawn_blocking(move || -> Result<(), VfsError> {
+        let file = std::fs::File::create(&worker_path)
             .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
         let mut enc = GzEncoder::new(file, Compression::default());
+        let mut active_expected_size: Option<u64> = None;
+        let mut active_written = 0u64;
 
-        for (rel_path, full_vfs) in files_to_pack {
-            let meta = provider.stat(&full_vfs).await?;
-            let reader = provider.read_stream(&full_vfs).await?;
-
-            let mut header = tar::Header::new_gnu();
-            header
-                .set_path(&rel_path)
-                .map_err(|e| VfsError::IoError(format!("Tar path error: {}", e)))?;
-            header.set_size(meta.size);
-            header.set_mode(0o644);
-            header.set_cksum();
-
-            // 1. Write standard GNU Tar 512-byte header
-            enc.write_all(header.as_bytes())
-                .map_err(|e| VfsError::IoError(format!("Tar header write error: {}", e)))?;
-
-            // 2. Stream content in 64 KiB chunks directly into gzip encoder without buffering in RAM
-            let written = stream_async_to_sync_writer(reader, &mut enc).await?;
-
-            // 3. Write 512-byte block padding if required
-            let padding = (512 - (written % 512)) % 512;
-            if padding > 0 {
-                enc.write_all(&[0u8; 512][..padding as usize])
-                    .map_err(|e| VfsError::IoError(format!("Tar padding write error: {}", e)))?;
+        loop {
+            match rx.blocking_recv() {
+                Some(ArchiveWriteCommand::StartEntry { path, size }) => {
+                    if active_expected_size.is_some() {
+                        return Err(VfsError::IoError(
+                            "Tar entry started before previous entry completed".into(),
+                        ));
+                    }
+                    let expected_size = size.ok_or_else(|| {
+                        VfsError::IoError("Tar entry missing expected size".into())
+                    })?;
+                    let mut header = tar::Header::new_gnu();
+                    header
+                        .set_path(&path)
+                        .map_err(|e| VfsError::IoError(format!("Tar path error: {}", e)))?;
+                    header.set_size(expected_size);
+                    header.set_mode(0o644);
+                    header.set_cksum();
+                    enc.write_all(header.as_bytes()).map_err(|e| {
+                        VfsError::IoError(format!("Tar header write error: {}", e))
+                    })?;
+                    active_expected_size = Some(expected_size);
+                    active_written = 0;
+                }
+                Some(ArchiveWriteCommand::Data(data)) => {
+                    if active_expected_size.is_none() {
+                        return Err(VfsError::IoError("Tar data received without entry".into()));
+                    }
+                    enc.write_all(&data)
+                        .map_err(|e| VfsError::IoError(format!("Tar content write error: {}", e)))?;
+                    active_written = active_written.saturating_add(data.len() as u64);
+                }
+                Some(ArchiveWriteCommand::EndEntry { written }) => {
+                    let expected_size = active_expected_size.take().ok_or_else(|| {
+                        VfsError::IoError("Tar entry ended without active entry".into())
+                    })?;
+                    if written != active_written || written != expected_size {
+                        return Err(VfsError::IoError(format!(
+                            "Tar source size changed while archiving (expected {}, streamed {})",
+                            expected_size, written
+                        )));
+                    }
+                    let padding = (512 - (written % 512)) % 512;
+                    if padding > 0 {
+                        enc.write_all(&[0u8; 512][..padding as usize]).map_err(|e| {
+                            VfsError::IoError(format!("Tar padding write error: {}", e))
+                        })?;
+                    }
+                    active_written = 0;
+                }
+                Some(ArchiveWriteCommand::Finish) => {
+                    if active_expected_size.is_some() {
+                        return Err(VfsError::IoError(
+                            "Tar archive finalized with an incomplete entry".into(),
+                        ));
+                    }
+                    enc.write_all(&[0u8; 1024]).map_err(|e| {
+                        VfsError::IoError(format!("Tar trailer write error: {}", e))
+                    })?;
+                    enc.finish()
+                        .map_err(|e| VfsError::IoError(format!("Gzip finish error: {}", e)))?;
+                    return Ok(());
+                }
+                Some(ArchiveWriteCommand::Abort) => return Ok(()),
+                None => {
+                    return Err(VfsError::IoError(
+                        "Tar producer stopped before archive finalization".into(),
+                    ));
+                }
             }
         }
+    });
 
-        // 4. Write TAR end-of-archive marker (two 512-byte zero blocks)
-        enc.write_all(&[0u8; 1024])
-            .map_err(|e| VfsError::IoError(format!("Tar trailer write error: {}", e)))?;
-
-        // 5. Finalize Gzip compression stream
-        enc.finish()
-            .map_err(|e| VfsError::IoError(format!("Gzip finish error: {}", e)))?;
+    let producer_result: Result<(), VfsError> = async {
+        for (rel_path, full_vfs) in files_to_pack {
+            let meta = provider.stat(&full_vfs).await?;
+            tx.send(ArchiveWriteCommand::StartEntry {
+                path: rel_path,
+                size: Some(meta.size),
+            })
+            .await
+            .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+            let reader = provider.read_stream(&full_vfs).await?;
+            let written = send_reader_to_archive_worker(reader, &tx).await?;
+            tx.send(ArchiveWriteCommand::EndEntry { written })
+                .await
+                .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+        }
+        tx.send(ArchiveWriteCommand::Finish)
+            .await
+            .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+        Ok(())
     }
+    .await;
+    if producer_result.is_err() {
+        let _ = tx.send(ArchiveWriteCommand::Abort).await;
+    }
+    drop(tx);
 
-    // Stream finished archive file to target VFS path
+    let worker_result = worker
+        .await
+        .map_err(|e| VfsError::IoError(format!("Tar compressor task panicked: {}", e)))?;
+    if let Err(error) = worker_result {
+        return Err(error);
+    }
+    producer_result?;
+
     let async_file = tokio::fs::File::open(&temp_path)
         .await
         .map_err(|e| VfsError::IoError(format!("Failed opening output targz file: {}", e)))?;
@@ -574,13 +718,8 @@ pub async fn extract_targz(
         .map_err(|e| VfsError::IoError(format!("Failed to create temp extract file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
 
-    // 1. Stream archive to temp file with 64 KiB chunks
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
-        let reader = provider.read_stream(archive_path).await?;
-        stream_async_to_sync_writer(reader, &mut file).await?;
-    }
+    // 1. Stream archive to temp file using Tokio file I/O.
+    download_archive_to_temp(provider, archive_path, &temp_path).await?;
 
     // 2. Extract entries to temporary directory in blocking task
     let temp_dir_obj = tempfile::tempdir()
@@ -890,13 +1029,7 @@ pub async fn list_virtual_archive_entries(
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed creating temp archive file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
-
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
-        let reader = provider.read_stream(archive_path).await?;
-        stream_async_to_sync_writer(reader, &mut file).await?;
-    }
+    download_archive_to_temp(provider, archive_path, &temp_path).await?;
 
     let temp_path_clone = temp_path.clone();
     let all_entries =
@@ -1019,13 +1152,7 @@ pub async fn read_virtual_archive_entry(
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed creating temp archive file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
-
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
-        let reader = provider.read_stream(archive_path).await?;
-        stream_async_to_sync_writer(reader, &mut file).await?;
-    }
+    download_archive_to_temp(provider, archive_path, &temp_path).await?;
 
     let target_clean = entry_path.trim_matches('/').to_string();
     let file_name = target_clean
@@ -1133,13 +1260,7 @@ pub async fn extract_selected_archive_entries(
     let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| VfsError::IoError(format!("Failed creating temp archive file: {}", e)))?;
     let temp_path = temp_file.path().to_path_buf();
-
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .map_err(|e| VfsError::IoError(format!("Failed opening temp file: {}", e)))?;
-        let reader = provider.read_stream(archive_path).await?;
-        stream_async_to_sync_writer(reader, &mut file).await?;
-    }
+    download_archive_to_temp(provider, archive_path, &temp_path).await?;
 
     let selected_set: HashSet<String> = selected_entries
         .iter()
