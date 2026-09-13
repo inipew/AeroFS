@@ -6,7 +6,7 @@ use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId, ProviderKind};
 use backend::events::DomainEvent;
 use backend::ports::transfer::{TransferJobResponse, TransferPhase, TransferStatus, TransferType};
-use backend::services::{CreateConnectionRequest, EditorService};
+use backend::services::CreateConnectionRequest;
 use backend::state::{
     ConnectionState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason, TransferState,
 };
@@ -202,15 +202,12 @@ async fn test_realtime_cancellation_with_token() {
             },
         )
         .await;
-    assert!(
-        part_stat.is_err(),
-        "Staging part file should be deleted on cancellation"
-    );
+    assert!(part_stat.is_err(), "Staging part file should be deleted on cancellation");
 }
 
 #[tokio::test]
 async fn test_directory_transfer_bounded_limits_and_creation() {
-    let (state, admin, _temp) = setup_test_context().await;
+    let (state, admin, temp) = setup_test_context().await;
     let file_api = FileApiState::from_ref(&state);
 
     file_api
@@ -237,13 +234,7 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
         )
         .await
         .unwrap();
-    write_file(
-        &state,
-        &admin,
-        "/dir_source/file1.txt",
-        b"Content 1".to_vec(),
-    )
-    .await;
+    write_file(&state, &admin, "/dir_source/file1.txt", b"Content 1".to_vec()).await;
     write_file(
         &state,
         &admin,
@@ -269,20 +260,10 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
         .expect("directory transfer did not complete in time");
     assert_eq!(job.phase, TransferPhase::Completed);
 
-    let f1 = EditorService::read_for_editing(&file_api, &admin, "local", "/dir_dest/file1.txt")
-        .await
-        .unwrap();
-    assert_eq!(f1.0, "Content 1");
-
-    let f2 = EditorService::read_for_editing(
-        &file_api,
-        &admin,
-        "local",
-        "/dir_dest/nested/file2.txt",
-    )
-    .await
-    .unwrap();
-    assert_eq!(f2.0, "Content 2");
+    let f1 = std::fs::read_to_string(temp.path().join("storage/dir_dest/file1.txt")).unwrap();
+    assert_eq!(f1, "Content 1");
+    let f2 = std::fs::read_to_string(temp.path().join("storage/dir_dest/nested/file2.txt")).unwrap();
+    assert_eq!(f2, "Content 2");
 }
 
 #[tokio::test]
@@ -348,8 +329,6 @@ async fn test_connection_deletion_drains_active_transfers() {
 
     assert!(matches!(
         job.status,
-        TransferStatus::Cancelled
-            | TransferStatus::Failed
-            | TransferStatus::CancellationRequested
+        TransferStatus::Cancelled | TransferStatus::Failed | TransferStatus::CancellationRequested
     ));
 }
