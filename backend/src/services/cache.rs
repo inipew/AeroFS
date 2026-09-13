@@ -41,7 +41,7 @@ impl CacheState {
     /// Evict stale queue records first, then the oldest still-live entry.
     /// Each queue record is pushed and popped at most once, making capacity
     /// enforcement amortized O(1) instead of scanning the entire map.
-    fn evict_one(&mut self, now: Instant) {
+    fn evict_one(&mut self) {
         while let Some((key, generation)) = self.eviction_order.pop_front() {
             let Some(entry) = self.entries.get(&key) else {
                 continue;
@@ -49,11 +49,6 @@ impl CacheState {
             if entry.generation != generation {
                 continue;
             }
-
-            // Expired entries are preferred naturally because the queue is ordered
-            // by insertion/update time. If the oldest entry is still fresh, evict it
-            // as the bounded-cache victim rather than performing an O(N) min scan.
-            let _expired = now >= entry.expires_at;
             self.entries.remove(&key);
             break;
         }
@@ -164,7 +159,7 @@ impl MetadataCache {
         let mut state = self.state.write().await;
 
         if state.entries.len() >= self.max_entries && !state.entries.contains_key(&key) {
-            state.evict_one(now);
+            state.evict_one();
         }
 
         state.next_generation = state.next_generation.wrapping_add(1);
@@ -289,9 +284,13 @@ mod tests {
             kind: crate::domain::FileKind::File,
             size: 1,
             modified_at: None,
+            created_at: None,
+            permissions: None,
             mime_type: None,
             etag: String::new(),
-            permissions: None,
+            is_readonly: false,
+            is_hidden: false,
+            symlink_target: None,
         }
     }
 
@@ -351,7 +350,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_get_removes_only_observed_generation() {
+    async fn expired_get_removes_observed_generation() {
         let cache = MetadataCache::with_capacity(Duration::from_millis(1), 2);
         cache.put("local", "/expired", metadata("/expired")).await;
         tokio::time::sleep(Duration::from_millis(5)).await;
