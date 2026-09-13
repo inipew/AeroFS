@@ -7,7 +7,6 @@ use backend::domain::{Actor, ConnectionId};
 use backend::ports::transfer::{
     TransferJobResponse, TransferPhase, TransferStatus, TransferType,
 };
-use backend::services::EditorService;
 use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::TransferPhase as EngineTransferPhase;
 use std::time::Duration;
@@ -199,11 +198,15 @@ async fn test_transfer_phase_transitions_and_completion() {
     assert_eq!(job.total_bytes, test_data.len() as u64);
     assert!(job.checksum.is_some());
 
-    let edit_res =
-        EditorService::read_for_editing(&file_api, &admin, "local", "/dest_lifecycle.txt")
-            .await
-            .unwrap();
-    assert_eq!(edit_res.0.len(), test_data.len());
+    let metadata = stat_file(&state, &admin, "/dest_lifecycle.txt")
+        .await
+        .unwrap();
+    let content = file_api
+        .service
+        .read_text_for_editing(&ConnectionId::local(), "/dest_lifecycle.txt", metadata.size)
+        .await
+        .unwrap();
+    assert_eq!(content.len(), test_data.len());
 }
 
 #[tokio::test]
