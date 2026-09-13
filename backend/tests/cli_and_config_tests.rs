@@ -5,8 +5,10 @@ use backend::db::{
     backup_db, check_integrity, checkpoint_db, connect_db, get_db_stats, init_db, migrate_db,
     vacuum_db,
 };
+use backend::infrastructure::transfer_history::SqliteTransferHistoryRepository;
 use backend::services::TransferService;
 use std::fs;
+use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -207,6 +209,9 @@ async fn test_transfer_cli_service_queries() {
     let db_path = temp.path().join("transfer_cli_test.db");
     let db_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
     let pool = init_db(&db_url).await.unwrap();
+    let transfers = TransferService::new(Arc::new(SqliteTransferHistoryRepository::new(
+        pool.clone(),
+    )));
 
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
@@ -222,39 +227,33 @@ async fn test_transfer_cli_service_queries() {
     .await
     .unwrap();
 
-    let job = TransferService::get_transfer(&pool, "test_job_1")
-        .await
-        .unwrap();
+    let job = transfers.get_transfer("test_job_1").await.unwrap();
     assert!(job.is_some());
     let j = job.unwrap();
     assert_eq!(j.name, "Upload Test");
     assert_eq!(j.total_bytes, 1000);
     assert_eq!(j.transferred_bytes, 500);
 
-    let list = TransferService::list_transfers_filtered(&pool, Some("running"), 10, None, None)
+    let list = transfers
+        .list_transfers_filtered(Some("running"), 10, None, None)
         .await
         .unwrap();
     assert_eq!(list.len(), 1);
 
-    let dry_repair = TransferService::repair_stuck_transfers(&pool, true)
-        .await
-        .unwrap();
+    let dry_repair = transfers.repair_stuck_transfers(true).await.unwrap();
     assert_eq!(dry_repair, 1);
 
-    let actual_repair = TransferService::repair_stuck_transfers(&pool, false)
-        .await
-        .unwrap();
+    let actual_repair = transfers.repair_stuck_transfers(false).await.unwrap();
     assert_eq!(actual_repair, 1);
 
-    let updated_job = TransferService::get_transfer(&pool, "test_job_1")
+    let updated_job = transfers
+        .get_transfer("test_job_1")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(updated_job.status.as_str(), "failed");
 
-    let dry_purge = TransferService::purge_transfers_older_than(&pool, 0, true)
-        .await
-        .unwrap();
+    let dry_purge = transfers.purge_transfers_older_than(0, true).await.unwrap();
     assert_eq!(dry_purge, 1);
 }
 
