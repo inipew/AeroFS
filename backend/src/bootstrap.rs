@@ -19,6 +19,7 @@ use crate::infrastructure::{
         SqliteFileMutationEffects, SqliteFileSettings,
     },
     settings::{RegistrySettingsRuntime, SqliteSettingsAudit, SqliteSystemSettingsStore},
+    share::SqliteShareRepository,
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
     trash::SqliteTrashRepository,
     uploads::TransferUploadExecution,
@@ -316,7 +317,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         audit: AuditState::new(AuditService::new(db.clone())),
         preferences: PreferencesState::new(PreferencesService::new(db.clone())),
         shares: ShareState::new(ShareService::new(
-            db.clone(),
+            Arc::new(SqliteShareRepository::new(db.clone())),
             file_authorization.clone(),
             file_filesystem.clone(),
         )),
