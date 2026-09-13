@@ -221,6 +221,7 @@ mod tests {
     use super::*;
     use crate::domain::{CommitSemantics, VfsPath};
     use crate::ports::upload::{UploadPlan, UploadStaging};
+    use crate::vfs::factory::ProviderFactory;
 
     fn session(job_id: &str, user_id: &str) -> UploadSession {
         UploadSession {
@@ -237,6 +238,7 @@ mod tests {
                 staging: UploadStaging::LocalTemp,
                 commit: CommitSemantics::AtomicRename,
             },
+            provider: ProviderFactory::build_local("local", std::env::temp_dir()).unwrap(),
         }
     }
 
