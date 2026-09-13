@@ -4,12 +4,15 @@ use crate::cli::error::{CliError, ExitCode};
 use crate::cli::output::OutputFormatter;
 use crate::config::AppConfig;
 use crate::db::{connect_db, DbPool};
+use crate::infrastructure::transfer_history::SqliteTransferHistoryRepository;
+use crate::services::TransferService;
 use crate::state::{
     AppState, ConnectionState, RuntimeOwner, ShutdownReason, TransferState,
 };
 use axum::extract::FromRef;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Scoped full-application handle for one-shot CLI commands.
 ///
@@ -88,6 +91,15 @@ impl CliContext {
                 ),
             )
         })
+    }
+
+    /// Compose the lightweight transfer history/maintenance capability used by
+    /// one-shot CLI diagnostics without starting the full application runtime.
+    pub async fn transfer_history(&self) -> Result<TransferService, CliError> {
+        let db = self.db().await?;
+        Ok(TransferService::new(Arc::new(
+            SqliteTransferHistoryRepository::new(db),
+        )))
     }
 
     /// Construct the full application for a one-shot CLI command while retaining
