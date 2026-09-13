@@ -6,7 +6,7 @@ use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId, ProviderKind};
 use backend::events::DomainEvent;
 use backend::ports::transfer::{TransferJobResponse, TransferPhase, TransferStatus, TransferType};
-use backend::services::{CreateConnectionRequest, EditorService, TransferService};
+use backend::services::{CreateConnectionRequest, EditorService};
 use backend::state::{
     ConnectionState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason, TransferState,
 };
@@ -68,6 +68,35 @@ fn actor(user: &AuthenticatedUser) -> Actor {
     }
 }
 
+async fn create_transfer(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    name: &str,
+    transfer_type: TransferType,
+    source_connection: &str,
+    source_path: &str,
+    destination_connection: &str,
+    destination_path: &str,
+) -> String {
+    let transfers = TransferState::from_ref(state);
+    transfers
+        .use_cases
+        .create_transfer
+        .execute(
+            &actor(user),
+            backend::application::transfers::CreateTransferCommand {
+                name: name.to_string(),
+                transfer_type,
+                source_connection: ConnectionId::new(source_connection).unwrap(),
+                source_path: source_path.to_string(),
+                destination_connection: ConnectionId::new(destination_connection).unwrap(),
+                destination_path: destination_path.to_string(),
+            },
+        )
+        .await
+        .unwrap()
+}
+
 async fn write_file(
     state: &AppState,
     user: &AuthenticatedUser,
@@ -126,20 +155,22 @@ async fn test_realtime_cancellation_with_token() {
     let realtime = RealtimeState::from_ref(&state);
     let mut events = realtime.service.subscribe();
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "cancel_job_test".into(),
+        "cancel_job_test",
         TransferType::Copy,
-        "local".into(),
-        "/source_cancel_test.dat".into(),
-        "local".into(),
-        "/dest_cancel_test.dat".into(),
+        "local",
+        "/source_cancel_test.dat",
+        "local",
+        "/dest_cancel_test.dat",
     )
-    .await
-    .unwrap();
+    .await;
 
-    TransferService::cancel_transfer(&state, &admin, &job_id)
+    let transfers = TransferState::from_ref(&state);
+    transfers
+        .use_cases
+        .cancel(&actor(&admin), &job_id)
         .await
         .unwrap();
 
@@ -221,18 +252,17 @@ async fn test_directory_transfer_bounded_limits_and_creation() {
     )
     .await;
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "dir_copy_test".into(),
+        "dir_copy_test",
         TransferType::Copy,
-        "local".into(),
-        "/dir_source".into(),
-        "local".into(),
-        "/dir_dest".into(),
+        "local",
+        "/dir_source",
+        "local",
+        "/dir_dest",
     )
-    .await
-    .unwrap();
+    .await;
 
     let job = wait_for_status(&state, &admin, &job_id, &[TransferStatus::Completed])
         .await
@@ -285,18 +315,17 @@ async fn test_connection_deletion_drains_active_transfers() {
     let test_data = vec![b'Z'; 5 * 1024 * 1024];
     write_file(&state, &admin, "/drain_source.dat", test_data).await;
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "drain_test".into(),
+        "drain_test",
         TransferType::Copy,
-        "local".into(),
-        "/drain_source.dat".into(),
-        conn_id.clone(),
-        "/drain_dest.dat".into(),
+        "local",
+        "/drain_source.dat",
+        &conn_id,
+        "/drain_dest.dat",
     )
-    .await
-    .unwrap();
+    .await;
 
     connections
         .service
