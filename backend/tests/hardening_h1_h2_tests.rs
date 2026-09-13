@@ -60,9 +60,16 @@ fn health_http_uses_only_health_capability() {
 }
 
 #[test]
-fn health_service_does_not_accept_app_state() {
+fn health_service_uses_readiness_port_not_concrete_runtime_dependencies() {
     let service = source("src/services/health_service.rs");
-    assert!(service.contains("RuntimeView"));
+    assert!(service.contains("Arc<dyn ReadinessProbe>"));
     assert!(service.contains("pub async fn readiness(&self)"));
-    assert!(!service.contains("AppState"));
+    for forbidden in ["AppState", "DbPool", "ProviderRegistry", "RuntimeView", "TaskSupervisor", "sqlx::"] {
+        assert!(!service.contains(forbidden), "health service leaked concrete dependency: {forbidden}");
+    }
+
+    let adapter = source("src/infrastructure/health.rs");
+    for expected in ["DbPool", "ProviderRegistry", "RuntimeView", "TaskSupervisor"] {
+        assert!(adapter.contains(expected), "health infrastructure adapter missing concrete dependency: {expected}");
+    }
 }
