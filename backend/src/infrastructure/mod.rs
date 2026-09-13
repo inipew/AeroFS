@@ -4,6 +4,7 @@ pub mod connection_runtime;
 pub mod connections;
 pub mod credentials;
 pub mod files;
+pub mod realtime;
 pub mod settings;
 pub mod share;
 pub mod transfers;
