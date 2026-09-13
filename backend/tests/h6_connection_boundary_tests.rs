@@ -56,10 +56,10 @@ fn bootstrap_owns_connection_repository_runtime_and_effects_composition() {
     let src = source("src/bootstrap.rs");
     let compact = compact(&src);
     assert!(compact.contains("SqliteConnectionRepository::new(db.clone(),credentials)"));
-    assert!(compact.contains("RegistryConnectionRuntime::new(config.clone(),registry.clone())"));
-    assert!(compact.contains(
-        "RuntimeConnectionEffects::new(transfer_manager.clone(),metadata_cache.clone())"
-    ));
+    assert!(compact.contains("RegistryConnectionRuntime::new("));
+    assert!(compact.contains("config.clone(),registry.clone(),"));
+    assert!(compact.contains("RuntimeConnectionEffects::new("));
+    assert!(compact.contains("transfer_manager.clone(),metadata_cache.clone(),"));
     assert!(compact.contains("letconnection_service=ConnectionService::new("));
     assert!(compact.contains(
         "connection_service.load_all_providers_from_db().await.expect(\"Failedtoloadpersistedstorageconnectionstate\")"
