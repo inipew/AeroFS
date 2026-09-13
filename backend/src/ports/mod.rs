@@ -7,6 +7,7 @@ pub mod cache;
 pub mod connections;
 pub mod effects;
 pub mod filesystem;
+pub mod health;
 pub mod mutation;
 pub mod realtime;
 pub mod settings;
