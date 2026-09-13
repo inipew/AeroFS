@@ -2,21 +2,12 @@ use crate::errors::AppError;
 use crate::ports::sync::SyncControl;
 use crate::sync::{SyncJob, SyncManager, SyncOperationRow, SyncStrategy};
 use async_trait::async_trait;
-use std::sync::Arc;
 
-#[derive(Clone)]
-pub struct ManagerSyncControl {
-    manager: Arc<SyncManager>,
-}
-
-impl ManagerSyncControl {
-    pub fn new(manager: Arc<SyncManager>) -> Self {
-        Self { manager }
-    }
-}
-
+/// Infrastructure adapter implementation for the existing durable SyncManager.
+/// The manager remains the recovery/runtime owner; request-facing services only
+/// observe it through the application-owned SyncControl contract.
 #[async_trait]
-impl SyncControl for ManagerSyncControl {
+impl SyncControl for SyncManager {
     async fn create_job(
         &self,
         user_id: &str,
@@ -26,26 +17,25 @@ impl SyncControl for ManagerSyncControl {
         destination_path: &str,
         strategy: SyncStrategy,
     ) -> Result<SyncJob, AppError> {
-        self.manager
-            .create_job(
-                user_id,
-                source_connection_id,
-                source_path,
-                destination_connection_id,
-                destination_path,
-                strategy,
-            )
-            .await
-            .map_err(AppError::Internal)
+        SyncManager::create_job(
+            self,
+            user_id,
+            source_connection_id,
+            source_path,
+            destination_connection_id,
+            destination_path,
+            strategy,
+        )
+        .await
+        .map_err(AppError::Internal)
     }
 
     async fn list_jobs(&self) -> Result<Vec<SyncJob>, AppError> {
-        self.manager.list_jobs().await.map_err(AppError::Internal)
+        SyncManager::list_jobs(self).await.map_err(AppError::Internal)
     }
 
     async fn list_operations(&self, job_id: &str) -> Result<Vec<SyncOperationRow>, AppError> {
-        self.manager
-            .list_operations(job_id)
+        SyncManager::list_operations(self, job_id)
             .await
             .map_err(AppError::Internal)
     }
@@ -56,8 +46,7 @@ impl SyncControl for ManagerSyncControl {
         op_id: &str,
         resolution: &str,
     ) -> Result<(), AppError> {
-        self.manager
-            .resolve_conflict(job_id, op_id, resolution)
+        SyncManager::resolve_conflict(self, job_id, op_id, resolution)
             .await
             .map_err(AppError::Internal)
     }
