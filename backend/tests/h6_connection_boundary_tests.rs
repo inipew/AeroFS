@@ -91,6 +91,41 @@ fn existing_credentials_are_strictly_loaded_during_connection_update() {
 }
 
 #[test]
+fn connection_delete_unpublishes_before_cancellation_and_persists_a_barrier_before_delete() {
+    let src = compact(&source("src/services/connection_service.rs"));
+    let delete = src
+        .split("pubasyncfndelete_connection(")
+        .nth(1)
+        .expect("delete_connection must exist")
+        .split("pubasyncfntest_connection")
+        .next()
+        .unwrap();
+
+    let unpublish = delete
+        .find("self.registry.remove(id).await")
+        .expect("delete must unpublish provider before lifecycle teardown");
+    let cancel = delete
+        .find("self.transfer_manager.cancel_job(&job.id,None,true).await")
+        .expect("delete must request cancellation for active transfers");
+    let barrier = delete
+        .find("UPDATEtransfer_jobsSETstatus=CASEWHENstatus='queued'THEN'cancelled'ELSE'cancellation_requested'END")
+        .expect("delete must durably fence active transfer state");
+    let durable_delete = delete
+        .find("DELETEFROMconnectionsWHEREid=?")
+        .expect("delete must remove durable connection state");
+
+    assert!(
+        unpublish < cancel && cancel < barrier && barrier < durable_delete,
+        "connection deletion ordering must remain unpublish -> cancel live jobs -> persist cancellation barrier -> durable delete"
+    );
+    assert!(delete.contains("self.registry.register_runtime(id.to_string(),runtime).await"));
+    assert!(
+        !delete.contains("let_=self.transfer_manager.cancel_job("),
+        "connection deletion must not silently discard cancellation errors"
+    );
+}
+
+#[test]
 fn cli_connection_actions_use_precomposed_lifecycle_capability() {
     let src = source("src/cli/commands/connection.rs");
     let compact = compact(&src);
