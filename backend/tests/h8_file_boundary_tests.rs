@@ -50,6 +50,38 @@ fn file_http_has_no_raw_storage_dependencies() {
 }
 
 #[test]
+fn file_api_service_uses_ports_for_runtime_configuration_and_storage_metadata() {
+    let src = source("src/services/file_api_service.rs");
+    let compact = compact(&src);
+
+    for forbidden in ["DbPool", "AppConfig", "SettingsService", "sqlx::"] {
+        assert!(
+            !src.contains(forbidden),
+            "FileApiService must not depend on concrete runtime dependency `{forbidden}`"
+        );
+    }
+
+    assert!(compact.contains("file_settings:Arc<dynFileSettings>"));
+    assert!(compact.contains("connection_storage:Arc<dynConnectionStorageMetadata>"));
+    assert!(compact.contains("self.file_settings.max_editable_size().await?"));
+    assert!(compact.contains("self.file_settings.local_root().await?"));
+    assert!(compact.contains("self.file_settings.allow_symlinks_outside_root().await?"));
+}
+
+#[test]
+fn sqlite_file_settings_propagate_database_failures() {
+    let src = source("src/infrastructure/files.rs");
+    let compact = compact(&src);
+
+    assert!(compact.contains("asyncfnsetting(&self,key:&str)->Result<Option<String>,AppError>"));
+    assert!(compact.contains(".fetch_optional(&self.db).await.map_err("));
+    assert!(
+        !compact.contains(".fetch_optional(&self.db).await.unwrap_or(None)"),
+        "dynamic file settings must not convert DB failures into default configuration"
+    );
+}
+
+#[test]
 fn file_helper_services_do_not_accept_root_app_state() {
     for path in [
         "src/services/editor_service.rs",
@@ -140,6 +172,7 @@ fn bootstrap_composes_file_api_boundary() {
 
     assert!(bootstrap.contains("FileApiState::new("));
     assert!(bootstrap.contains("FileApiService::new("));
+    assert!(bootstrap.contains("SqliteConnectionStorageMetadata::new(db.clone())"));
     assert!(state.contains("pubstructFileApiState"));
     assert!(state.contains("impl_from_ref!(FileApiState,file_api)"));
 }
@@ -153,6 +186,8 @@ fn recursive_chmod_is_local_only() {
     assert!(service.contains("Recursive CHMOD is only supported for local storage"));
     assert!(compact.contains("SafePath::resolve("));
     assert!(compact.contains("self.authorization.authorize(actor,connection,FileAction::Write)"));
+    assert!(compact.contains("self.file_settings.local_root().await?"));
+    assert!(compact.contains("self.file_settings.allow_symlinks_outside_root().await?"));
 }
 
 #[test]
