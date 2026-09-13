@@ -2,7 +2,7 @@ use super::capabilities::map_opendal_capabilities_for_scheme;
 use super::error::map_opendal_error;
 use super::lister::{create_opendal_stream, FileStreamBox};
 use super::metadata::map_opendal_metadata;
-use crate::domain::{Capabilities, FileKind, FileMetadata, VfsPath};
+use crate::domain::{Capabilities, FileEntry, FileKind, FileMetadata, VfsPath};
 use crate::errors::VfsError;
 use crate::vfs::traits::{AsyncReadBox, FileSystem, PresignSupport};
 use async_trait::async_trait;
@@ -114,6 +114,34 @@ impl OpenDalFileSystem {
             Ok(format!("{}/", clean))
         }
     }
+
+    #[cfg(unix)]
+    async fn local_permissions_for_path(
+        root: std::path::PathBuf,
+        relative_path: String,
+    ) -> Result<Option<String>, VfsError> {
+        tokio::task::spawn_blocking(move || {
+            use std::os::unix::fs::PermissionsExt;
+            let abs_path = if relative_path == "/" {
+                root
+            } else {
+                root.join(relative_path.trim_start_matches('/'))
+            };
+            match std::fs::symlink_metadata(&abs_path) {
+                Ok(sym_meta) => {
+                    let mode = sym_meta.permissions().mode() & 0o7777;
+                    Ok(Some(format!("{:04o}", mode)))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(VfsError::IoError(format!(
+                    "Failed to read local permissions for {:?}: {}",
+                    abs_path, error
+                ))),
+            }
+        })
+        .await
+        .map_err(|error| VfsError::IoError(format!("Local metadata task panicked: {}", error)))?
+    }
 }
 
 #[async_trait]
@@ -168,6 +196,48 @@ impl FileSystem for OpenDalFileSystem {
         create_opendal_stream(&self.operator, list_target, path, self.local_root.clone()).await
     }
 
+    async fn enrich_listing_entries(&self, entries: &mut [FileEntry]) -> Result<(), VfsError> {
+        #[cfg(unix)]
+        if let Some(root) = self.local_root.clone() {
+            let paths: Vec<(usize, std::path::PathBuf)> = entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    (
+                        index,
+                        root.join(entry.path.trim_start_matches('/')),
+                    )
+                })
+                .collect();
+
+            let permissions = tokio::task::spawn_blocking(move || {
+                use std::os::unix::fs::PermissionsExt;
+                paths
+                    .into_iter()
+                    .map(|(index, abs_path)| {
+                        let mode = std::fs::symlink_metadata(&abs_path)
+                            .ok()
+                            .map(|metadata| metadata.permissions().mode() & 0o7777)
+                            .map(|mode| format!("{:04o}", mode));
+                        (index, mode)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .map_err(|error| {
+                VfsError::IoError(format!("Local listing metadata task panicked: {}", error))
+            })?;
+
+            for (index, mode) in permissions {
+                if let Some(entry) = entries.get_mut(index) {
+                    entry.permissions = mode;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn stat(&self, path: &VfsPath) -> Result<FileMetadata, VfsError> {
         // Honest root stat handling: propagate connection/auth errors, only fallback on NotFound or Unsupported
@@ -188,15 +258,14 @@ impl FileSystem for OpenDalFileSystem {
                     chrono::DateTime::<chrono::Utc>::from(st)
                 });
 
-            let mut permissions = None;
             #[cfg(unix)]
-            if let Some(ref root) = self.local_root {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(sym_meta) = std::fs::symlink_metadata(root) {
-                    let mode = sym_meta.permissions().mode() & 0o7777;
-                    permissions = Some(format!("{:04o}", mode));
-                }
-            }
+            let permissions = if let Some(root) = self.local_root.clone() {
+                Self::local_permissions_for_path(root, "/".to_string()).await?
+            } else {
+                None
+            };
+            #[cfg(not(unix))]
+            let permissions = None;
 
             return Ok(FileMetadata {
                 name: "root".to_string(),
@@ -223,13 +292,8 @@ impl FileSystem for OpenDalFileSystem {
 
         let mut res = map_opendal_metadata(&meta, path, false);
         #[cfg(unix)]
-        if let Some(ref root) = self.local_root {
-            use std::os::unix::fs::PermissionsExt;
-            let abs_path = root.join(path.path.trim_start_matches('/'));
-            if let Ok(sym_meta) = std::fs::symlink_metadata(&abs_path) {
-                let mode = sym_meta.permissions().mode() & 0o7777;
-                res.permissions = Some(format!("{:04o}", mode));
-            }
+        if let Some(root) = self.local_root.clone() {
+            res.permissions = Self::local_permissions_for_path(root, path.path.clone()).await?;
         }
         Ok(res)
     }
@@ -237,7 +301,7 @@ impl FileSystem for OpenDalFileSystem {
     #[tracing::instrument(skip(self), fields(conn = %self.connection_id, path = %path.path))]
     async fn set_permissions(&self, path: &VfsPath, permissions: &str) -> Result<(), VfsError> {
         #[cfg(unix)]
-        if let Some(ref root) = self.local_root {
+        if let Some(root) = self.local_root.clone() {
             use std::os::unix::fs::PermissionsExt;
             let clean_perms = permissions.trim_start_matches('0');
             let mode = if clean_perms.is_empty() {
@@ -248,8 +312,16 @@ impl FileSystem for OpenDalFileSystem {
                 })?
             };
             let abs_path = root.join(path.path.trim_start_matches('/'));
-            std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(mode))
-                .map_err(|e| VfsError::IoError(format!("Failed to chmod {:?}: {}", abs_path, e)))?;
+            tokio::task::spawn_blocking(move || {
+                std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(mode))
+                    .map_err(|e| {
+                        VfsError::IoError(format!("Failed to chmod {:?}: {}", abs_path, e))
+                    })
+            })
+            .await
+            .map_err(|error| {
+                VfsError::IoError(format!("Local chmod task panicked: {}", error))
+            })??;
             return Ok(());
         }
 
