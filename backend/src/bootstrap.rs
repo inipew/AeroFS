@@ -12,8 +12,8 @@ use crate::events::{EventJournal, MetadataCacheEventSubscriber};
 use crate::infrastructure::{
     archive::SqliteArchiveEffects,
     files::{
-        RegistryFileSystemResolver, SqliteAuthorization, SqliteFileMutationEffects,
-        SqliteFileSettings,
+        RegistryFileSystemResolver, SqliteAuthorization, SqliteConnectionStorageMetadata,
+        SqliteFileMutationEffects, SqliteFileSettings,
     },
     settings::{RegistrySettingsRuntime, SqliteSettingsAudit, SqliteSystemSettingsStore},
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
@@ -111,7 +111,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     let upload_locks = Arc::new(crate::services::UploadLockManager::default());
     let cfg_limits_archive = config.limits.archive_concurrency;
     let cfg_limits_search = config.limits.search_concurrency;
-    let max_editable_size = config.limits.max_editable_size;
     let max_upload_size = config.limits.max_upload_size;
     let local_root = config.filesystem.default_local_root.clone();
     let config = Arc::new(config);
@@ -119,6 +118,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     let file_authorization = Arc::new(SqliteAuthorization::new(db.clone()));
     let file_filesystem = Arc::new(RegistryFileSystemResolver::new(registry.clone()));
     let file_settings = Arc::new(SqliteFileSettings::new(db.clone(), config.clone()));
+    let connection_storage = Arc::new(SqliteConnectionStorageMetadata::new(db.clone()));
     let file_effects = Arc::new(SqliteFileMutationEffects::new(
         db.clone(),
         metadata_cache.clone(),
@@ -140,7 +140,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         write_file: WriteFile::new(
             file_authorization.clone(),
             file_filesystem.clone(),
-            file_settings,
+            file_settings.clone(),
             file_effects.clone(),
             upload_locks.clone(),
         ),
@@ -193,8 +193,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         upload_locks.clone(),
         upload_locks.clone(),
         upload_execution,
-        local_root.clone(),
-        max_editable_size,
+        file_settings.clone(),
         max_upload_size,
     );
 
@@ -207,19 +206,18 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         )),
         Arc::new(SqliteSettingsAudit::new(db.clone())),
     );
-    let settings = SettingsState::new(settings_service.clone());
+    let settings = SettingsState::new(settings_service);
 
     let file_api = FileApiState::new(
         files.clone(),
         uploads,
         FileApiService::new(
-            db.clone(),
-            config.clone(),
             file_authorization.clone(),
             file_filesystem.clone(),
             file_effects.clone(),
             file_effects.clone(),
-            settings_service,
+            file_settings,
+            connection_storage,
             metadata_cache.clone(),
         ),
     );

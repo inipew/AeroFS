@@ -1,16 +1,15 @@
-use crate::config::AppConfig;
-use crate::db::DbPool;
 use crate::domain::operation::OperationIntentType;
 use crate::domain::{Actor, ConnectionId, FileMetadata, VfsPath};
 use crate::errors::AppError;
 use crate::filesystem::safepath::SafePath;
 use crate::ports::{
     authorization::{Authorization, FileAction},
+    cache::FileMetadataCache,
     effects::{FileAccessEffects, FileMutationEffects},
-    filesystem::FileSystemResolver,
+    filesystem::{ConnectionStorageMetadata, FileSystemResolver},
+    settings::FileSettings,
 };
-use crate::services::{MetadataCache, SettingsService};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone)]
@@ -33,36 +32,33 @@ pub struct StorageInfoSnapshot {
 
 #[derive(Clone)]
 pub struct FileApiService {
-    db: DbPool,
-    config: Arc<AppConfig>,
     authorization: Arc<dyn Authorization>,
     filesystem: Arc<dyn FileSystemResolver>,
     access_effects: Arc<dyn FileAccessEffects>,
     mutation_effects: Arc<dyn FileMutationEffects>,
-    settings: SettingsService,
-    metadata_cache: Arc<MetadataCache>,
+    file_settings: Arc<dyn FileSettings>,
+    connection_storage: Arc<dyn ConnectionStorageMetadata>,
+    metadata_cache: Arc<dyn FileMetadataCache>,
 }
 
 impl FileApiService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        db: DbPool,
-        config: Arc<AppConfig>,
         authorization: Arc<dyn Authorization>,
         filesystem: Arc<dyn FileSystemResolver>,
         access_effects: Arc<dyn FileAccessEffects>,
         mutation_effects: Arc<dyn FileMutationEffects>,
-        settings: SettingsService,
-        metadata_cache: Arc<MetadataCache>,
+        file_settings: Arc<dyn FileSettings>,
+        connection_storage: Arc<dyn ConnectionStorageMetadata>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
     ) -> Self {
         Self {
-            db,
-            config,
             authorization,
             filesystem,
             access_effects,
             mutation_effects,
-            settings,
+            file_settings,
+            connection_storage,
             metadata_cache,
         }
     }
@@ -81,10 +77,11 @@ impl FileApiService {
         path: &str,
         size: u64,
     ) -> Result<String, AppError> {
-        if size > self.config.limits.max_editable_size {
+        let max_editable_size = self.file_settings.max_editable_size().await?;
+        if size > max_editable_size {
             return Err(AppError::PayloadTooLarge(format!(
                 "File size ({} bytes) exceeds maximum editable size ({} bytes)",
-                size, self.config.limits.max_editable_size
+                size, max_editable_size
             )));
         }
         let provider = self.filesystem.resolve(connection).await?;
@@ -166,13 +163,10 @@ impl FileApiService {
                 .authorize(actor, connection, FileAction::Write)
                 .await?;
 
-            let root = self.local_root().await;
-            let safe_path = SafePath::resolve(
-                &root,
-                path,
-                self.config.security.allow_symlinks_outside_root,
-            )
-            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+            let root = self.file_settings.local_root().await?;
+            let allow_symlinks = self.file_settings.allow_symlinks_outside_root().await?;
+            let safe_path = SafePath::resolve(&root, path, allow_symlinks)
+                .map_err(|error| AppError::BadRequest(error.to_string()))?;
 
             let vfs_path = VfsPath::new(connection.as_str(), path)?;
             let provider = self.filesystem.resolve(connection).await?;
@@ -214,7 +208,13 @@ impl FileApiService {
 
     pub async fn storage_info(&self, connection_id: &str) -> StorageInfoSnapshot {
         if connection_id == ConnectionId::LOCAL {
-            let root = self.local_root().await;
+            let root = match self.file_settings.local_root().await {
+                Ok(root) => root,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to resolve local root for storage info");
+                    return local_storage_fallback();
+                }
+            };
 
             #[cfg(unix)]
             {
@@ -245,59 +245,59 @@ impl FileApiService {
                 }
             }
 
-            return StorageInfoSnapshot {
-                source_name: "Local Storage".to_string(),
-                source_size_formatted: "Local".to_string(),
-                disk_label: "Disk".to_string(),
-                disk_usage_text: "Available".to_string(),
-                used_percent: 0,
-                total_bytes: 0,
-                used_bytes: 0,
-                free_bytes: 0,
-            };
+            return local_storage_fallback();
         }
 
-        let row: Option<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
-            "SELECT name, provider, host, port FROM connections WHERE id = ?",
-        )
-        .bind(connection_id)
-        .fetch_optional(&self.db)
-        .await
-        .unwrap_or(None);
-
-        if let Some((name, provider, host, port)) = row {
-            let port_str = port.map(|value| value.to_string()).unwrap_or_else(|| "21".into());
-            let host_str = host.unwrap_or_else(|| "Remote".into());
-            return StorageInfoSnapshot {
-                source_name: name,
-                source_size_formatted: format!("{} Remote", provider.to_uppercase()),
-                disk_label: format!("{}:{}", host_str, port_str),
-                disk_usage_text: "Connected · Online".to_string(),
-                used_percent: 0,
-                total_bytes: 0,
-                used_bytes: 0,
-                free_bytes: 0,
-            };
-        }
-
-        StorageInfoSnapshot {
-            source_name: connection_id.to_string(),
-            source_size_formatted: "Remote".to_string(),
-            disk_label: "Network".to_string(),
-            disk_usage_text: "Connected".to_string(),
-            used_percent: 0,
-            total_bytes: 0,
-            used_bytes: 0,
-            free_bytes: 0,
+        match self.connection_storage.get(connection_id).await {
+            Ok(Some(descriptor)) => {
+                let port_str = descriptor
+                    .port
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "21".into());
+                let host_str = descriptor.host.unwrap_or_else(|| "Remote".into());
+                StorageInfoSnapshot {
+                    source_name: descriptor.name,
+                    source_size_formatted: format!("{} Remote", descriptor.provider.to_uppercase()),
+                    disk_label: format!("{}:{}", host_str, port_str),
+                    disk_usage_text: "Connected · Online".to_string(),
+                    used_percent: 0,
+                    total_bytes: 0,
+                    used_bytes: 0,
+                    free_bytes: 0,
+                }
+            }
+            Ok(None) => remote_storage_fallback(connection_id),
+            Err(error) => {
+                tracing::warn!(%error, connection_id, "failed to load remote storage metadata");
+                remote_storage_fallback(connection_id)
+            }
         }
     }
+}
 
-    async fn local_root(&self) -> PathBuf {
-        self.settings
-            .get_system_setting("local_root")
-            .await
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.config.filesystem.default_local_root.clone())
+fn local_storage_fallback() -> StorageInfoSnapshot {
+    StorageInfoSnapshot {
+        source_name: "Local Storage".to_string(),
+        source_size_formatted: "Local".to_string(),
+        disk_label: "Disk".to_string(),
+        disk_usage_text: "Available".to_string(),
+        used_percent: 0,
+        total_bytes: 0,
+        used_bytes: 0,
+        free_bytes: 0,
+    }
+}
+
+fn remote_storage_fallback(connection_id: &str) -> StorageInfoSnapshot {
+    StorageInfoSnapshot {
+        source_name: connection_id.to_string(),
+        source_size_formatted: "Remote".to_string(),
+        disk_label: "Network".to_string(),
+        disk_usage_text: "Connected".to_string(),
+        used_percent: 0,
+        total_bytes: 0,
+        used_bytes: 0,
+        free_bytes: 0,
     }
 }
 

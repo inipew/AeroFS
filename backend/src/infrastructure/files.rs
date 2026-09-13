@@ -6,13 +6,15 @@ use crate::events::EventJournal;
 use crate::ports::{
     authorization::{Authorization, FileAction},
     effects::{FileAccessEffects, FileMutationEffects},
-    filesystem::FileSystemResolver,
+    filesystem::{
+        ConnectionStorageDescriptor, ConnectionStorageMetadata, FileSystemResolver,
+    },
     settings::FileSettings,
 };
 use crate::services::cache::MetadataCache;
 use crate::vfs::{registry::ProviderRegistry, FileSystem};
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 pub struct SqliteAuthorization {
     db: crate::db::DbPool,
@@ -68,6 +70,39 @@ impl FileSystemResolver for RegistryFileSystemResolver {
     }
 }
 
+pub struct SqliteConnectionStorageMetadata {
+    db: crate::db::DbPool,
+}
+
+impl SqliteConnectionStorageMetadata {
+    pub fn new(db: crate::db::DbPool) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ConnectionStorageMetadata for SqliteConnectionStorageMetadata {
+    async fn get(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<ConnectionStorageDescriptor>, AppError> {
+        let row: Option<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT name, provider, host, port FROM connections WHERE id = ?",
+        )
+        .bind(connection_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|error| AppError::Internal(anyhow::anyhow!("DB error: {error}")))?;
+
+        Ok(row.map(|(name, provider, host, port)| ConnectionStorageDescriptor {
+            name,
+            provider,
+            host,
+            port,
+        }))
+    }
+}
+
 pub struct SqliteFileSettings {
     db: crate::db::DbPool,
     config: Arc<AppConfig>,
@@ -77,31 +112,49 @@ impl SqliteFileSettings {
     pub fn new(db: crate::db::DbPool, config: Arc<AppConfig>) -> Self {
         Self { db, config }
     }
+
+    async fn setting(&self, key: &str) -> Result<Option<String>, AppError> {
+        sqlx::query_scalar("SELECT value FROM system_settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(|error| AppError::Internal(anyhow::anyhow!("DB error: {error}")))
+    }
 }
 
 #[async_trait]
 impl FileSettings for SqliteFileSettings {
     async fn show_hidden_default(&self) -> Result<bool, AppError> {
-        let configured: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM system_settings WHERE key = 'show_hidden_default'",
-        )
-        .fetch_optional(&self.db)
-        .await
-        .unwrap_or(None);
-        Ok(configured
+        Ok(self
+            .setting("show_hidden_default")
+            .await?
             .map(|value| value == "true")
             .unwrap_or(self.config.filesystem.show_hidden_default))
     }
 
     async fn max_editable_size(&self) -> Result<u64, AppError> {
-        let configured: Option<String> =
-            sqlx::query_scalar("SELECT value FROM system_settings WHERE key = 'max_editable_size'")
-                .fetch_optional(&self.db)
-                .await
-                .unwrap_or(None);
-        Ok(configured
+        Ok(self
+            .setting("max_editable_size")
+            .await?
             .and_then(|value| value.parse().ok())
             .unwrap_or(self.config.limits.max_editable_size))
+    }
+
+    async fn local_root(&self) -> Result<PathBuf, AppError> {
+        Ok(self
+            .setting("local_root")
+            .await?
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.config.filesystem.default_local_root.clone()))
+    }
+
+    async fn allow_symlinks_outside_root(&self) -> Result<bool, AppError> {
+        Ok(self
+            .setting("allow_symlinks")
+            .await?
+            .map(|value| value == "true")
+            .unwrap_or(self.config.security.allow_symlinks_outside_root))
     }
 
     fn max_directory_entries(&self) -> usize {

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 pub trait FileSettings: Send + Sync {
     async fn show_hidden_default(&self) -> Result<bool, AppError>;
     async fn max_editable_size(&self) -> Result<u64, AppError>;
+    async fn local_root(&self) -> Result<PathBuf, AppError>;
+    async fn allow_symlinks_outside_root(&self) -> Result<bool, AppError>;
     fn max_directory_entries(&self) -> usize;
 }
 
