@@ -73,6 +73,39 @@ fn file_helper_services_do_not_accept_root_app_state() {
 }
 
 #[test]
+fn transfer_service_is_not_a_root_state_command_facade() {
+    let service = compact(&source("src/services/transfer_service.rs"));
+    let api = compact(&source("src/api/transfers.rs"));
+
+    assert!(
+        !service.contains("usecrate::state::AppState"),
+        "TransferService must not import the root AppState"
+    );
+    assert!(
+        !service.contains("state:&AppState"),
+        "TransferService must not proxy request commands through root AppState"
+    );
+    for obsolete in [
+        "pubasyncfncreate_transfer(",
+        "pubasyncfnlist_transfers(",
+        "pubasyncfncancel_transfer(",
+        "pubasyncfnretry_transfer(",
+        "pubasyncfndismiss_transfer(",
+        "pubasyncfnclear_finished_transfers(",
+    ] {
+        assert!(
+            !service.contains(obsolete),
+            "request-facing transfer command facade `{obsolete}` must stay removed"
+        );
+    }
+    assert!(
+        api.contains("State(state):State<TransferState>"),
+        "transfer HTTP handlers should use the narrow TransferState capability"
+    );
+    assert!(api.contains("state.use_cases"));
+}
+
+#[test]
 fn download_audit_is_owned_by_read_use_case() {
     let api = source("src/api/files.rs");
     let read = source("src/application/files/read_file.rs");

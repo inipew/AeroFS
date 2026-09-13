@@ -12,8 +12,9 @@ use backend::domain::{Actor, ConnectionId};
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::middleware::REQUEST_ID_HEADER;
 use backend::ports::transfer::TransferType;
-use backend::services::TransferService;
-use backend::state::{AppState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason};
+use backend::state::{
+    AppState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason, TransferState,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -288,19 +289,24 @@ async fn test_transfer_event_ordering_and_causality() {
 
     let realtime = RealtimeState::from_ref(&state);
     let mut rx = realtime.service.subscribe();
+    let transfers = TransferState::from_ref(&state);
 
-    TransferService::create_transfer(
-        &state,
-        &admin,
-        "order_test".to_string(),
-        TransferType::Copy,
-        "local".to_string(),
-        "/order_src.txt".to_string(),
-        "local".to_string(),
-        "/order_dst.txt".to_string(),
-    )
-    .await
-    .unwrap();
+    transfers
+        .use_cases
+        .create_transfer
+        .execute(
+            &actor(&admin),
+            backend::application::transfers::CreateTransferCommand {
+                name: "order_test".to_string(),
+                transfer_type: TransferType::Copy,
+                source_connection: ConnectionId::local(),
+                source_path: "/order_src.txt".to_string(),
+                destination_connection: ConnectionId::local(),
+                destination_path: "/order_dst.txt".to_string(),
+            },
+        )
+        .await
+        .unwrap();
 
     let mut file_change_seq = None;
     let mut completed_seq = None;

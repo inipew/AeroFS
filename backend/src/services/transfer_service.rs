@@ -1,55 +1,17 @@
 use crate::auth::AuthenticatedUser;
-use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
-use crate::ports::transfer::{TransferJobResponse, TransferType};
-use crate::state::AppState;
 use crate::transfer::TransferJob;
 use std::collections::HashSet;
 
+/// Transfer history/maintenance helpers that operate directly on persisted
+/// transfer records.
+///
+/// Request-facing transfer commands are owned by `TransferUseCases` and are
+/// exposed to adapters through `TransferState`; this service must not become a
+/// compatibility facade over the root `AppState`.
 pub struct TransferService;
 
 impl TransferService {
-    fn actor(user: &AuthenticatedUser) -> Actor {
-        Actor {
-            id: user.id.clone(),
-            username: user.username.clone(),
-            is_admin: user.is_admin,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_transfer(
-        state: &AppState,
-        user: &AuthenticatedUser,
-        name: String,
-        transfer_type: TransferType,
-        source_connection_id: String,
-        source_path: String,
-        destination_connection_id: String,
-        destination_path: String,
-    ) -> Result<String, AppError> {
-        let source_connection = ConnectionId::new(source_connection_id)
-            .map_err(|error| AppError::BadRequest(error.to_string()))?;
-        let destination_connection = ConnectionId::new(destination_connection_id)
-            .map_err(|error| AppError::BadRequest(error.to_string()))?;
-        state
-            .transfers
-            .use_cases
-            .create_transfer
-            .execute(
-                &Self::actor(user),
-                crate::application::transfers::CreateTransferCommand {
-                    name,
-                    transfer_type,
-                    source_connection,
-                    source_path,
-                    destination_connection,
-                    destination_path,
-                },
-            )
-            .await
-    }
-
     pub fn authorize_transfer_visibility(
         user: &AuthenticatedUser,
         job: &TransferJob,
@@ -59,63 +21,6 @@ impl TransferService {
             || job.user_id.as_deref() == Some(&user.id)
             || (allowed_connections.contains(&job.source_connection_id)
                 && allowed_connections.contains(&job.destination_connection_id))
-    }
-
-    pub async fn list_transfers(
-        state: &AppState,
-        user: &AuthenticatedUser,
-    ) -> Result<Vec<TransferJobResponse>, AppError> {
-        state.transfers.use_cases.list(&Self::actor(user)).await
-    }
-
-    pub async fn cancel_transfer(
-        state: &AppState,
-        user: &AuthenticatedUser,
-        job_id: &str,
-    ) -> Result<bool, AppError> {
-        state
-            .transfers
-            .use_cases
-            .cancel(&Self::actor(user), job_id)
-            .await?;
-        Ok(true)
-    }
-
-    pub async fn retry_transfer(
-        state: &AppState,
-        user: &AuthenticatedUser,
-        job_id: &str,
-    ) -> Result<bool, AppError> {
-        state
-            .transfers
-            .use_cases
-            .retry(&Self::actor(user), job_id)
-            .await?;
-        Ok(true)
-    }
-
-    pub async fn dismiss_transfer(
-        state: &AppState,
-        user: &AuthenticatedUser,
-        job_id: &str,
-    ) -> Result<bool, AppError> {
-        state
-            .transfers
-            .use_cases
-            .dismiss(&Self::actor(user), job_id)
-            .await?;
-        Ok(true)
-    }
-
-    pub async fn clear_finished_transfers(
-        state: &AppState,
-        user: &AuthenticatedUser,
-    ) -> Result<usize, AppError> {
-        state
-            .transfers
-            .use_cases
-            .clear_finished(&Self::actor(user))
-            .await
     }
 
     pub async fn get_transfer(

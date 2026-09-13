@@ -6,7 +6,7 @@ use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId, SftpAuth, SortField, SortOrder, VfsPath};
 use backend::events::EventJournal;
 use backend::ports::transfer::{TransferJobResponse, TransferStatus, TransferType};
-use backend::services::{EditorService, TransferService};
+use backend::services::EditorService;
 use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::{
     TransferManager, TransferStatus as EngineTransferStatus, TransferType as EngineTransferType,
@@ -63,6 +63,35 @@ fn actor(user: &AuthenticatedUser) -> Actor {
         username: user.username().to_string(),
         is_admin: user.is_admin(),
     }
+}
+
+async fn create_transfer(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    name: &str,
+    transfer_type: TransferType,
+    source_connection: &str,
+    source_path: &str,
+    destination_connection: &str,
+    destination_path: &str,
+) -> String {
+    let transfers = TransferState::from_ref(state);
+    transfers
+        .use_cases
+        .create_transfer
+        .execute(
+            &actor(user),
+            backend::application::transfers::CreateTransferCommand {
+                name: name.to_string(),
+                transfer_type,
+                source_connection: ConnectionId::new(source_connection).unwrap(),
+                source_path: source_path.to_string(),
+                destination_connection: ConnectionId::new(destination_connection).unwrap(),
+                destination_path: destination_path.to_string(),
+            },
+        )
+        .await
+        .unwrap()
 }
 
 async fn write_file(
@@ -139,18 +168,17 @@ async fn test_resume_integrity_restart_on_invalid_part() {
     )
     .await;
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "resume_integrity_job".into(),
+        "resume_integrity_job",
         TransferType::Copy,
-        "local".into(),
-        "/src_resume_test.txt".into(),
-        "local".into(),
-        "/dst_resume_test.txt".into(),
+        "local",
+        "/src_resume_test.txt",
+        "local",
+        "/dst_resume_test.txt",
     )
-    .await
-    .unwrap();
+    .await;
 
     let job = wait_for_completed(&state, &admin, &job_id).await;
     assert!(
@@ -256,18 +284,17 @@ async fn test_directory_transfer_zero_vector_streaming() {
         .await;
     }
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "dir_stream_test".into(),
+        "dir_stream_test",
         TransferType::Copy,
-        "local".into(),
-        "/source_dir".into(),
-        "local".into(),
-        "/dest_dir".into(),
+        "local",
+        "/source_dir",
+        "local",
+        "/dest_dir",
     )
-    .await
-    .unwrap();
+    .await;
 
     wait_for_completed(&state, &admin, &job_id).await;
 
