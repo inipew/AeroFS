@@ -120,27 +120,22 @@ impl OpenDalFileSystem {
         root: std::path::PathBuf,
         relative_path: String,
     ) -> Result<Option<String>, VfsError> {
-        tokio::task::spawn_blocking(move || {
+        let permissions = tokio::task::spawn_blocking(move || {
             use std::os::unix::fs::PermissionsExt;
             let abs_path = if relative_path == "/" {
                 root
             } else {
                 root.join(relative_path.trim_start_matches('/'))
             };
-            match std::fs::symlink_metadata(&abs_path) {
-                Ok(sym_meta) => {
-                    let mode = sym_meta.permissions().mode() & 0o7777;
-                    Ok(Some(format!("{:04o}", mode)))
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(VfsError::IoError(format!(
-                    "Failed to read local permissions for {:?}: {}",
-                    abs_path, error
-                ))),
-            }
+            std::fs::symlink_metadata(&abs_path)
+                .ok()
+                .map(|metadata| metadata.permissions().mode() & 0o7777)
+                .map(|mode| format!("{:04o}", mode))
         })
         .await
-        .map_err(|error| VfsError::IoError(format!("Local metadata task panicked: {}", error)))?
+        .map_err(|error| VfsError::IoError(format!("Local metadata task panicked: {}", error)))?;
+
+        Ok(permissions)
     }
 }
 
