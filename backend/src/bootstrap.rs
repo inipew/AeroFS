@@ -11,6 +11,7 @@ use crate::db::DbPool;
 use crate::events::{EventJournal, MetadataCacheEventSubscriber};
 use crate::infrastructure::{
     archive::SqliteArchiveEffects,
+    audit::{SqliteAuditRepository, SqliteUserPreferencesRepository},
     auth::{SqliteAccountRepository, SqliteAuthAudit, SqliteSessionRepository},
     connection_runtime::{RegistryConnectionRuntime, RuntimeConnectionEffects},
     connections::SqliteConnectionRepository,
@@ -315,8 +316,12 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             Arc::new(Semaphore::new(cfg_limits_archive)),
         )),
         settings,
-        audit: AuditState::new(AuditService::new(db.clone())),
-        preferences: PreferencesState::new(PreferencesService::new(db.clone())),
+        audit: AuditState::new(AuditService::new(Arc::new(SqliteAuditRepository::new(
+            db.clone(),
+        )))),
+        preferences: PreferencesState::new(PreferencesService::new(Arc::new(
+            SqliteUserPreferencesRepository::new(db.clone()),
+        ))),
         shares: ShareState::new(ShareService::new(
             Arc::new(SqliteShareRepository::new(db.clone())),
             file_authorization.clone(),
