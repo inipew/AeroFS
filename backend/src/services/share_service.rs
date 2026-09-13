@@ -183,6 +183,10 @@ impl ShareService {
             }
         }
 
+        Ok((record.connection_id, record.path))
+    }
+
+    async fn record_access(&self, token: &str) {
         if let Err(error) = self
             .repository
             .record_access(token, &Utc::now().to_rfc3339())
@@ -190,8 +194,6 @@ impl ShareService {
         {
             tracing::warn!(%error, token, "failed to persist public share access accounting");
         }
-
-        Ok((record.connection_id, record.path))
     }
 
     pub async fn verify_and_get_public_share(
@@ -223,6 +225,9 @@ impl ShareService {
             .read_to_end(&mut data)
             .await
             .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+
+        self.record_access(token).await;
+
         Ok(PublicShareContent {
             name: metadata.name,
             data,
