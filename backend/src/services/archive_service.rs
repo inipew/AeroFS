@@ -10,8 +10,9 @@ use crate::ports::{
     authorization::{Authorization, FileAction},
     filesystem::FileSystemResolver,
 };
+use crate::runtime::{ResourceBudget, ResourceClass, ResourcePermit};
+use crate::vfs::FileSystem;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ArchiveResult {
@@ -26,7 +27,7 @@ pub struct ArchiveService {
     authorization: Arc<dyn Authorization>,
     filesystem: Arc<dyn FileSystemResolver>,
     effects: Arc<dyn ArchiveEffects>,
-    limiter: Arc<Semaphore>,
+    budget: Arc<ResourceBudget>,
 }
 
 impl ArchiveService {
@@ -34,25 +35,32 @@ impl ArchiveService {
         authorization: Arc<dyn Authorization>,
         filesystem: Arc<dyn FileSystemResolver>,
         effects: Arc<dyn ArchiveEffects>,
-        limiter: Arc<Semaphore>,
+        budget: Arc<ResourceBudget>,
     ) -> Self {
         Self {
             authorization,
             filesystem,
             effects,
-            limiter,
+            budget,
         }
     }
 
     pub fn available_capacity(&self) -> usize {
-        self.limiter.available_permits()
+        self.budget.available_archive()
     }
 
-    async fn acquire_permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, AppError> {
-        self.limiter
-            .acquire()
-            .await
-            .map_err(|_| AppError::ServiceUnavailable("Archive service is shutting down".into()))
+    async fn acquire_permit(
+        &self,
+        provider: &Arc<dyn FileSystem>,
+    ) -> Result<ResourcePermit, AppError> {
+        let class = if provider.is_local() {
+            ResourceClass::ArchiveLocal
+        } else {
+            ResourceClass::ArchiveNetwork
+        };
+        self.budget.acquire(class).await.map_err(|_| {
+            AppError::ServiceUnavailable("Archive resource budget is shutting down".into())
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -72,8 +80,8 @@ impl ArchiveService {
             .authorize(actor, connection, FileAction::Write)
             .await?;
 
-        let _permit = self.acquire_permit().await?;
         let provider = self.filesystem.resolve(connection).await?;
+        let _permit = self.acquire_permit(&provider).await?;
         let dest_vfs = VfsPath::new(connection.as_str(), destination_file)?;
         let format = format_opt
             .and_then(ArchiveFormat::from_path)
@@ -131,8 +139,8 @@ impl ArchiveService {
             .authorize(actor, connection, FileAction::Write)
             .await?;
 
-        let _permit = self.acquire_permit().await?;
         let provider = self.filesystem.resolve(connection).await?;
+        let _permit = self.acquire_permit(&provider).await?;
         let archive_vfs = VfsPath::new(connection.as_str(), archive_path)?;
         let format = format_opt
             .and_then(ArchiveFormat::from_path)
@@ -184,8 +192,8 @@ impl ArchiveService {
             .authorize(actor, connection, FileAction::Write)
             .await?;
 
-        let _permit = self.acquire_permit().await?;
         let provider = self.filesystem.resolve(connection).await?;
+        let _permit = self.acquire_permit(&provider).await?;
         let archive_vfs = VfsPath::new(connection.as_str(), archive_path)?;
         let (count, skipped) = extract_selected_archive_entries(
             &provider,
@@ -227,6 +235,7 @@ impl ArchiveService {
             .authorize(actor, connection, FileAction::Read)
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
+        let _permit = self.acquire_permit(&provider).await?;
         let archive_vfs = VfsPath::new(connection.as_str(), archive_path)?;
         Ok(list_virtual_archive_entries(&provider, &archive_vfs, subpath).await?)
     }
@@ -242,6 +251,7 @@ impl ArchiveService {
             .authorize(actor, connection, FileAction::Read)
             .await?;
         let provider = self.filesystem.resolve(connection).await?;
+        let _permit = self.acquire_permit(&provider).await?;
         let archive_vfs = VfsPath::new(connection.as_str(), archive_path)?;
         Ok(read_virtual_archive_entry(&provider, &archive_vfs, entry_path).await?)
     }
