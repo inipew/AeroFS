@@ -90,7 +90,8 @@ impl ListDirectory {
         // stream still has to be visited once. Keep only the best `limit + 1` entries after
         // the keyset cursor instead of materializing and sorting the whole directory.
         // Memory is therefore O(limit), while page boundaries no longer depend on mutable
-        // numeric offsets or provider traversal order.
+        // numeric offsets or provider traversal order. CursorKey is computed exactly once per
+        // visited candidate and then reused for cursor filtering, heap comparisons and final sort.
         let mut page = BinaryHeap::with_capacity(limit.saturating_add(2));
         let mut total_count = 0usize;
         let mut stream = provider.list_stream(&vfs_path).await?;
@@ -101,40 +102,59 @@ impl ListDirectory {
             }
             total_count = total_count.saturating_add(1);
 
+            let key = CursorKey::from_entry(&entry);
             if let Some(cursor) = cursor.as_ref() {
-                if compare_entry_to_key(&entry, &cursor.last, sort, order) != Ordering::Greater {
+                if compare_keys(&key, &cursor.last, sort, order) != Ordering::Greater {
                     continue;
                 }
             }
 
-            page.push(PageCandidate { entry, sort, order });
+            page.push(PageCandidate {
+                entry,
+                key,
+                sort,
+                order,
+            });
             if page.len() > limit.saturating_add(1) {
                 page.pop();
             }
         }
 
-        let mut entries: Vec<FileEntry> = page.into_iter().map(|candidate| candidate.entry).collect();
-        sort_entries(&mut entries, sort, order);
-        let has_more = entries.len() > limit;
+        let mut candidates: Vec<PageCandidate> = page.into_iter().collect();
+        candidates.sort_by(|a, b| compare_keys(&a.key, &b.key, sort, order));
+        let has_more = candidates.len() > limit;
         if has_more {
-            entries.truncate(limit);
+            candidates.truncate(limit);
         }
 
         let next_cursor = if has_more {
-            entries.last().map(|entry| {
-                encode_cursor(&DirectoryCursor {
-                    version: CURSOR_VERSION,
-                    connection_id: command.connection.to_string(),
-                    path: vfs_path.path.clone(),
-                    show_hidden,
-                    sort,
-                    order,
-                    last: CursorKey::from_entry(entry),
+            candidates
+                .last()
+                .map(|candidate| {
+                    encode_cursor(&DirectoryCursor {
+                        version: CURSOR_VERSION,
+                        connection_id: command.connection.to_string(),
+                        path: vfs_path.path.clone(),
+                        show_hidden,
+                        sort,
+                        order,
+                        last: candidate.key.clone(),
+                    })
                 })
-            }).transpose()?
+                .transpose()?
         } else {
             None
         };
+
+        let mut entries: Vec<FileEntry> = candidates
+            .into_iter()
+            .map(|candidate| candidate.entry)
+            .collect();
+
+        // Enrich only the final bounded page. For local filesystems this turns what used to be
+        // one synchronous symlink_metadata syscall per traversed directory entry into one blocking
+        // batch of at most `limit` entries, without changing the API response shape.
+        provider.enrich_listing_entries(&mut entries).await?;
 
         Ok(DirectoryListing {
             path: vfs_path.path,
@@ -186,13 +206,14 @@ impl CursorKey {
 
 struct PageCandidate {
     entry: FileEntry,
+    key: CursorKey,
     sort: SortField,
     order: SortOrder,
 }
 
 impl PartialEq for PageCandidate {
     fn eq(&self, other: &Self) -> bool {
-        compare_entries(&self.entry, &other.entry, self.sort, self.order) == Ordering::Equal
+        compare_keys(&self.key, &other.key, self.sort, self.order) == Ordering::Equal
     }
 }
 
@@ -206,7 +227,7 @@ impl PartialOrd for PageCandidate {
 
 impl Ord for PageCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        compare_entries(&self.entry, &other.entry, self.sort, self.order)
+        compare_keys(&self.key, &other.key, self.sort, self.order)
     }
 }
 
@@ -225,8 +246,9 @@ fn decode_cursor(value: &str) -> Result<DirectoryCursor, AppError> {
 
 fn encode_cursor(cursor: &DirectoryCursor) -> Result<String, AppError> {
     use base64::Engine;
-    let bytes = serde_json::to_vec(cursor)
-        .map_err(|error| AppError::Internal(anyhow::anyhow!("failed to encode directory cursor: {error}")))?;
+    let bytes = serde_json::to_vec(cursor).map_err(|error| {
+        AppError::Internal(anyhow::anyhow!("failed to encode directory cursor: {error}"))
+    })?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -239,7 +261,9 @@ fn validate_cursor(
     order: SortOrder,
 ) -> Result<DirectoryCursor, AppError> {
     if cursor.version != CURSOR_VERSION {
-        return Err(AppError::BadRequest("Unsupported directory cursor version".to_string()));
+        return Err(AppError::BadRequest(
+            "Unsupported directory cursor version".to_string(),
+        ));
     }
     if cursor.connection_id != connection.as_str()
         || cursor.path != path
@@ -254,12 +278,22 @@ fn validate_cursor(
     Ok(cursor)
 }
 
-fn compare_entry_to_key(entry: &FileEntry, key: &CursorKey, field: SortField, order: SortOrder) -> Ordering {
+fn compare_entry_to_key(
+    entry: &FileEntry,
+    key: &CursorKey,
+    field: SortField,
+    order: SortOrder,
+) -> Ordering {
     compare_keys(&CursorKey::from_entry(entry), key, field, order)
 }
 
 fn compare_entries(a: &FileEntry, b: &FileEntry, field: SortField, order: SortOrder) -> Ordering {
-    compare_keys(&CursorKey::from_entry(a), &CursorKey::from_entry(b), field, order)
+    compare_keys(
+        &CursorKey::from_entry(a),
+        &CursorKey::from_entry(b),
+        field,
+        order,
+    )
 }
 
 fn compare_keys(a: &CursorKey, b: &CursorKey, field: SortField, order: SortOrder) -> Ordering {
@@ -307,6 +341,17 @@ mod tests {
             mime_type: None,
             is_hidden: false,
             symlink_target: None,
+        }
+    }
+
+    fn candidate(name: &str) -> PageCandidate {
+        let entry = file(name);
+        let key = CursorKey::from_entry(&entry);
+        PageCandidate {
+            entry,
+            key,
+            sort: SortField::Name,
+            order: SortOrder::Asc,
         }
     }
 
@@ -363,20 +408,18 @@ mod tests {
         let limit = 100usize;
         let mut heap = BinaryHeap::new();
         for i in (0..2_000).rev() {
-            heap.push(PageCandidate {
-                entry: file(&format!("file-{i:04}")),
-                sort: SortField::Name,
-                order: SortOrder::Asc,
-            });
+            heap.push(candidate(&format!("file-{i:04}")));
             if heap.len() > limit + 1 {
                 heap.pop();
             }
         }
         assert_eq!(heap.len(), limit + 1);
-        let mut entries: Vec<_> = heap.into_iter().map(|candidate| candidate.entry).collect();
-        sort_entries(&mut entries, SortField::Name, SortOrder::Asc);
-        assert_eq!(entries.first().unwrap().name, "file-0000");
-        assert_eq!(entries.last().unwrap().name, "file-0100");
+        let mut candidates: Vec<_> = heap.into_iter().collect();
+        candidates.sort_by(|a, b| {
+            compare_keys(&a.key, &b.key, SortField::Name, SortOrder::Asc)
+        });
+        assert_eq!(candidates.first().unwrap().entry.name, "file-0000");
+        assert_eq!(candidates.last().unwrap().entry.name, "file-0100");
     }
 
     #[test]
@@ -390,5 +433,13 @@ mod tests {
         let first_names: Vec<_> = first.into_iter().map(|entry| entry.name).collect();
         let second_names: Vec<_> = second.into_iter().map(|entry| entry.name).collect();
         assert_eq!(first_names, second_names);
+    }
+
+    #[test]
+    fn page_candidate_reuses_precomputed_key() {
+        let candidate = candidate("MixedCase");
+        assert_eq!(candidate.key.name_lower, "mixedcase");
+        assert_eq!(candidate.key.name, "MixedCase");
+        assert_eq!(candidate.key.path, "/MixedCase");
     }
 }
