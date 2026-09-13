@@ -5,6 +5,7 @@ pub mod auth;
 pub mod authorization;
 pub mod cache;
 pub mod connections;
+pub mod editor;
 pub mod effects;
 pub mod filesystem;
 pub mod health;
