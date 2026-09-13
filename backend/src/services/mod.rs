@@ -5,7 +5,6 @@ pub mod cache;
 pub mod connection_service;
 pub mod editor_service;
 pub mod file_api_service;
-pub mod files;
 pub mod health_service;
 pub mod preferences_service;
 pub mod realtime_service;
