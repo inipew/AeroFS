@@ -163,6 +163,10 @@ impl ResourceBudget {
         self.transfer.clone()
     }
 
+    pub fn available_local(&self) -> usize {
+        self.local_disk.available_permits()
+    }
+
     pub fn available_archive(&self) -> usize {
         self.archive.available_permits()
     }
