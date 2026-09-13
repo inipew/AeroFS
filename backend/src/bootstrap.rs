@@ -19,6 +19,7 @@ use crate::infrastructure::{
     },
     settings::{RegistrySettingsRuntime, SqliteSettingsAudit, SqliteSystemSettingsStore},
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
+    trash::SqliteTrashRepository,
     uploads::TransferUploadExecution,
     CredentialStore,
 };
@@ -309,7 +310,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             file_filesystem.clone(),
         )),
         trash: TrashState::new(TrashService::new(
-            db.clone(),
+            Arc::new(SqliteTrashRepository::new(db.clone())),
             file_authorization,
             file_filesystem,
             file_effects,
