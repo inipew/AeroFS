@@ -1,5 +1,5 @@
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
-use backend::runtime::{ResourceBudget, TaskSupervisor};
+use backend::runtime::{ResourceBudget, ResourceClass, TaskSupervisor};
 use backend::state::{RuntimeOwner, RuntimePhase};
 use backend::sync::{ConflictResolver, FileManifest, ManifestDiffer, SyncOpKind, SyncStrategy};
 use backend::transfer::TransferCheckpoint;
@@ -192,19 +192,19 @@ async fn test_resource_budget_concurrency_coordination() {
     let budget = ResourceBudget::new(4, 2, 2, 1, 1);
 
     let p1 = budget
-        .acquire_local_disk()
+        .acquire(ResourceClass::LocalIo)
         .await
         .expect("Must acquire permit");
     let p2 = budget
-        .acquire_local_disk()
+        .acquire(ResourceClass::LocalIo)
         .await
         .expect("Must acquire permit");
-    assert_eq!(budget.local_disk.available_permits(), 0);
+    assert_eq!(budget.available_local(), 0);
 
     drop(p1);
-    assert_eq!(budget.local_disk.available_permits(), 1);
+    assert_eq!(budget.available_local(), 1);
     drop(p2);
-    assert_eq!(budget.local_disk.available_permits(), 2);
+    assert_eq!(budget.available_local(), 2);
 }
 
 #[tokio::test]
@@ -319,6 +319,7 @@ async fn test_sync_manager_creation_and_reconciliation() {
         registry.providers_map(),
         pool.clone(),
         4,
+        Arc::new(ResourceBudget::default()),
         event_journal.clone(),
         token,
         &tracker,
