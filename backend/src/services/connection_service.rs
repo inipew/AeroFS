@@ -1,13 +1,14 @@
 use crate::config::AppConfig;
-use crate::db::DbPool;
 use crate::domain::{Actor, Capabilities, Connection, ConnectionStatus, ProviderKind, VfsPath};
 use crate::errors::{AppError, VfsError};
-use crate::infrastructure::CredentialStore;
+use crate::ports::connections::{
+    ConnectionRepository, ConnectionSecretError, SecretMutation,
+};
 use crate::services::MetadataCache;
 use crate::transfer::{TransferManager, TransferStatus};
 use crate::vfs::factory::ProviderFactory;
 use crate::vfs::registry::ProviderRegistry;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
@@ -50,56 +51,29 @@ pub struct TestConnectionResponse {
     pub message: String,
 }
 
-type ConnectionDbRow = (
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<i64>,
-    Option<String>,
-    String,
-    i64,
-    i64,
-    String,
-    String,
-);
-
 #[derive(Clone)]
 pub struct ConnectionService {
-    db: DbPool,
+    repository: Arc<dyn ConnectionRepository>,
     config: Arc<AppConfig>,
     registry: Arc<ProviderRegistry>,
-    credentials: Arc<CredentialStore>,
     metadata_cache: Arc<MetadataCache>,
     transfer_manager: TransferManager,
 }
 
 impl ConnectionService {
     pub fn new(
-        db: DbPool,
+        repository: Arc<dyn ConnectionRepository>,
         config: Arc<AppConfig>,
         registry: Arc<ProviderRegistry>,
-        credentials: Arc<CredentialStore>,
         metadata_cache: Arc<MetadataCache>,
         transfer_manager: TransferManager,
     ) -> Self {
         Self {
-            db,
+            repository,
             config,
             registry,
-            credentials,
             metadata_cache,
             transfer_manager,
-        }
-    }
-
-    fn provider_kind(provider: &str) -> ProviderKind {
-        match provider {
-            "ftp" => ProviderKind::Ftp,
-            "ftps" => ProviderKind::Ftps,
-            "sftp" => ProviderKind::Sftp,
-            "s3" => ProviderKind::S3,
-            _ => ProviderKind::Local,
         }
     }
 
@@ -114,18 +88,7 @@ impl ConnectionService {
     }
 
     async fn authorize_read(&self, actor: &Actor, id: &str) -> Result<(), AppError> {
-        if actor.is_admin {
-            return Ok(());
-        }
-        let allowed: Option<(i64,)> = sqlx::query_as(
-            "SELECT can_read FROM permissions WHERE user_id = ? AND connection_id = ? LIMIT 1",
-        )
-        .bind(&actor.id)
-        .bind(id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        if allowed.map(|r| r.0 != 0).unwrap_or(false) {
+        if actor.is_admin || self.repository.can_read(&actor.id, id).await? {
             Ok(())
         } else {
             Err(AppError::Forbidden(format!(
@@ -166,21 +129,15 @@ impl ConnectionService {
     }
 
     /// Load all enabled storage connections and register their providers.
-    ///
-    /// Persistent-state read failures are startup-fatal: silently treating an
-    /// unreadable settings/connection table as "no configuration" would make
-    /// the runtime diverge from durable state. Individual provider build or
-    /// credential-decrypt failures are isolated to that connection and exposed
-    /// through the registry error state so other providers can still start.
+    /// Durable-state read failures are startup-fatal. A credential that exists
+    /// but cannot be decrypted is isolated to its connection so unrelated
+    /// providers can still become available.
     pub async fn load_all_providers_from_db(&self) -> Result<(), AppError> {
-        let local_root = sqlx::query_as::<_, (String,)>(
-            "SELECT value FROM system_settings WHERE key = 'local_root'",
-        )
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to load local_root setting: {}", e))?
-        .map(|r| std::path::PathBuf::from(r.0))
-        .unwrap_or_else(|| self.config.filesystem.default_local_root.clone());
+        let local_root = self
+            .repository
+            .local_root_override()
+            .await?
+            .unwrap_or_else(|| self.config.filesystem.default_local_root.clone());
 
         match tokio::fs::create_dir_all(&local_root).await {
             Ok(()) => {
@@ -213,91 +170,56 @@ impl ConnectionService {
             }
         }
 
-        type EnabledRow = (
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-            String,
-        );
-        let rows: Vec<EnabledRow> = sqlx::query_as(
-            "SELECT id, name, provider, host, port, username, base_path FROM connections WHERE enabled = 1",
-        )
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to load enabled storage connections: {}", e))?;
-
-        for (id, name, provider_type, host, port, username, base_path) in rows {
-            if id == "local" {
+        for connection in self.repository.load_enabled().await? {
+            if connection.id == "local" {
                 continue;
             }
-            let secret_row: Option<(String,)> = sqlx::query_as(
-                "SELECT encrypted_secret FROM connection_credentials WHERE connection_id = ?",
-            )
-            .bind(&id)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to load credential for storage connection '{}': {}",
-                    id,
-                    e
-                )
-            })?;
-            let decrypted_secret = match secret_row {
-                Some((encrypted,)) => match self.credentials.decrypt(&encrypted) {
-                    Ok(secret) => Some(secret),
-                    Err(error) => {
-                        let message = format!("Failed to decrypt persisted credential: {}", error);
-                        tracing::error!(connection_id = %id, %message);
-                        self.registry.set_connection_error(&id, &message).await;
-                        continue;
-                    }
-                },
-                None => None,
+            let decrypted_secret = match self.repository.load_secret(&connection.id).await {
+                Ok(secret) => secret,
+                Err(ConnectionSecretError::Persistence(error)) => {
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "Failed to load credential for storage connection '{}': {}",
+                        connection.id,
+                        error
+                    )));
+                }
+                Err(ConnectionSecretError::Decryption(error)) => {
+                    let message = format!("Failed to decrypt persisted credential: {}", error);
+                    tracing::error!(connection_id = %connection.id, %message);
+                    self.registry
+                        .set_connection_error(&connection.id, &message)
+                        .await;
+                    continue;
+                }
             };
-            let conn = Connection {
-                id: id.clone(),
-                name: name.clone(),
-                provider: Self::provider_kind(&provider_type),
-                host,
-                port: port.map(|p| p as u16),
-                username,
-                base_path,
-                read_only: false,
-                enabled: true,
-                status: ConnectionStatus::Connected,
-                error_message: None,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-            };
-            let provider_cfg = self.config.storage.get_provider_config(&provider_type);
+            let provider_name = Self::provider_name(connection.provider);
+            let provider_cfg = self.config.storage.get_provider_config(provider_name);
             match ProviderFactory::build_with_config(
-                &conn,
+                &connection,
                 decrypted_secret.as_deref(),
                 Some(&provider_cfg),
             ) {
                 Ok(fs) => {
-                    self.registry.register(id.clone(), fs).await;
+                    self.registry.register(connection.id.clone(), fs).await;
                     tracing::info!(
                         "Storage connection '{}' ('{}', {}) initialized successfully",
-                        id,
-                        name,
-                        provider_type
+                        connection.id,
+                        connection.name,
+                        provider_name
                     );
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
                     tracing::error!(
                         "Failed to initialize storage connection '{}' ('{}', {}): {}",
-                        id,
-                        name,
-                        provider_type,
+                        connection.id,
+                        connection.name,
+                        provider_name,
                         err_msg
                     );
-                    self.registry.set_connection_error(&id, &err_msg).await;
+                    self.registry
+                        .set_connection_error(&connection.id, &err_msg)
+                        .await;
                 }
             }
         }
@@ -305,66 +227,20 @@ impl ConnectionService {
     }
 
     pub async fn list_connections(&self, actor: &Actor) -> Result<Vec<Connection>, AppError> {
-        let rows: Vec<ConnectionDbRow> = if actor.is_admin {
-            sqlx::query_as(
-                "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at FROM connections ORDER BY name ASC",
-            )
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
-        } else {
-            sqlx::query_as(
-                "SELECT c.id, c.name, c.provider, c.host, c.port, c.username, c.base_path, c.read_only, c.enabled, c.created_at, c.updated_at FROM connections c JOIN permissions p ON p.connection_id = c.id WHERE p.user_id = ? AND p.can_read = 1 ORDER BY c.name ASC",
-            )
-            .bind(&actor.id)
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
-        };
-
-        let mut connections = Vec::with_capacity(rows.len());
-        for (
-            id,
-            name,
-            provider,
-            host,
-            port,
-            username,
-            base_path,
-            read_only,
-            enabled,
-            created_at,
-            updated_at,
-        ) in rows
-        {
-            let is_active = self.registry.get(&id).await.is_some();
-            let error_message = self.registry.get_connection_error(&id).await;
-            let status = if enabled == 0 {
+        let mut connections = self
+            .repository
+            .list(Some(&actor.id), actor.is_admin)
+            .await?;
+        for connection in &mut connections {
+            let is_active = self.registry.get(&connection.id).await.is_some();
+            connection.error_message = self.registry.get_connection_error(&connection.id).await;
+            connection.status = if !connection.enabled {
                 ConnectionStatus::Disconnected
             } else if is_active {
                 ConnectionStatus::Connected
             } else {
                 ConnectionStatus::Failed
             };
-            connections.push(Connection {
-                id,
-                name,
-                provider: Self::provider_kind(&provider),
-                host,
-                port: port.map(|p| p as u16),
-                username,
-                base_path,
-                read_only: read_only != 0,
-                enabled: enabled != 0,
-                status,
-                error_message,
-                created_at: DateTime::parse_from_rfc3339(&created_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-            });
         }
         Ok(connections)
     }
@@ -375,33 +251,19 @@ impl ConnectionService {
         id: &str,
     ) -> Result<ConnectionDetailResponse, AppError> {
         self.authorize_read(actor, id).await?;
-        let provider =
-            self.registry.get(id).await.ok_or_else(|| {
-                VfsError::ConnectionError(format!("Connection '{}' not found", id))
-            })?;
-        let row: Option<ConnectionDbRow> = sqlx::query_as(
-            "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at FROM connections WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        let (
-            id,
-            name,
-            provider_name,
-            host,
-            port,
-            username,
-            base_path,
-            read_only,
-            enabled,
-            created_at,
-            updated_at,
-        ) = row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
-        let is_active = self.registry.get(&id).await.is_some();
-        let error_message = self.registry.get_connection_error(&id).await;
-        let status = if enabled == 0 {
+        let provider = self
+            .registry
+            .get(id)
+            .await
+            .ok_or_else(|| VfsError::ConnectionError(format!("Connection '{}' not found", id)))?;
+        let mut connection = self
+            .repository
+            .get(id)
+            .await?
+            .ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
+        let is_active = self.registry.get(id).await.is_some();
+        connection.error_message = self.registry.get_connection_error(id).await;
+        connection.status = if !connection.enabled {
             ConnectionStatus::Disconnected
         } else if is_active {
             ConnectionStatus::Connected
@@ -409,25 +271,7 @@ impl ConnectionService {
             ConnectionStatus::Failed
         };
         Ok(ConnectionDetailResponse {
-            connection: Connection {
-                id,
-                name,
-                provider: Self::provider_kind(&provider_name),
-                host,
-                port: port.map(|p| p as u16),
-                username,
-                base_path,
-                read_only: read_only != 0,
-                enabled: enabled != 0,
-                status,
-                error_message,
-                created_at: DateTime::parse_from_rfc3339(&created_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                updated_at: DateTime::parse_from_rfc3339(&updated_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-            },
+            connection,
             capabilities: provider.capabilities(),
         })
     }
@@ -442,69 +286,38 @@ impl ConnectionService {
             .await?;
 
         let id = format!("conn_{}", &Uuid::new_v4().to_string()[..8]);
-        let now = Utc::now().to_rfc3339();
-        let provider_name = Self::provider_name(payload.provider);
+        let now = Utc::now();
         let base_path = payload.base_path.clone().unwrap_or_else(|| "/".to_string());
         let read_only = payload.read_only.unwrap_or(false);
-        let conn = Connection {
+        let connection = Connection {
             id: id.clone(),
-            name: payload.name.clone(),
+            name: payload.name,
             provider: payload.provider,
-            host: payload.host.clone(),
+            host: payload.host,
             port: payload.port,
-            username: payload.username.clone(),
-            base_path: base_path.clone(),
+            username: payload.username,
+            base_path,
             read_only,
             enabled: true,
             status: ConnectionStatus::Connected,
             error_message: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: now,
+            updated_at: now,
         };
-        let provider_cfg = self.config.storage.get_provider_config(provider_name);
+        let provider_cfg = self
+            .config
+            .storage
+            .get_provider_config(Self::provider_name(connection.provider));
         let fs = ProviderFactory::build_with_config(
-            &conn,
+            &connection,
             payload.secret.as_deref(),
             Some(&provider_cfg),
         )
         .map_err(|e| AppError::BadRequest(format!("Failed to build provider: {}", e)))?;
 
-        let mut tx = self
-            .db
-            .begin()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
-        sqlx::query(
-            "INSERT INTO connections (id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-        )
-        .bind(&id)
-        .bind(&payload.name)
-        .bind(provider_name)
-        .bind(&payload.host)
-        .bind(payload.port.map(|p| p as i64))
-        .bind(&payload.username)
-        .bind(&base_path)
-        .bind(if read_only { 1 } else { 0 })
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to save connection: {}", e))?;
-        if let Some(secret) = &payload.secret {
-            if !secret.trim().is_empty() {
-                let encrypted = self.credentials.encrypt(secret)?;
-                sqlx::query("INSERT INTO connection_credentials (connection_id, credential_type, encrypted_secret, created_at) VALUES (?, 'password_or_key', ?, ?)")
-                    .bind(&id)
-                    .bind(&encrypted)
-                    .bind(&now)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to save credential: {}", e))?;
-            }
-        }
-        tx.commit()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to commit connection transaction: {}", e))?;
+        self.repository
+            .create(&connection, payload.secret.as_deref())
+            .await?;
         self.registry.register(id.clone(), fs).await;
         Ok(id)
     }
@@ -521,43 +334,44 @@ impl ConnectionService {
                 "Default local connection cannot be edited directly".into(),
             ));
         }
-        let row: Option<ConnectionDbRow> = sqlx::query_as(
-            "SELECT id, name, provider, host, port, username, base_path, read_only, enabled, created_at, updated_at FROM connections WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-        let (
-            _,
-            cur_name,
-            provider_name,
-            cur_host,
-            cur_port,
-            cur_username,
-            cur_base_path,
-            cur_read_only,
-            cur_enabled,
-            created_at,
-            _,
-        ) = row.ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
-        let new_name = payload.name.unwrap_or(cur_name);
-        let new_host = payload.host.or(cur_host);
-        let new_port = payload.port.or(cur_port.map(|p| p as u16));
-        let new_username = payload.username.or(cur_username);
-        let new_base_path = payload.base_path.unwrap_or(cur_base_path);
-        let new_read_only = payload.read_only.unwrap_or(cur_read_only != 0);
-        let new_enabled = payload.enabled.unwrap_or(cur_enabled != 0);
+        let current = self
+            .repository
+            .get(id)
+            .await?
+            .ok_or_else(|| VfsError::NotFound(format!("Connection '{}' not found", id)))?;
+
+        let new_name = payload.name.unwrap_or(current.name);
+        let new_host = payload.host.or(current.host);
+        let new_port = payload.port.or(current.port);
+        let new_username = payload.username.or(current.username);
+        let new_base_path = payload.base_path.unwrap_or(current.base_path);
+        let new_read_only = payload.read_only.unwrap_or(current.read_only);
+        let new_enabled = payload.enabled.unwrap_or(current.enabled);
         self.validate_target(new_host.as_deref(), new_port).await?;
-        let now = Utc::now().to_rfc3339();
-        let updated_conn = Connection {
+
+        let (resolved_secret, secret_mutation) = match payload.secret {
+            Some(secret) if secret.trim().is_empty() => (None, SecretMutation::Clear),
+            Some(secret) => (Some(secret.clone()), SecretMutation::Replace(secret)),
+            None => {
+                let secret = self.repository.load_secret(id).await.map_err(|error| {
+                    AppError::Internal(anyhow::anyhow!(
+                        "Failed to load existing credential for '{}': {}",
+                        id,
+                        error
+                    ))
+                })?;
+                (secret, SecretMutation::Keep)
+            }
+        };
+
+        let updated_connection = Connection {
             id: id.to_string(),
-            name: new_name.clone(),
-            provider: Self::provider_kind(&provider_name),
-            host: new_host.clone(),
+            name: new_name,
+            provider: current.provider,
+            host: new_host,
             port: new_port,
-            username: new_username.clone(),
-            base_path: new_base_path.clone(),
+            username: new_username,
+            base_path: new_base_path,
             read_only: new_read_only,
             enabled: new_enabled,
             status: if new_enabled {
@@ -566,74 +380,34 @@ impl ConnectionService {
                 ConnectionStatus::Disconnected
             },
             error_message: None,
-            created_at: DateTime::parse_from_rfc3339(&created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            created_at: current.created_at,
             updated_at: Utc::now(),
         };
-        let resolved_secret = if let Some(secret) = payload.secret {
-            if secret.trim().is_empty() {
-                None
-            } else {
-                Some(secret)
-            }
-        } else {
-            let row: Option<(String,)> = sqlx::query_as(
-                "SELECT encrypted_secret FROM connection_credentials WHERE connection_id = ?",
+
+        let prepared_provider = if new_enabled {
+            let provider_cfg = self
+                .config
+                .storage
+                .get_provider_config(Self::provider_name(updated_connection.provider));
+            Some(
+                ProviderFactory::build_with_config(
+                    &updated_connection,
+                    resolved_secret.as_deref(),
+                    Some(&provider_cfg),
+                )
+                .map_err(|e| {
+                    AppError::BadRequest(format!("Failed to build updated provider: {}", e))
+                })?,
             )
-            .bind(id)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to load existing credential: {}", e))?;
-            match row {
-                Some((encrypted,)) => Some(self.credentials.decrypt(&encrypted).map_err(|e| {
-                    anyhow::anyhow!("Failed to decrypt existing credential for '{}': {}", id, e)
-                })?),
-                None => None,
-            }
+        } else {
+            None
         };
 
-        if new_enabled {
-            let provider_cfg = self.config.storage.get_provider_config(&provider_name);
-            let fs = ProviderFactory::build_with_config(
-                &updated_conn,
-                resolved_secret.as_deref(),
-                Some(&provider_cfg),
-            )
-            .map_err(|e| {
-                AppError::BadRequest(format!("Failed to build updated provider: {}", e))
-            })?;
-            let mut tx = self
-                .db
-                .begin()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
-            sqlx::query("UPDATE connections SET name = ?, host = ?, port = ?, username = ?, base_path = ?, read_only = ?, enabled = ?, updated_at = ? WHERE id = ?")
-                .bind(&new_name)
-                .bind(&new_host)
-                .bind(new_port.map(|p| p as i64))
-                .bind(&new_username)
-                .bind(&new_base_path)
-                .bind(if new_read_only { 1 } else { 0 })
-                .bind(if new_enabled { 1 } else { 0 })
-                .bind(&now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to update connection in DB: {}", e))?;
-            if let Some(secret) = &resolved_secret {
-                let encrypted = self.credentials.encrypt(secret)?;
-                sqlx::query("INSERT INTO connection_credentials (connection_id, credential_type, encrypted_secret, created_at) VALUES (?, 'password_or_key', ?, ?) ON CONFLICT(connection_id) DO UPDATE SET encrypted_secret = excluded.encrypted_secret, created_at = excluded.created_at")
-                    .bind(id)
-                    .bind(&encrypted)
-                    .bind(&now)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to save credential: {}", e))?;
-            }
-            tx.commit()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to commit update transaction: {}", e))?;
+        self.repository
+            .update(&updated_connection, secret_mutation)
+            .await?;
+
+        if let Some(fs) = prepared_provider {
             if let Some(existing) = self.registry.get_runtime(id).await {
                 existing
                     .set_state(crate::vfs::ProviderState::Draining)
@@ -641,12 +415,6 @@ impl ConnectionService {
             }
             self.registry.register(id.to_string(), fs).await;
         } else {
-            sqlx::query("UPDATE connections SET enabled = 0, updated_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(id)
-                .execute(&self.db)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to disable connection: {}", e))?;
             self.registry.remove(id).await;
         }
         self.metadata_cache.invalidate_prefix(id, "/").await;
@@ -660,18 +428,10 @@ impl ConnectionService {
                 "Default local connection cannot be deleted".into(),
             ));
         }
-
-        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM connections WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to verify connection before deletion: {}", e))?;
-        if exists.is_none() {
+        if !self.repository.exists(id).await? {
             return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
         }
 
-        // Unpublish the provider first. Existing transfers keep their Arc<FileSystem>,
-        // but new file/transfer admissions can no longer resolve this connection.
         let previous_runtime = self.registry.get_runtime(id).await;
         self.registry.remove(id).await;
 
@@ -696,42 +456,9 @@ impl ConnectionService {
                 }
             }
 
-            let mut tx = self
-                .db
-                .begin()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to begin connection deletion transaction: {}", e))?;
-
-            // Durable cancellation barrier. TransferManager owns the live cancellation
-            // tokens; this transaction guarantees that after connection deletion commits,
-            // no persisted job referencing it remains queued/running.
-            let now = Utc::now().to_rfc3339();
-            sqlx::query(
-                "UPDATE transfer_jobs SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancellation_requested' END, updated_at = ? WHERE (source_connection_id = ? OR destination_connection_id = ?) AND status IN ('queued', 'running', 'cancellation_requested')",
-            )
-            .bind(&now)
-            .bind(id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to persist transfer cancellation barrier: {}", e))?;
-
-            sqlx::query("DELETE FROM connection_credentials WHERE connection_id = ?")
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to delete connection credential: {}", e))?;
-            let result = sqlx::query("DELETE FROM connections WHERE id = ?")
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to delete connection: {}", e))?;
-            if result.rows_affected() == 0 {
+            if !self.repository.delete_with_transfer_barrier(id).await? {
                 return Err(AppError::NotFound(format!("Connection '{}' not found", id)));
             }
-            tx.commit()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to commit connection deletion: {}", e))?;
             Ok(())
         }
         .await;

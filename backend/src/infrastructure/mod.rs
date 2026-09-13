@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod connections;
 pub mod credentials;
 pub mod files;
 pub mod settings;

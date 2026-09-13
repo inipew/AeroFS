@@ -11,6 +11,7 @@ use crate::db::DbPool;
 use crate::events::{EventJournal, MetadataCacheEventSubscriber};
 use crate::infrastructure::{
     archive::SqliteArchiveEffects,
+    connections::SqliteConnectionRepository,
     files::{
         RegistryFileSystemResolver, SqliteAuthorization, SqliteConnectionStorageMetadata,
         SqliteFileMutationEffects, SqliteFileSettings,
@@ -236,11 +237,11 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         )),
     );
 
+    let connection_repository = Arc::new(SqliteConnectionRepository::new(db.clone(), credentials));
     let connection_service = ConnectionService::new(
-        db.clone(),
+        connection_repository,
         config.clone(),
         registry.clone(),
-        credentials,
         metadata_cache,
         transfer_manager.clone(),
     );
