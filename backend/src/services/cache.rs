@@ -1,5 +1,7 @@
 use crate::domain::FileMetadata;
 use crate::errors::AppError;
+use crate::ports::cache::FileMetadataCache;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -196,6 +198,17 @@ impl MetadataCache {
     pub async fn clear(&self) {
         let mut entries = self.entries.write().await;
         entries.clear();
+    }
+}
+
+#[async_trait]
+impl FileMetadataCache for MetadataCache {
+    async fn get(&self, connection_id: &str, path: &str) -> Option<FileMetadata> {
+        MetadataCache::get(self, connection_id, path).await
+    }
+
+    async fn put(&self, connection_id: &str, path: &str, metadata: FileMetadata) {
+        MetadataCache::put(self, connection_id, path, metadata).await;
     }
 }
 
