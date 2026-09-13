@@ -1,25 +1,27 @@
 use crate::domain::{Actor, ConnectionId};
 use crate::errors::AppError;
-use crate::ports::authorization::{Authorization, FileAction};
-use crate::sync::{SyncJob, SyncManager, SyncOperationRow, SyncStrategy};
+use crate::ports::{
+    authorization::{Authorization, FileAction},
+    sync::SyncControl,
+};
+use crate::sync::{SyncJob, SyncOperationRow, SyncStrategy};
 use std::sync::Arc;
 
 /// Narrow capability exposed to the HTTP sync adapter.
 ///
-/// SyncManager remains the runtime engine used by durable subscribers and
-/// recovery. This facade owns request-facing authorization and prevents the
-/// HTTP layer from reaching persistence or runtime engine internals directly.
+/// The concrete SyncManager remains owned by durable replay/recovery infrastructure.
+/// Request-facing orchestration depends only on SyncControl.
 #[derive(Clone)]
 pub struct SyncService {
     authorization: Arc<dyn Authorization>,
-    manager: Arc<SyncManager>,
+    control: Arc<dyn SyncControl>,
 }
 
 impl SyncService {
-    pub fn new(authorization: Arc<dyn Authorization>, manager: Arc<SyncManager>) -> Self {
+    pub fn new(authorization: Arc<dyn Authorization>, control: Arc<dyn SyncControl>) -> Self {
         Self {
             authorization,
-            manager,
+            control,
         }
     }
 
@@ -43,7 +45,7 @@ impl SyncService {
             .authorize(actor, &destination, FileAction::Write)
             .await?;
 
-        self.manager
+        self.control
             .create_job(
                 &actor.id,
                 source_connection_id,
@@ -53,18 +55,14 @@ impl SyncService {
                 strategy,
             )
             .await
-            .map_err(AppError::Internal)
     }
 
     pub async fn list_jobs(&self) -> Result<Vec<SyncJob>, AppError> {
-        self.manager.list_jobs().await.map_err(AppError::Internal)
+        self.control.list_jobs().await
     }
 
     pub async fn list_operations(&self, job_id: &str) -> Result<Vec<SyncOperationRow>, AppError> {
-        self.manager
-            .list_operations(job_id)
-            .await
-            .map_err(AppError::Internal)
+        self.control.list_operations(job_id).await
     }
 
     pub async fn resolve_conflict(
@@ -73,9 +71,8 @@ impl SyncService {
         op_id: &str,
         resolution: &str,
     ) -> Result<(), AppError> {
-        self.manager
+        self.control
             .resolve_conflict(job_id, op_id, resolution)
             .await
-            .map_err(AppError::Internal)
     }
 }
