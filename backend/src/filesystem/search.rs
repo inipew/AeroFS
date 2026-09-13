@@ -1,5 +1,6 @@
 use crate::domain::{FileEntry, FileKind, VfsPath};
 use crate::errors::VfsError;
+use crate::runtime::{ResourceBudget, ResourceClass};
 use crate::vfs::FileSystem;
 use futures::{future::BoxFuture, stream::FuturesOrdered, FutureExt, StreamExt};
 use regex::Regex;
@@ -42,6 +43,7 @@ struct DirectoryScan {
 
 pub async fn search_recursive(
     provider: &Arc<dyn FileSystem>,
+    budget: Arc<ResourceBudget>,
     connection_id: &str,
     start_path: &str,
     query: &str,
@@ -58,10 +60,12 @@ pub async fn search_recursive(
     } else {
         SearchMatcher::Contains(query.to_lowercase())
     };
+    let resource_class = if provider.is_local() {
+        ResourceClass::SearchLocal
+    } else {
+        ResourceClass::SearchNetwork
+    };
 
-    // The legacy implementation returned the first match even when limit=0 because
-    // it checked the limit only after pushing a match. Treat that edge case as a
-    // one-result limit while keeping normal limits unchanged.
     let limit = limit.max(1);
     let mut matches = Vec::new();
     let mut errors = Vec::new();
@@ -70,10 +74,9 @@ pub async fn search_recursive(
     let mut depth = 0usize;
     let mut truncated = false;
 
-    // Process one BFS depth at a time. Within a depth, at most
-    // SEARCH_DIRECTORY_CONCURRENCY provider streams run concurrently. FuturesOrdered
-    // preserves the exact directory order of the old sequential BFS even when later
-    // provider calls complete first, so result/error ordering remains deterministic.
+    // SEARCH_DIRECTORY_CONCURRENCY only caps per-request fan-out. The shared ResourceBudget
+    // is acquired inside every active scan, so aggregate provider streams across all search
+    // requests cannot multiply beyond the global search/I/O budgets.
     while !current_level.is_empty() && depth <= max_depth && !truncated {
         let mut active: FuturesOrdered<BoxFuture<'static, DirectoryScan>> =
             FuturesOrdered::new();
@@ -83,6 +86,8 @@ pub async fn search_recursive(
             &mut active,
             &mut current_level,
             provider,
+            budget.clone(),
+            resource_class,
             connection_id,
             depth,
             max_depth,
@@ -98,9 +103,6 @@ pub async fn search_recursive(
             let found = scan.matches.len();
             matches.extend(scan.matches.into_iter().take(remaining));
 
-            // Preserve the existing contract: reaching the requested result limit marks
-            // the response truncated immediately. Dropping `active` cancels unfinished
-            // directory streams; there are no detached traversal tasks.
             if scan.hit_limit || found > remaining || matches.len() >= limit {
                 truncated = true;
                 break;
@@ -111,6 +113,8 @@ pub async fn search_recursive(
                 &mut active,
                 &mut current_level,
                 provider,
+                budget.clone(),
+                resource_class,
                 connection_id,
                 depth,
                 max_depth,
@@ -138,6 +142,8 @@ fn fill_search_window(
     active: &mut FuturesOrdered<BoxFuture<'static, DirectoryScan>>,
     current_level: &mut VecDeque<VfsPath>,
     provider: &Arc<dyn FileSystem>,
+    budget: Arc<ResourceBudget>,
+    resource_class: ResourceClass,
     connection_id: &str,
     depth: usize,
     max_depth: usize,
@@ -151,6 +157,8 @@ fn fill_search_window(
         active.push_back(
             scan_directory(
                 Arc::clone(provider),
+                budget.clone(),
+                resource_class,
                 connection_id.to_owned(),
                 directory,
                 depth,
@@ -163,8 +171,11 @@ fn fill_search_window(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_directory(
     provider: Arc<dyn FileSystem>,
+    budget: Arc<ResourceBudget>,
+    resource_class: ResourceClass,
     connection_id: String,
     current_dir: VfsPath,
     depth: usize,
@@ -177,6 +188,20 @@ async fn scan_directory(
     let mut errors = Vec::new();
     let mut total_scanned = 0usize;
     let mut hit_limit = false;
+
+    let _permit = match budget.acquire(resource_class).await {
+        Ok(permit) => permit,
+        Err(_) => {
+            errors.push(format!("{}: search resource budget closed", current_dir.path));
+            return DirectoryScan {
+                matches,
+                children,
+                total_scanned,
+                errors,
+                hit_limit,
+            };
+        }
+    };
 
     let mut stream = match provider.list_stream(&current_dir).await {
         Ok(stream) => stream,
@@ -255,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn traversal_concurrency_is_explicitly_bounded() {
+    fn traversal_fanout_is_bounded_per_request() {
         assert!(SEARCH_DIRECTORY_CONCURRENCY > 1);
         assert!(SEARCH_DIRECTORY_CONCURRENCY <= 32);
     }
