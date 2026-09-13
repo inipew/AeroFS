@@ -104,6 +104,7 @@ enum ArchiveWriteCommand {
     Data(Vec<u8>),
     EndEntry { written: u64 },
     Finish,
+    Abort,
 }
 
 async fn send_reader_to_archive_worker(
@@ -315,6 +316,7 @@ pub async fn compress_zip(
                         .map_err(|e| VfsError::IoError(format!("Zip finalize error: {}", e)))?;
                     return Ok(());
                 }
+                Some(ArchiveWriteCommand::Abort) => return Ok(()),
                 None => {
                     return Err(VfsError::IoError(
                         "Zip producer stopped before archive finalization".into(),
@@ -344,6 +346,9 @@ pub async fn compress_zip(
         Ok(())
     }
     .await;
+    if producer_result.is_err() {
+        let _ = tx.send(ArchiveWriteCommand::Abort).await;
+    }
     drop(tx);
 
     let worker_result = worker
@@ -647,6 +652,7 @@ pub async fn compress_targz(
                         .map_err(|e| VfsError::IoError(format!("Gzip finish error: {}", e)))?;
                     return Ok(());
                 }
+                Some(ArchiveWriteCommand::Abort) => return Ok(()),
                 None => {
                     return Err(VfsError::IoError(
                         "Tar producer stopped before archive finalization".into(),
@@ -677,6 +683,9 @@ pub async fn compress_targz(
         Ok(())
     }
     .await;
+    if producer_result.is_err() {
+        let _ = tx.send(ArchiveWriteCommand::Abort).await;
+    }
     drop(tx);
 
     let worker_result = worker
