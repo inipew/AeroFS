@@ -6,7 +6,6 @@ use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId, SftpAuth, SortField, SortOrder, VfsPath};
 use backend::events::EventJournal;
 use backend::ports::transfer::{TransferJobResponse, TransferStatus, TransferType};
-use backend::services::EditorService;
 use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::{
     TransferManager, TransferStatus as EngineTransferStatus, TransferType as EngineTransferType,
@@ -186,10 +185,23 @@ async fn test_resume_integrity_restart_on_invalid_part() {
         "Full transfer must calculate SHA-256 checksum"
     );
 
-    let (content, _) =
-        EditorService::read_for_editing(&file_api, &admin, "local", "/dst_resume_test.txt")
-            .await
-            .unwrap();
+    let metadata = file_api
+        .files
+        .stat_file
+        .execute(
+            &actor(&admin),
+            backend::application::files::StatFileCommand {
+                connection: ConnectionId::local(),
+                path: "/dst_resume_test.txt".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let content = file_api
+        .service
+        .read_text_for_editing(&ConnectionId::local(), "/dst_resume_test.txt", metadata.size)
+        .await
+        .unwrap();
     assert_eq!(content.as_bytes(), src_content);
 }
 
