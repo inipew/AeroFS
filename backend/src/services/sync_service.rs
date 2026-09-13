@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// Narrow capability exposed to the HTTP sync adapter.
 ///
-/// The concrete SyncManager remains owned by durable replay/recovery infrastructure.
+/// The concrete runtime remains owned by durable replay/recovery infrastructure.
 /// Request-facing orchestration depends only on SyncControl.
 #[derive(Clone)]
 pub struct SyncService {
