@@ -5,32 +5,32 @@ use crate::ports::{
     authorization::{Authorization, FileAction},
     filesystem::FileSystemResolver,
 };
+use crate::runtime::ResourceBudget;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub struct SearchService {
     authorization: Arc<dyn Authorization>,
     filesystem: Arc<dyn FileSystemResolver>,
-    limiter: Arc<Semaphore>,
+    budget: Arc<ResourceBudget>,
 }
 
 impl SearchService {
     pub fn new(
         authorization: Arc<dyn Authorization>,
         filesystem: Arc<dyn FileSystemResolver>,
-        limiter: Arc<Semaphore>,
+        budget: Arc<ResourceBudget>,
     ) -> Self {
         Self {
             authorization,
             filesystem,
-            limiter,
+            budget,
         }
     }
 
-    /// Observable capacity for diagnostics/tests without exposing the limiter itself.
+    /// Observable global search-stream capacity for diagnostics/tests.
     pub fn available_capacity(&self) -> usize {
-        self.limiter.available_permits()
+        self.budget.available_search()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -48,11 +48,6 @@ impl SearchService {
             .authorize(actor, connection, FileAction::Read)
             .await?;
 
-        let _permit =
-            self.limiter.acquire().await.map_err(|_| {
-                AppError::ServiceUnavailable("Search service is shutting down".into())
-            })?;
-
         let provider = self.filesystem.resolve(connection).await?;
         let start_path = path_opt.unwrap_or("/");
         let max_depth = max_depth.unwrap_or(10);
@@ -60,6 +55,7 @@ impl SearchService {
 
         search_recursive(
             &provider,
+            self.budget.clone(),
             connection.as_str(),
             start_path,
             query,
