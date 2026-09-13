@@ -1,11 +1,11 @@
 use crate::auth::password::{hash_password, verify_password};
 use crate::auth::AuthenticatedUser;
-use crate::db::DbPool;
 use crate::domain::{Actor, ConnectionId, VfsPath};
 use crate::errors::AppError;
 use crate::ports::{
     authorization::{Authorization, FileAction},
     filesystem::FileSystemResolver,
+    share::{NewShareRecord, ShareRepository},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,31 +39,21 @@ pub struct PublicShareContent {
     pub data: Vec<u8>,
 }
 
-type ShareDbRow = (
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-);
-
 #[derive(Clone)]
 pub struct ShareService {
-    db: DbPool,
+    repository: Arc<dyn ShareRepository>,
     authorization: Arc<dyn Authorization>,
     filesystem: Arc<dyn FileSystemResolver>,
 }
 
 impl ShareService {
     pub fn new(
-        db: DbPool,
+        repository: Arc<dyn ShareRepository>,
         authorization: Arc<dyn Authorization>,
         filesystem: Arc<dyn FileSystemResolver>,
     ) -> Self {
         Self {
-            db,
+            repository,
             authorization,
             filesystem,
         }
@@ -73,44 +63,22 @@ impl ShareService {
         &self,
         user: &AuthenticatedUser,
     ) -> Result<Vec<ShareItem>, AppError> {
-        let rows: Vec<ShareDbRow> = if user.is_admin {
-            sqlx::query_as(
-                "SELECT id, connection_id, path, share_token, password_hash, expires_at, created_at
-                 FROM shares
-                 ORDER BY created_at DESC",
-            )
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
-        } else {
-            sqlx::query_as(
-                "SELECT id, connection_id, path, share_token, password_hash, expires_at, created_at
-                 FROM shares
-                 WHERE created_by = ?
-                 ORDER BY created_at DESC",
-            )
-            .bind(&user.username)
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| anyhow::anyhow!("Database error: {}", e))?
-        };
-
-        Ok(rows
+        let owner = (!user.is_admin).then_some(user.username.as_str());
+        Ok(self
+            .repository
+            .list(owner)
+            .await?
             .into_iter()
-            .map(
-                |(id, connection_id, path, share_token, pass_hash, expires_at, created_at)| {
-                    ShareItem {
-                        id,
-                        connection_id,
-                        path,
-                        share_url: format!("/api/v1/shares/public/{}", share_token),
-                        share_token,
-                        has_password: pass_hash.is_some(),
-                        expires_at,
-                        created_at,
-                    }
-                },
-            )
+            .map(|record| ShareItem {
+                id: record.id,
+                connection_id: record.connection_id,
+                path: record.path,
+                share_url: format!("/api/v1/shares/public/{}", record.share_token),
+                share_token: record.share_token,
+                has_password: record.password_hash.is_some(),
+                expires_at: record.expires_at,
+                created_at: record.created_at,
+            })
             .collect())
     }
 
@@ -138,29 +106,26 @@ impl ShareService {
         );
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-        let expires_at_str = payload
+        let expires_at = payload
             .expires_in_hours
-            .map(|h| (now + Duration::hours(h)).to_rfc3339());
+            .map(|hours| (now + Duration::hours(hours)).to_rfc3339());
         let password_hash = match payload.password.as_ref().filter(|pwd| !pwd.trim().is_empty()) {
-            Some(pwd) => Some(hash_password(pwd)?),
+            Some(password) => Some(hash_password(password)?),
             None => None,
         };
 
-        sqlx::query(
-            "INSERT INTO shares (id, connection_id, path, share_token, password_hash, expires_at, created_at, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(&payload.connection_id)
-        .bind(&payload.path)
-        .bind(&share_token)
-        .bind(&password_hash)
-        .bind(&expires_at_str)
-        .bind(&now_str)
-        .bind(&user.username)
-        .execute(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+        self.repository
+            .insert(&NewShareRecord {
+                id: id.clone(),
+                connection_id: payload.connection_id.clone(),
+                path: payload.path.clone(),
+                share_token: share_token.clone(),
+                password_hash: password_hash.clone(),
+                expires_at: expires_at.clone(),
+                created_at: now_str.clone(),
+                created_by: user.username.clone(),
+            })
+            .await?;
 
         Ok(ShareItem {
             id,
@@ -169,7 +134,7 @@ impl ShareService {
             share_url: format!("/api/v1/shares/public/{}", share_token),
             share_token,
             has_password: password_hash.is_some(),
-            expires_at: expires_at_str,
+            expires_at,
             created_at: now_str,
         })
     }
@@ -179,21 +144,8 @@ impl ShareService {
         user: &AuthenticatedUser,
         share_id: &str,
     ) -> Result<(), AppError> {
-        let res = if user.is_admin {
-            sqlx::query("DELETE FROM shares WHERE id = ?")
-                .bind(share_id)
-                .execute(&self.db)
-                .await
-        } else {
-            sqlx::query("DELETE FROM shares WHERE id = ? AND created_by = ?")
-                .bind(share_id)
-                .bind(&user.username)
-                .execute(&self.db)
-                .await
-        }
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
-
-        if res.rows_affected() == 0 {
+        let owner = (!user.is_admin).then_some(user.username.as_str());
+        if !self.repository.delete(share_id, owner).await? {
             return Err(AppError::NotFound("Share not found".into()));
         }
         Ok(())
@@ -204,42 +156,42 @@ impl ShareService {
         token: &str,
         password: Option<&str>,
     ) -> Result<(String, String), AppError> {
-        let row: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, path, password_hash, expires_at FROM shares WHERE share_token = ?",
-        )
-        .bind(token)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database error: {}", e))?;
+        let record = self
+            .repository
+            .get_by_token(token)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Shared link not found or expired".into()))?;
 
-        let (connection_id, path, password_hash, expires_at) =
-            row.ok_or_else(|| AppError::NotFound("Shared link not found or expired".into()))?;
-
-        if let Some(exp) = expires_at {
-            if let Ok(exp_dt) = DateTime::parse_from_rfc3339(&exp) {
-                if exp_dt.with_timezone(&Utc) < Utc::now() {
-                    return Err(AppError::NotFound("Shared link has expired".into()));
-                }
+        if let Some(expires_at) = record.expires_at.as_deref() {
+            let expires_at = DateTime::parse_from_rfc3339(expires_at).map_err(|error| {
+                AppError::Internal(anyhow::anyhow!(
+                    "share '{}' has invalid persisted expiration timestamp: {}",
+                    record.id,
+                    error
+                ))
+            })?;
+            if expires_at.with_timezone(&Utc) < Utc::now() {
+                return Err(AppError::NotFound("Shared link has expired".into()));
             }
         }
 
-        if let Some(hash) = password_hash {
-            if !verify_password(password.unwrap_or(""), &hash) {
+        if let Some(hash) = record.password_hash.as_deref() {
+            if !verify_password(password.unwrap_or(""), hash) {
                 return Err(AppError::Unauthorized(
                     "Password required or incorrect".into(),
                 ));
             }
         }
 
-        let _ = sqlx::query(
-            "UPDATE shares SET download_count = download_count + 1, last_accessed_at = ? WHERE share_token = ?",
-        )
-        .bind(Utc::now().to_rfc3339())
-        .bind(token)
-        .execute(&self.db)
-        .await;
+        if let Err(error) = self
+            .repository
+            .record_access(token, &Utc::now().to_rfc3339())
+            .await
+        {
+            tracing::warn!(%error, token, "failed to persist public share access accounting");
+        }
 
-        Ok((connection_id, path))
+        Ok((record.connection_id, record.path))
     }
 
     pub async fn verify_and_get_public_share(
