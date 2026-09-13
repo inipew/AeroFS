@@ -27,6 +27,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Returns the provider operational capabilities
     fn capabilities(&self) -> Capabilities;
 
+    /// Whether I/O for this provider consumes local-disk rather than network capacity.
+    /// Remote/custom providers default to network admission unless they explicitly opt in.
+    fn is_local(&self) -> bool {
+        false
+    }
+
     /// Return an asynchronous stream of directory entries (OpenDAL-native streaming primitive).
     ///
     /// Streams should stay cheap: provider-specific metadata that requires extra local syscalls or
