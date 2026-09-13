@@ -110,26 +110,33 @@ fn upload_admission_resolves_runtime_settings_instead_of_startup_snapshots() {
 }
 
 #[test]
-fn file_helper_services_do_not_accept_root_app_state() {
-    for path in [
-        "src/services/editor_service.rs",
-        "src/services/preview_service.rs",
-        "src/services/operation_service.rs",
+fn file_helper_services_do_not_depend_on_composition_state() {
+    let editor = compact(&source("src/services/editor_service.rs"));
+    let editor_port = source("src/ports/editor.rs");
+    let adapter = compact(&source("src/editor_state_adapter.rs"));
+
+    for forbidden in [
+        "usecrate::state::AppState",
+        "usecrate::state::FileApiState",
+        "state:&AppState",
+        "state:&FileApiState",
     ] {
-        let src = compact(&source(path));
         assert!(
-            !src.contains("usecrate::state::AppState"),
-            "{path} must not import the root AppState"
-        );
-        assert!(
-            !src.contains("state:&AppState"),
-            "{path} must depend on a narrow capability instead of root AppState"
-        );
-        assert!(
-            src.contains("FileApiState"),
-            "{path} should depend on the narrow file capability"
+            !editor.contains(forbidden),
+            "editor compatibility service must not depend on composition state via `{forbidden}`"
         );
     }
+    assert!(editor.contains("EditorFileAccess"));
+    assert!(editor_port.contains("pub trait EditorFileAccess"));
+    assert!(adapter.contains("implEditorFileAccessforFileApiState"));
+    assert!(
+        !std::path::Path::new("src/services/preview_service.rs").exists(),
+        "unused PreviewService compatibility facade should stay removed"
+    );
+    assert!(
+        !std::path::Path::new("src/services/operation_service.rs").exists(),
+        "unused OperationService compatibility facade should stay removed"
+    );
 }
 
 #[test]

@@ -10,6 +10,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod domain;
+mod editor_state_adapter;
 pub mod errors;
 pub mod events;
 pub mod filesystem;
