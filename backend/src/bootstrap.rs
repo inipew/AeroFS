@@ -11,6 +11,7 @@ use crate::db::DbPool;
 use crate::events::{EventJournal, MetadataCacheEventSubscriber};
 use crate::infrastructure::{
     archive::SqliteArchiveEffects,
+    auth::{SqliteAccountRepository, SqliteAuthAudit, SqliteSessionRepository},
     connection_runtime::{RegistryConnectionRuntime, RuntimeConnectionEffects},
     connections::SqliteConnectionRepository,
     files::{
@@ -26,7 +27,7 @@ use crate::infrastructure::{
 use crate::services::{
     ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
     PreferencesService, RealtimeService, SearchService, SettingsService, ShareService, SyncService,
-    TrashService,
+    TrashService, UserService,
 };
 use crate::state::{
     AppState, ArchiveState, AuditState, AuthState, ConnectionState, FileApiState, HealthState,
@@ -42,6 +43,10 @@ use tokio::sync::Semaphore;
 pub struct BuiltApplication {
     pub state: AppState,
     pub runtime: RuntimeOwner,
+}
+
+pub fn build_user_service(db: DbPool) -> UserService {
+    UserService::new(Arc::new(SqliteAccountRepository::new(db)))
 }
 
 pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplication {
@@ -259,11 +264,17 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         .await
         .expect("Failed to load persisted storage connection state");
 
+    let auth_accounts = Arc::new(SqliteAccountRepository::new(db.clone()));
+    let auth_sessions = Arc::new(SqliteSessionRepository::new(db.clone()));
+    let auth_audit = Arc::new(SqliteAuthAudit::new(db.clone()));
+
     let state = AppState {
         router: RouterState::new(is_dev, allowed_origins),
         runtime: RuntimeState::new(runtime.view()),
         auth: AuthState::new(AuthService::new(
-            db.clone(),
+            auth_accounts,
+            auth_sessions,
+            auth_audit,
             trusted_proxies,
             cookie_secure,
             session_ttl_secs,
