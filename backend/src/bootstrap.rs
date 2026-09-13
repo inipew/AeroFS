@@ -18,6 +18,7 @@ use crate::infrastructure::{
         RegistryFileSystemResolver, SqliteAuthorization, SqliteConnectionStorageMetadata,
         SqliteFileMutationEffects, SqliteFileSettings,
     },
+    realtime::SqliteRealtimeAuthorization,
     settings::{RegistrySettingsRuntime, SqliteSettingsAudit, SqliteSystemSettingsStore},
     share::SqliteShareRepository,
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
@@ -296,7 +297,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             runtime.supervisor.clone(),
         )),
         realtime: RealtimeState::new(RealtimeService::new(
-            db.clone(),
+            Arc::new(SqliteRealtimeAuthorization::new(db.clone())),
             event_journal.clone(),
             runtime.shutdown_token.clone(),
         )),
