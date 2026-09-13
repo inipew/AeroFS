@@ -206,12 +206,15 @@ impl FileApiService {
         }
     }
 
-    pub async fn storage_info(
-        &self,
-        connection_id: &str,
-    ) -> Result<StorageInfoSnapshot, AppError> {
+    pub async fn storage_info(&self, connection_id: &str) -> StorageInfoSnapshot {
         if connection_id == ConnectionId::LOCAL {
-            let root = self.file_settings.local_root().await?;
+            let root = match self.file_settings.local_root().await {
+                Ok(root) => root,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to resolve local root for storage info");
+                    return local_storage_fallback();
+                }
+            };
 
             #[cfg(unix)]
             {
@@ -228,7 +231,7 @@ impl FileApiService {
                             0
                         };
                         let total_gib = (total as f64) / (1024.0 * 1024.0 * 1024.0);
-                        return Ok(StorageInfoSnapshot {
+                        return StorageInfoSnapshot {
                             source_name: "Local Storage".to_string(),
                             source_size_formatted: format_bytes(used),
                             disk_label: "Disk".to_string(),
@@ -237,44 +240,64 @@ impl FileApiService {
                             total_bytes: total,
                             used_bytes: used,
                             free_bytes: free,
-                        });
+                        };
                     }
                 }
             }
 
-            return Ok(StorageInfoSnapshot {
-                source_name: "Local Storage".to_string(),
-                source_size_formatted: "Local".to_string(),
-                disk_label: "Disk".to_string(),
-                disk_usage_text: "Available".to_string(),
-                used_percent: 0,
-                total_bytes: 0,
-                used_bytes: 0,
-                free_bytes: 0,
-            });
+            return local_storage_fallback();
         }
 
-        let descriptor = self
-            .connection_storage
-            .get(connection_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Connection '{connection_id}' not found")))?;
-        let port_str = descriptor
-            .port
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "21".into());
-        let host_str = descriptor.host.unwrap_or_else(|| "Remote".into());
+        match self.connection_storage.get(connection_id).await {
+            Ok(Some(descriptor)) => {
+                let port_str = descriptor
+                    .port
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "21".into());
+                let host_str = descriptor.host.unwrap_or_else(|| "Remote".into());
+                StorageInfoSnapshot {
+                    source_name: descriptor.name,
+                    source_size_formatted: format!("{} Remote", descriptor.provider.to_uppercase()),
+                    disk_label: format!("{}:{}", host_str, port_str),
+                    disk_usage_text: "Connected · Online".to_string(),
+                    used_percent: 0,
+                    total_bytes: 0,
+                    used_bytes: 0,
+                    free_bytes: 0,
+                }
+            }
+            Ok(None) => remote_storage_fallback(connection_id),
+            Err(error) => {
+                tracing::warn!(%error, connection_id, "failed to load remote storage metadata");
+                remote_storage_fallback(connection_id)
+            }
+        }
+    }
+}
 
-        Ok(StorageInfoSnapshot {
-            source_name: descriptor.name,
-            source_size_formatted: format!("{} Remote", descriptor.provider.to_uppercase()),
-            disk_label: format!("{}:{}", host_str, port_str),
-            disk_usage_text: "Connected · Online".to_string(),
-            used_percent: 0,
-            total_bytes: 0,
-            used_bytes: 0,
-            free_bytes: 0,
-        })
+fn local_storage_fallback() -> StorageInfoSnapshot {
+    StorageInfoSnapshot {
+        source_name: "Local Storage".to_string(),
+        source_size_formatted: "Local".to_string(),
+        disk_label: "Disk".to_string(),
+        disk_usage_text: "Available".to_string(),
+        used_percent: 0,
+        total_bytes: 0,
+        used_bytes: 0,
+        free_bytes: 0,
+    }
+}
+
+fn remote_storage_fallback(connection_id: &str) -> StorageInfoSnapshot {
+    StorageInfoSnapshot {
+        source_name: connection_id.to_string(),
+        source_size_formatted: "Remote".to_string(),
+        disk_label: "Network".to_string(),
+        disk_usage_text: "Connected".to_string(),
+        used_percent: 0,
+        total_bytes: 0,
+        used_bytes: 0,
+        free_bytes: 0,
     }
 }
 
