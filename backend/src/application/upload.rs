@@ -9,6 +9,7 @@ use crate::ports::{
     effects::FileMutationEffects,
     filesystem::FileSystemResolver,
     mutation::MutationCoordinator,
+    settings::FileSettings,
     upload::{
         CreateInlineUploadJob, InlineUploadContext, UploadExecution, UploadReservationStore,
         UploadSession,
@@ -16,7 +17,6 @@ use crate::ports::{
 };
 use bytes::Bytes;
 use futures::Stream;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -27,8 +27,7 @@ pub struct UploadApplicationService {
     mutations: Arc<dyn MutationCoordinator>,
     reservations: Arc<dyn UploadReservationStore>,
     execution: Arc<dyn UploadExecution>,
-    local_root: PathBuf,
-    max_editable_size: u64,
+    settings: Arc<dyn FileSettings>,
     max_upload_size: u64,
 }
 
@@ -41,8 +40,7 @@ impl UploadApplicationService {
         mutations: Arc<dyn MutationCoordinator>,
         reservations: Arc<dyn UploadReservationStore>,
         execution: Arc<dyn UploadExecution>,
-        local_root: PathBuf,
-        max_editable_size: u64,
+        settings: Arc<dyn FileSettings>,
         max_upload_size: u64,
     ) -> Self {
         Self {
@@ -52,8 +50,7 @@ impl UploadApplicationService {
             mutations,
             reservations,
             execution,
-            local_root,
-            max_editable_size,
+            settings,
             max_upload_size,
         }
     }
@@ -96,7 +93,8 @@ impl UploadApplicationService {
             PermissionInheritanceMode::InheritExistingOrParent,
         )
         .await?;
-        self.ensure_local_capacity(connection)?;
+        self.ensure_local_capacity(connection).await?;
+        let max_editable_size = self.settings.max_editable_size().await?;
 
         let lease = self
             .mutations
@@ -110,7 +108,7 @@ impl UploadApplicationService {
                 destination_connection_id: connection.to_string(),
                 destination_path: target.path.clone(),
                 total_bytes,
-                inline_threshold: self.max_editable_size,
+                inline_threshold: max_editable_size,
                 target_exists,
                 capabilities: provider.capabilities(),
             })
@@ -204,7 +202,8 @@ impl UploadApplicationService {
             PermissionInheritanceMode::InheritExistingOrParent,
         )
         .await?;
-        self.ensure_local_capacity(connection)?;
+        self.ensure_local_capacity(connection).await?;
+        let max_editable_size = self.settings.max_editable_size().await?;
 
         let _lease = self
             .mutations
@@ -218,7 +217,7 @@ impl UploadApplicationService {
                 destination_connection_id: connection.to_string(),
                 destination_path: target.path.clone(),
                 total_bytes: total_hint,
-                inline_threshold: self.max_editable_size,
+                inline_threshold: max_editable_size,
                 target_exists,
                 capabilities: provider.capabilities(),
             })
@@ -294,9 +293,10 @@ impl UploadApplicationService {
         }
     }
 
-    fn ensure_local_capacity(&self, connection: &ConnectionId) -> Result<(), AppError> {
+    async fn ensure_local_capacity(&self, connection: &ConnectionId) -> Result<(), AppError> {
         if connection.as_str() == ConnectionId::LOCAL {
-            if let Some(free_bytes) = get_available_disk_space(&self.local_root) {
+            let local_root = self.settings.local_root().await?;
+            if let Some(free_bytes) = get_available_disk_space(&local_root) {
                 if free_bytes < 10 * 1024 * 1024 {
                     return Err(AppError::InsufficientStorage(format!(
                         "Local filesystem storage full: only {} MB free",
