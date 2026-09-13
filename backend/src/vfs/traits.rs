@@ -28,9 +28,11 @@ pub trait FileSystem: Send + Sync + 'static {
     fn capabilities(&self) -> Capabilities;
 
     /// Whether I/O for this provider consumes local-disk rather than network capacity.
-    /// Remote/custom providers default to network admission unless they explicitly opt in.
+    /// Implementations may override this. The conservative default recognizes the local
+    /// filesystem capability profile while treating other/custom providers as network I/O.
     fn is_local(&self) -> bool {
-        false
+        let capabilities = self.capabilities();
+        capabilities.watch && capabilities.permissions && capabilities.atomic_rename
     }
 
     /// Return an asynchronous stream of directory entries (OpenDAL-native streaming primitive).
