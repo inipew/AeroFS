@@ -8,6 +8,7 @@ pub mod effects;
 pub mod filesystem;
 pub mod mutation;
 pub mod settings;
+pub mod share;
 pub mod transfer;
 pub mod trash;
 pub mod upload;

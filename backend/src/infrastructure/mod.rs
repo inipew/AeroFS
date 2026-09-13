@@ -5,6 +5,7 @@ pub mod connections;
 pub mod credentials;
 pub mod files;
 pub mod settings;
+pub mod share;
 pub mod transfers;
 pub mod trash;
 pub mod uploads;
