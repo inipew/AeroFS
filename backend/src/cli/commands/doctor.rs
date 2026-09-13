@@ -127,18 +127,13 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 fixable: false,
             });
 
-            // Integrity checks
             match check_integrity(&pool).await {
                 Ok(reports) => {
                     let pass = reports.iter().all(|r| r.contains("ok"));
                     checks.push(DoctorCheck {
                         category: "Database",
                         name: "PRAGMA Integrity & Foreign Keys",
-                        severity: if pass {
-                            Severity::Ok
-                        } else {
-                            Severity::Critical
-                        },
+                        severity: if pass { Severity::Ok } else { Severity::Critical },
                         details: reports.join("; "),
                         fixable: false,
                     });
@@ -154,50 +149,43 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 }
             }
 
-            // Admin user check
             let admin_count: Result<(i64,), _> =
                 sqlx::query_as("SELECT COUNT(*) FROM users WHERE is_admin = 1")
                     .fetch_one(&pool)
                     .await;
 
             match admin_count {
-                Ok((c,)) if c > 0 => {
-                    checks.push(DoctorCheck {
-                        category: "Database",
-                        name: "Administrator Accounts",
-                        severity: Severity::Ok,
-                        details: format!("{} administrator account(s) registered", c),
-                        fixable: false,
-                    });
-                }
-                Ok(_) => {
-                    checks.push(DoctorCheck {
-                        category: "Database",
-                        name: "Administrator Accounts",
-                        severity: Severity::Critical,
-                        details: "No administrator accounts found. System has no administrator!"
-                            .to_string(),
-                        fixable: false,
-                    });
-                }
-                Err(e) => {
-                    checks.push(DoctorCheck {
-                        category: "Database",
-                        name: "Administrator Accounts",
-                        severity: Severity::Warning,
-                        details: format!("Users table not yet initialized: {}", e),
-                        fixable: false,
-                    });
-                }
+                Ok((c,)) if c > 0 => checks.push(DoctorCheck {
+                    category: "Database",
+                    name: "Administrator Accounts",
+                    severity: Severity::Ok,
+                    details: format!("{} administrator account(s) registered", c),
+                    fixable: false,
+                }),
+                Ok(_) => checks.push(DoctorCheck {
+                    category: "Database",
+                    name: "Administrator Accounts",
+                    severity: Severity::Critical,
+                    details: "No administrator accounts found. System has no administrator!".to_string(),
+                    fixable: false,
+                }),
+                Err(e) => checks.push(DoctorCheck {
+                    category: "Database",
+                    name: "Administrator Accounts",
+                    severity: Severity::Warning,
+                    details: format!("Users table not yet initialized: {}", e),
+                    fixable: false,
+                }),
             }
 
             // ==========================================
             // Category 4: Transfer Subsystem Checks
             // ==========================================
-            let stuck_jobs: Result<(i64,), _> =
-                sqlx::query_as("SELECT COUNT(*) FROM transfer_jobs WHERE status IN ('running', 'cancellation_requested')")
-                    .fetch_one(&pool)
-                    .await;
+            let stuck_jobs: Result<(i64,), _> = sqlx::query_as(
+                "SELECT COUNT(*) FROM transfer_jobs WHERE status IN ('running', 'cancellation_requested')",
+            )
+            .fetch_one(&pool)
+            .await;
 
             if let Ok((stuck,)) = stuck_jobs {
                 if stuck > 0
@@ -225,12 +213,28 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                             )
                             .unwrap_or(false);
                         if should_fix && !args.dry_run {
-                            let _ = crate::services::TransferService::repair_stuck_transfers(
-                                &pool, false,
-                            )
-                            .await;
-                            repairs_applied
-                                .push(format!("Marked {} orphaned transfers as failed", stuck));
+                            match ctx.transfer_history().await {
+                                Ok(history) => match history.repair_stuck_transfers(false).await {
+                                    Ok(repaired) => repairs_applied.push(format!(
+                                        "Marked {} orphaned transfers as failed",
+                                        repaired
+                                    )),
+                                    Err(error) => checks.push(DoctorCheck {
+                                        category: "Transfers",
+                                        name: "Orphaned Transfer Repair",
+                                        severity: Severity::Warning,
+                                        details: format!("Repair failed: {}", error),
+                                        fixable: true,
+                                    }),
+                                },
+                                Err(error) => checks.push(DoctorCheck {
+                                    category: "Transfers",
+                                    name: "Orphaned Transfer Repair",
+                                    severity: Severity::Warning,
+                                    details: format!("Repair capability unavailable: {}", error),
+                                    fixable: true,
+                                }),
+                            }
                         }
                     }
                 } else {
@@ -256,25 +260,19 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
                 checks.push(DoctorCheck {
                     category: "Connections",
                     name: "Active Storage Providers",
-                    severity: if conns > 0 {
-                        Severity::Ok
-                    } else {
-                        Severity::Warning
-                    },
+                    severity: if conns > 0 { Severity::Ok } else { Severity::Warning },
                     details: format!("{} enabled storage connection(s) configured", conns),
                     fixable: false,
                 });
             }
         }
-        Err(e) => {
-            checks.push(DoctorCheck {
-                category: "Database",
-                name: "SQLite Connection",
-                severity: Severity::Critical,
-                details: format!("Cannot connect to database: {}", e),
-                fixable: false,
-            });
-        }
+        Err(e) => checks.push(DoctorCheck {
+            category: "Database",
+            name: "SQLite Connection",
+            severity: Severity::Critical,
+            details: format!("Cannot connect to database: {}", e),
+            fixable: false,
+        }),
     }
 
     // ==========================================
@@ -331,7 +329,6 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
         }
     }
 
-    // Temp directory
     if let Some(ref temp) = ctx.config.filesystem.temp_dir {
         if !temp.exists() {
             checks.push(DoctorCheck {
@@ -414,7 +411,6 @@ pub async fn handle(args: DoctorArgs, ctx: &CliContext) -> Result<(), CliError> 
         });
     }
 
-    // Calculate totals
     let ok_count = checks.iter().filter(|c| c.severity == Severity::Ok).count();
     let warning_count = checks
         .iter()

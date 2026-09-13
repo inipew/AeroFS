@@ -5,9 +5,9 @@ use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{parse_single_byte_range, Actor, Capabilities, ConnectionId, RangeError};
 use backend::errors::AppError;
+use backend::ports::transfer::{TransferJob, TransferPhase, TransferStatus, TransferType};
 use backend::services::TransferService;
 use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason};
-use backend::transfer::{TransferJob, TransferPhase, TransferStatus, TransferType};
 use chrono::Utc;
 use std::collections::HashSet;
 use tempfile::tempdir;
@@ -295,7 +295,6 @@ async fn test_transfer_visibility_and_interrupted_status() {
     };
 
     assert_eq!(TransferStatus::Interrupted.as_str(), "interrupted");
-    assert_eq!(TransferStatus::from_str("interrupted"), TransferStatus::Interrupted);
 
     let mut allowed_empty = HashSet::new();
     assert!(TransferService::authorize_transfer_visibility(&admin, &job, &allowed_empty));

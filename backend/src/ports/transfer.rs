@@ -14,6 +14,17 @@ pub enum TransferType {
     Sync,
 }
 
+impl TransferType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Move => "move",
+            Self::Upload => "upload",
+            Self::Sync => "sync",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferStatus {
@@ -26,6 +37,20 @@ pub enum TransferStatus {
     Failed,
 }
 
+impl TransferStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::CancellationRequested => "cancellation_requested",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferPhase {
@@ -35,6 +60,19 @@ pub enum TransferPhase {
     Verifying,
     CleaningUp,
     Completed,
+}
+
+impl TransferPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Transferring => "transferring",
+            Self::Finalizing => "finalizing",
+            Self::Verifying => "verifying",
+            Self::CleaningUp => "cleaning_up",
+            Self::Completed => "completed",
+        }
+    }
 }
 
 /// Execution mode for a transfer — Inline vs Background vs Resumable (§Upload-as-Transfer)
@@ -119,6 +157,26 @@ pub struct TransferSubmission {
     pub source_path: String,
     pub destination_connection: ConnectionId,
     pub destination_path: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TransferHistoryFilter {
+    pub status: Option<String>,
+    pub limit: usize,
+    pub user: Option<String>,
+    pub connection: Option<String>,
+}
+
+#[async_trait]
+pub trait TransferHistoryRepository: Send + Sync {
+    async fn get(&self, job_id: &str) -> Result<Option<TransferJob>, AppError>;
+    async fn list(&self, filter: &TransferHistoryFilter) -> Result<Vec<TransferJob>, AppError>;
+    async fn purge_older_than(
+        &self,
+        cutoff: DateTime<Utc>,
+        dry_run: bool,
+    ) -> Result<usize, AppError>;
+    async fn repair_stuck(&self, now: DateTime<Utc>, dry_run: bool) -> Result<usize, AppError>;
 }
 
 #[async_trait]
