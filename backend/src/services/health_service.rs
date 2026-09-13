@@ -1,9 +1,5 @@
-use crate::db::DbPool;
 use crate::errors::AppError;
-use crate::runtime::TaskSupervisor;
-use crate::state::RuntimeView;
-use crate::vfs::registry::ProviderRegistry;
-use std::path::PathBuf;
+use crate::ports::health::ReadinessProbe;
 use std::sync::Arc;
 
 const BACKGROUND_FAILURE_THRESHOLD: u32 = 3;
@@ -16,62 +12,43 @@ pub struct ReadinessStatus {
 
 #[derive(Clone)]
 pub struct HealthService {
-    db: DbPool,
-    storage_root: PathBuf,
-    registry: Arc<ProviderRegistry>,
-    runtime: RuntimeView,
-    supervisor: TaskSupervisor,
+    probe: Arc<dyn ReadinessProbe>,
 }
 
 impl HealthService {
-    pub fn new(
-        db: DbPool,
-        storage_root: PathBuf,
-        registry: Arc<ProviderRegistry>,
-        runtime: RuntimeView,
-        supervisor: TaskSupervisor,
-    ) -> Self {
-        Self {
-            db,
-            storage_root,
-            registry,
-            runtime,
-            supervisor,
-        }
+    pub fn new(probe: Arc<dyn ReadinessProbe>) -> Self {
+        Self { probe }
     }
 
     pub async fn readiness(&self) -> Result<ReadinessStatus, AppError> {
-        let phase = self.runtime.phase();
-        if !self.runtime.is_running() {
+        let signals = self.probe.signals(BACKGROUND_FAILURE_THRESHOLD).await;
+        if !signals.runtime_running {
             return Err(AppError::ServiceUnavailable(format!(
                 "Runtime phase is '{}'",
-                phase.as_str()
+                signals.phase
             )));
         }
 
-        let db_ok = sqlx::query("SELECT 1").fetch_one(&self.db).await.is_ok();
-        let storage_ok = self.storage_root.exists();
-        let degraded_tasks = self
-            .supervisor
-            .readiness_degraded_tasks(BACKGROUND_FAILURE_THRESHOLD);
-
-        if !db_ok || !storage_ok || !degraded_tasks.is_empty() {
+        if !signals.database_ok || !signals.storage_ok || !signals.degraded_tasks.is_empty() {
             let mut reasons = Vec::new();
-            if !db_ok {
+            if !signals.database_ok {
                 reasons.push("Database query failed".to_string());
             }
-            if !storage_ok {
+            if !signals.storage_ok {
                 reasons.push("Storage root inaccessible".to_string());
             }
-            for (name, health) in degraded_tasks {
+            for health in signals.degraded_tasks {
                 let restart_suffix = if health.restart_exhausted {
-                    format!("; restart budget exhausted after {} restarts", health.restart_count)
+                    format!(
+                        "; restart budget exhausted after {} restarts",
+                        health.restart_count
+                    )
                 } else {
                     String::new()
                 };
                 reasons.push(format!(
                     "Critical background task '{}' failed {} consecutive times{}{}",
-                    name,
+                    health.name,
                     health.consecutive_failures,
                     health
                         .last_error
@@ -88,8 +65,8 @@ impl HealthService {
         }
 
         Ok(ReadinessStatus {
-            active_providers: self.registry.list_ids().await.len(),
-            phase: phase.as_str(),
+            active_providers: signals.active_providers,
+            phase: signals.phase,
         })
     }
 }
