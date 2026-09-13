@@ -12,6 +12,7 @@ pub mod mutation;
 pub mod realtime;
 pub mod settings;
 pub mod share;
+pub mod sync;
 pub mod transfer;
 pub mod trash;
 pub mod upload;
