@@ -296,7 +296,7 @@ impl UploadApplicationService {
     async fn ensure_local_capacity(&self, connection: &ConnectionId) -> Result<(), AppError> {
         if connection.as_str() == ConnectionId::LOCAL {
             let local_root = self.settings.local_root().await?;
-            if let Some(free_bytes) = get_available_disk_space(&local_root) {
+            if let Some(free_bytes) = get_available_disk_space(&local_root)? {
                 if free_bytes < 10 * 1024 * 1024 {
                     return Err(AppError::InsufficientStorage(format!(
                         "Local filesystem storage full: only {} MB free",
@@ -310,19 +310,29 @@ impl UploadApplicationService {
 }
 
 #[cfg(unix)]
-fn get_available_disk_space(path: &std::path::Path) -> Option<u64> {
+fn get_available_disk_space(path: &std::path::Path) -> Result<Option<u64>, AppError> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        AppError::Internal(anyhow::anyhow!(
+            "local storage path contains an embedded NUL byte: {}",
+            path.display()
+        ))
+    })?;
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } == 0 {
-        Some((stat.f_bavail as u64) * (stat.f_frsize as u64))
+        Ok(Some((stat.f_bavail as u64) * (stat.f_frsize as u64)))
     } else {
-        None
+        Err(AppError::Internal(anyhow::anyhow!(
+            "failed to inspect local filesystem capacity at '{}': {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        )))
     }
 }
 
 #[cfg(not(unix))]
-fn get_available_disk_space(_path: &std::path::Path) -> Option<u64> {
-    None
+fn get_available_disk_space(_path: &std::path::Path) -> Result<Option<u64>, AppError> {
+    Ok(None)
 }
