@@ -28,6 +28,31 @@ fn settings_service_is_not_an_app_state_facade() {
 }
 
 #[test]
+fn settings_service_depends_on_ports_not_infrastructure() {
+    let src = source("src/services/settings_service.rs");
+    let compact = compact(&src);
+
+    for forbidden in [
+        "DbPool",
+        "ProviderRegistry",
+        "ProviderFactory",
+        "TransferManager",
+        "sqlx::",
+        "record_audit_log",
+        "crate::infrastructure",
+    ] {
+        assert!(
+            !src.contains(forbidden),
+            "SettingsService must not depend on concrete infrastructure: {forbidden}"
+        );
+    }
+
+    assert!(compact.contains("Arc<dynSystemSettingsStore>"));
+    assert!(compact.contains("Arc<dynSettingsRuntime>"));
+    assert!(compact.contains("Arc<dynSettingsAudit>"));
+}
+
+#[test]
 fn settings_http_uses_narrow_capability_state() {
     let src = source("src/api/settings.rs");
     let compact = compact(&src);
@@ -57,18 +82,46 @@ fn bootstrap_owns_settings_composition() {
     let compact = compact(&src);
 
     assert!(compact.contains("letsettings_service=SettingsService::new("));
+    assert!(compact.contains("SqliteSystemSettingsStore::new(db.clone())"));
+    assert!(compact.contains("RegistrySettingsRuntime::new("));
+    assert!(compact.contains("SqliteSettingsAudit::new(db.clone())"));
     assert!(compact.contains("letsettings=SettingsState::new(settings_service.clone())"));
     assert!(compact.contains("settings,"));
 }
 
 #[test]
-fn settings_update_preserves_transaction_and_runtime_effects() {
-    let src = source("src/services/settings_service.rs");
+fn settings_persistence_remains_transactional() {
+    let src = source("src/infrastructure/settings.rs");
     let compact = compact(&src);
 
-    assert!(compact.contains("self.db.begin().await"));
+    assert!(compact.contains("letmuttx=self.db.begin().await"));
     assert!(compact.contains("tx.commit().await"));
-    assert!(compact.contains("self.refresh_local_root_runtime(root_path).await"));
-    assert!(compact.contains("set_max_concurrent_transfers(app_settings.transfers.max_concurrent_transfers)"));
-    assert!(src.contains("SETTINGS_UPDATED"));
+    assert!(compact.contains("ONCONFLICT(key)DOUPDATESET"));
+}
+
+#[test]
+fn settings_update_prepares_before_persisting_and_activates_after_commit() {
+    let src = compact(&source("src/services/settings_service.rs"));
+    let update = src
+        .split("pubasyncfnupdate_settings(")
+        .nth(1)
+        .expect("SettingsService must expose update_settings");
+
+    let prepare = update
+        .find("prepare_local_root(root).await?")
+        .expect("settings update must prepare the local provider before persistence");
+    let persist = update
+        .find("self.store.upsert_many(&values).await?")
+        .expect("settings update must persist settings atomically");
+    let activate = update
+        .find("prepared.activate().await")
+        .expect("prepared provider must be activated after persistence");
+
+    assert!(
+        prepare < persist && persist < activate,
+        "settings update ordering must remain prepare -> durable commit -> runtime activation"
+    );
+    assert!(update.contains(
+        "set_max_concurrent_transfers(app_settings.transfers.max_concurrent_transfers)"
+    ));
 }

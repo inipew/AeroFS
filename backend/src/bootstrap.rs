@@ -15,6 +15,7 @@ use crate::infrastructure::{
         RegistryFileSystemResolver, SqliteAuthorization, SqliteFileMutationEffects,
         SqliteFileSettings,
     },
+    settings::{RegistrySettingsRuntime, SqliteSettingsAudit, SqliteSystemSettingsStore},
     transfers::{SqliteTransferControl, SqliteTransferEffects, TransferEngineQueue},
     uploads::TransferUploadExecution,
     CredentialStore,
@@ -198,10 +199,13 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     );
 
     let settings_service = SettingsService::new(
-        db.clone(),
         config.clone(),
-        registry.clone(),
-        transfer_manager.clone(),
+        Arc::new(SqliteSystemSettingsStore::new(db.clone())),
+        Arc::new(RegistrySettingsRuntime::new(
+            registry.clone(),
+            transfer_manager.clone(),
+        )),
+        Arc::new(SqliteSettingsAudit::new(db.clone())),
     );
     let settings = SettingsState::new(settings_service.clone());
 

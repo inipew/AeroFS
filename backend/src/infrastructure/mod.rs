@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod credentials;
 pub mod files;
+pub mod settings;
 pub mod transfers;
 pub mod uploads;
 
