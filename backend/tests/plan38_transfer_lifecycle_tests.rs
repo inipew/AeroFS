@@ -7,7 +7,7 @@ use backend::domain::{Actor, ConnectionId};
 use backend::ports::transfer::{
     TransferJobResponse, TransferPhase, TransferStatus, TransferType,
 };
-use backend::services::{EditorService, TransferService};
+use backend::services::EditorService;
 use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason, TransferState};
 use backend::transfer::TransferPhase as EngineTransferPhase;
 use std::time::Duration;
@@ -59,6 +59,33 @@ fn actor(user: &AuthenticatedUser) -> Actor {
         username: user.username().to_string(),
         is_admin: user.is_admin(),
     }
+}
+
+async fn create_transfer(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    name: &str,
+    transfer_type: TransferType,
+    source_path: &str,
+    destination_path: &str,
+) -> String {
+    let transfers = TransferState::from_ref(state);
+    transfers
+        .use_cases
+        .create_transfer
+        .execute(
+            &actor(user),
+            backend::application::transfers::CreateTransferCommand {
+                name: name.to_string(),
+                transfer_type,
+                source_connection: ConnectionId::local(),
+                source_path: source_path.to_string(),
+                destination_connection: ConnectionId::local(),
+                destination_path: destination_path.to_string(),
+            },
+        )
+        .await
+        .unwrap()
 }
 
 async fn write_file(
@@ -156,18 +183,15 @@ async fn test_transfer_phase_transitions_and_completion() {
     )
     .await;
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "copy_lifecycle".into(),
+        "copy_lifecycle",
         TransferType::Copy,
-        "local".into(),
-        "/source_lifecycle.txt".into(),
-        "local".into(),
-        "/dest_lifecycle.txt".into(),
+        "/source_lifecycle.txt",
+        "/dest_lifecycle.txt",
     )
-    .await
-    .unwrap();
+    .await;
 
     let job = wait_for_completed(&state, &admin, &job_id).await;
     assert_eq!(job.phase, TransferPhase::Completed);
@@ -189,18 +213,15 @@ async fn test_move_cleanup_lifecycle() {
     let test_data = b"Transactional Move Lifecycle Test".to_vec();
     write_file(&state, &admin, "/move_source.txt", test_data).await;
 
-    let job_id = TransferService::create_transfer(
+    let job_id = create_transfer(
         &state,
         &admin,
-        "move_lifecycle".into(),
+        "move_lifecycle",
         TransferType::Move,
-        "local".into(),
-        "/move_source.txt".into(),
-        "local".into(),
-        "/move_dest.txt".into(),
+        "/move_source.txt",
+        "/move_dest.txt",
     )
-    .await
-    .unwrap();
+    .await;
 
     let job = wait_for_completed(&state, &admin, &job_id).await;
     assert_eq!(job.phase, TransferPhase::Completed);
