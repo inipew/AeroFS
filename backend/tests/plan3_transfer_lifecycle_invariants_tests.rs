@@ -1,4 +1,5 @@
 use backend::{
+    bootstrap::build_user_service,
     db::{init_db, DbPool},
     domain::Actor,
     events::{DomainEvent, EventJournal},
@@ -112,14 +113,11 @@ fn control(fixture: &TransferFixture) -> SqliteTransferControl {
 #[tokio::test]
 async fn test_retry_rejected_after_permission_revoked() {
     let fixture = setup_fixture().await;
-    let alice_id = backend::services::UserService::create_user(
-        &fixture.db,
-        "alice",
-        "alicepassword",
-        false,
-    )
-    .await
-    .unwrap();
+    let users = build_user_service(fixture.db.clone());
+    let alice_id = users
+        .create_user("alice", "alicepassword", false)
+        .await
+        .unwrap();
 
     let mut job = failed_job("test-job-alice-failed", "local", "/source.txt");
     job.user_id = Some(alice_id.clone());
