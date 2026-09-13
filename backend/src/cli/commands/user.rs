@@ -1,8 +1,8 @@
+use crate::bootstrap::build_user_service;
 use crate::cli::args::{UserAction, UserCommand};
 use crate::cli::context::CliContext;
 use crate::cli::error::CliError;
 use crate::cli::output::{prompt_confirm, read_password_prompt, read_password_stdin};
-use crate::services::user_service::UserService;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -14,16 +14,18 @@ struct UserActionOutput {
 
 pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> {
     let pool = ctx.db().await?;
+    let users = build_user_service(pool);
 
     match cmd.action {
         UserAction::List => {
-            let users = UserService::list_users(&pool)
+            let user_list = users
+                .list_users()
                 .await
                 .map_err(|e| CliError::database(format!("Failed to query users: {}", e)))?;
 
-            ctx.output.print_success("user.list", &users, || {
-                println!("Registered System Users ({} total):", users.len());
-                for u in &users {
+            ctx.output.print_success("user.list", &user_list, || {
+                println!("Registered System Users ({} total):", user_list.len());
+                for u in &user_list {
                     let role = if u.is_admin {
                         "Administrator"
                     } else {
@@ -38,14 +40,12 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             Ok(())
         }
         UserAction::Show { username } => {
-            let user = UserService::get_user(&pool, &username)
-                .await
-                .map_err(|e| match e {
-                    crate::errors::AppError::NotFound(_) => {
-                        CliError::not_found(format!("User '{}' not found", username))
-                    }
-                    _ => CliError::database(format!("Database error: {}", e)),
-                })?;
+            let user = users.get_user(&username).await.map_err(|e| match e {
+                crate::errors::AppError::NotFound(_) => {
+                    CliError::not_found(format!("User '{}' not found", username))
+                }
+                _ => CliError::database(format!("Database error: {}", e)),
+            })?;
 
             ctx.output.print_success("user.show", &user, || {
                 println!("User Account Details:");
@@ -89,7 +89,8 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
                 p1
             };
 
-            let uid = UserService::create_user(&pool, &username, &password, admin)
+            let uid = users
+                .create_user(&username, &password, admin)
                 .await
                 .map_err(|e| match e {
                     crate::errors::AppError::Conflict(msg) => CliError::conflict(msg),
@@ -115,8 +116,8 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             username,
             password_stdin,
         } => {
-            // Verify user exists first
-            UserService::get_user(&pool, &username)
+            users
+                .get_user(&username)
                 .await
                 .map_err(|_| CliError::not_found(format!("User '{}' not found", username)))?;
 
@@ -137,10 +138,12 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
                 p1
             };
 
-            UserService::update_password(&pool, &username, &password)
+            users
+                .update_password(&username, &password)
                 .await
                 .map_err(|e| match e {
                     crate::errors::AppError::BadRequest(msg) => CliError::usage(msg),
+                    crate::errors::AppError::NotFound(msg) => CliError::not_found(msg),
                     _ => CliError::database(format!("Failed to update password: {}", e)),
                 })?;
 
@@ -171,13 +174,11 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
                 }
             }
 
-            UserService::delete_user(&pool, &username)
-                .await
-                .map_err(|e| match e {
-                    crate::errors::AppError::Forbidden(msg) => CliError::forbidden(msg),
-                    crate::errors::AppError::NotFound(msg) => CliError::not_found(msg),
-                    _ => CliError::database(format!("Failed to delete user: {}", e)),
-                })?;
+            users.delete_user(&username).await.map_err(|e| match e {
+                crate::errors::AppError::Forbidden(msg) => CliError::forbidden(msg),
+                crate::errors::AppError::NotFound(msg) => CliError::not_found(msg),
+                _ => CliError::database(format!("Failed to delete user: {}", e)),
+            })?;
 
             let out = UserActionOutput {
                 username: username.clone(),
@@ -191,7 +192,8 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             Ok(())
         }
         UserAction::Promote { username } => {
-            UserService::set_admin_role(&pool, &username, true)
+            users
+                .set_admin_role(&username, true)
                 .await
                 .map_err(|e| match e {
                     crate::errors::AppError::NotFound(msg) => CliError::not_found(msg),
@@ -210,7 +212,8 @@ pub async fn handle(cmd: UserCommand, ctx: &CliContext) -> Result<(), CliError> 
             Ok(())
         }
         UserAction::Demote { username } => {
-            UserService::set_admin_role(&pool, &username, false)
+            users
+                .set_admin_role(&username, false)
                 .await
                 .map_err(|e| match e {
                     crate::errors::AppError::Forbidden(msg) => CliError::forbidden(msg),

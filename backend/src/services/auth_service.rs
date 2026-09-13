@@ -1,10 +1,9 @@
-use crate::auth::audit::record_audit_log;
 use crate::auth::password::verify_password;
-use crate::auth::session::{create_session, delete_session, validate_session, UserInfo};
-use crate::db::DbPool;
+use crate::auth::session::UserInfo;
 use crate::errors::{AppError, AuthError};
+use crate::ports::auth::{AccountRepository, AuthAudit, SessionRepository};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 static FAILED_ATTEMPTS: LazyLock<Mutex<HashMap<String, Vec<Instant>>>> =
@@ -12,7 +11,9 @@ static FAILED_ATTEMPTS: LazyLock<Mutex<HashMap<String, Vec<Instant>>>> =
 
 #[derive(Clone)]
 pub struct AuthService {
-    db: DbPool,
+    accounts: Arc<dyn AccountRepository>,
+    sessions: Arc<dyn SessionRepository>,
+    audit: Arc<dyn AuthAudit>,
     trusted_proxies: Vec<String>,
     cookie_secure: bool,
     session_ttl_secs: u64,
@@ -20,13 +21,17 @@ pub struct AuthService {
 
 impl AuthService {
     pub fn new(
-        db: DbPool,
+        accounts: Arc<dyn AccountRepository>,
+        sessions: Arc<dyn SessionRepository>,
+        audit: Arc<dyn AuthAudit>,
         trusted_proxies: Vec<String>,
         cookie_secure: bool,
         session_ttl_secs: u64,
     ) -> Self {
         Self {
-            db,
+            accounts,
+            sessions,
+            audit,
             trusted_proxies,
             cookie_secure,
             session_ttl_secs,
@@ -46,7 +51,7 @@ impl AuthService {
     }
 
     pub async fn validate_session(&self, session_id: &str) -> Result<Option<UserInfo>, AppError> {
-        validate_session(&self.db, session_id).await
+        self.sessions.validate(session_id).await
     }
 
     pub async fn login(
@@ -87,51 +92,39 @@ impl AuthService {
             }
         }
 
-        let row: Option<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
-        )
-        .bind(username)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| anyhow::anyhow!("Database query error: {}", e))?;
-
-        let (user_id, valid_username, password_hash, is_admin) = match row {
-            Some(r) => r,
+        let identity = match self.accounts.login_identity(username).await? {
+            Some(identity) => identity,
             None => {
                 if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
                     map.entry(ip_key).or_default().push(now);
                 }
-                record_audit_log(
-                    &self.db,
-                    None,
-                    "AUTH_LOGIN_FAILED",
-                    None,
-                    None,
-                    "FAILURE",
-                    Some(client_ip),
-                    Some(&format!("User not found: {}", username)),
-                )
-                .await;
+                self.audit
+                    .record(
+                        None,
+                        "AUTH_LOGIN_FAILED",
+                        "FAILURE",
+                        Some(client_ip),
+                        Some(&format!("User not found: {}", username)),
+                    )
+                    .await;
                 return Err(AppError::Auth(AuthError::InvalidCredentials));
             }
         };
 
-        if !verify_password(password, &password_hash) {
+        if !verify_password(password, &identity.password_hash) {
             if let Ok(mut map) = FAILED_ATTEMPTS.lock() {
                 map.entry(ip_key).or_default().push(now);
                 map.entry(user_key).or_default().push(now);
             }
-            record_audit_log(
-                &self.db,
-                Some(&user_id),
-                "AUTH_LOGIN_FAILED",
-                None,
-                None,
-                "FAILURE",
-                Some(client_ip),
-                Some("Invalid password"),
-            )
-            .await;
+            self.audit
+                .record(
+                    Some(&identity.id),
+                    "AUTH_LOGIN_FAILED",
+                    "FAILURE",
+                    Some(client_ip),
+                    Some("Invalid password"),
+                )
+                .await;
             return Err(AppError::Auth(AuthError::InvalidCredentials));
         }
 
@@ -140,25 +133,26 @@ impl AuthService {
             map.remove(&ip_key);
         }
 
-        let session_id = create_session(&self.db, &user_id, self.session_ttl_secs).await?;
+        let session_id = self
+            .sessions
+            .create(&identity.id, self.session_ttl_secs)
+            .await?;
 
-        record_audit_log(
-            &self.db,
-            Some(&user_id),
-            "AUTH_LOGIN_SUCCESS",
-            None,
-            None,
-            "SUCCESS",
-            Some(client_ip),
-            Some(&format!("Logged in: {}", valid_username)),
-        )
-        .await;
+        self.audit
+            .record(
+                Some(&identity.id),
+                "AUTH_LOGIN_SUCCESS",
+                "SUCCESS",
+                Some(client_ip),
+                Some(&format!("Logged in: {}", identity.username)),
+            )
+            .await;
 
         Ok((
             UserInfo {
-                id: user_id,
-                username: valid_username,
-                is_admin: is_admin != 0,
+                id: identity.id,
+                username: identity.username,
+                is_admin: identity.is_admin,
             },
             session_id,
         ))
@@ -170,18 +164,16 @@ impl AuthService {
         user_id: Option<&str>,
         client_ip: &str,
     ) -> Result<(), AppError> {
-        delete_session(&self.db, session_id).await?;
-        record_audit_log(
-            &self.db,
-            user_id,
-            "AUTH_LOGOUT",
-            None,
-            None,
-            "SUCCESS",
-            Some(client_ip),
-            Some("User logged out"),
-        )
-        .await;
+        self.sessions.delete(session_id).await?;
+        self.audit
+            .record(
+                user_id,
+                "AUTH_LOGOUT",
+                "SUCCESS",
+                Some(client_ip),
+                Some("User logged out"),
+            )
+            .await;
         Ok(())
     }
 }
