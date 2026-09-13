@@ -2,7 +2,7 @@ use crate::domain::FileMetadata;
 use crate::errors::AppError;
 use crate::ports::cache::FileMetadataCache;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -14,6 +14,45 @@ const MAX_METADATA_ENTRIES: usize = 10_000;
 struct CachedMetadata {
     metadata: FileMetadata,
     expires_at: Instant,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct CacheState {
+    entries: HashMap<String, CachedMetadata>,
+    eviction_order: VecDeque<(String, u64)>,
+    next_generation: u64,
+}
+
+impl CacheState {
+    fn remove_if_generation(&mut self, key: &str, generation: u64) -> bool {
+        if self
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            self.entries.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Evict stale queue records first, then the oldest still-live entry.
+    /// Each queue record is pushed and popped at most once, making capacity
+    /// enforcement amortized O(1) instead of scanning the entire map.
+    fn evict_one(&mut self) {
+        while let Some((key, generation)) = self.eviction_order.pop_front() {
+            let Some(entry) = self.entries.get(&key) else {
+                continue;
+            };
+            if entry.generation != generation {
+                continue;
+            }
+            self.entries.remove(&key);
+            break;
+        }
+    }
 }
 
 type InFlightSender = broadcast::Sender<Result<FileMetadata, String>>;
@@ -60,9 +99,10 @@ impl Drop for InFlightLeader {
 /// request coalescing for remote storage (S3/SFTP).
 #[derive(Clone)]
 pub struct MetadataCache {
-    entries: Arc<RwLock<HashMap<String, CachedMetadata>>>,
+    state: Arc<RwLock<CacheState>>,
     in_flight: InFlightMap,
     ttl: Duration,
+    max_entries: usize,
 }
 
 impl Default for MetadataCache {
@@ -73,10 +113,15 @@ impl Default for MetadataCache {
 
 impl MetadataCache {
     pub fn new(ttl: Duration) -> Self {
+        Self::with_capacity(ttl, MAX_METADATA_ENTRIES)
+    }
+
+    fn with_capacity(ttl: Duration, max_entries: usize) -> Self {
         Self {
-            entries: Arc::new(RwLock::new(HashMap::new())),
+            state: Arc::new(RwLock::new(CacheState::default())),
             in_flight: Arc::new(StdMutex::new(HashMap::new())),
             ttl,
+            max_entries: max_entries.max(1),
         }
     }
 
@@ -86,40 +131,51 @@ impl MetadataCache {
 
     pub async fn get(&self, connection_id: &str, path: &str) -> Option<FileMetadata> {
         let key = Self::make_key(connection_id, path);
-        let entries = self.entries.read().await;
-        if let Some(cached) = entries.get(&key) {
-            if Instant::now() < cached.expires_at {
-                return Some(cached.metadata.clone());
+        let now = Instant::now();
+
+        let expired_generation = {
+            let state = self.state.read().await;
+            match state.entries.get(&key) {
+                Some(cached) if now < cached.expires_at => {
+                    return Some(cached.metadata.clone());
+                }
+                Some(cached) => Some(cached.generation),
+                None => None,
             }
+        };
+
+        // Expired reads clean up only the entry they observed. Re-checking the
+        // generation prevents a racing put() from being deleted.
+        if let Some(generation) = expired_generation {
+            let mut state = self.state.write().await;
+            state.remove_if_generation(&key, generation);
         }
         None
     }
 
     pub async fn put(&self, connection_id: &str, path: &str, metadata: FileMetadata) {
         let key = Self::make_key(connection_id, path);
-        let mut entries = self.entries.write().await;
         let now = Instant::now();
+        let mut state = self.state.write().await;
 
-        if entries.len() >= MAX_METADATA_ENTRIES && !entries.contains_key(&key) {
-            entries.retain(|_, value| now < value.expires_at);
-        }
-        if entries.len() >= MAX_METADATA_ENTRIES && !entries.contains_key(&key) {
-            if let Some(oldest_key) = entries
-                .iter()
-                .min_by_key(|(_, value)| value.expires_at)
-                .map(|(key, _)| key.clone())
-            {
-                entries.remove(&oldest_key);
-            }
+        if state.entries.len() >= self.max_entries && !state.entries.contains_key(&key) {
+            state.evict_one();
         }
 
-        entries.insert(
-            key,
+        state.next_generation = state.next_generation.wrapping_add(1);
+        if state.next_generation == 0 {
+            state.next_generation = 1;
+        }
+        let generation = state.next_generation;
+        state.entries.insert(
+            key.clone(),
             CachedMetadata {
                 metadata,
                 expires_at: now + self.ttl,
+                generation,
             },
         );
+        state.eviction_order.push_back((key, generation));
     }
 
     /// Single-flight coalesced fetch. A leader token owns the in-flight slot;
@@ -184,20 +240,25 @@ impl MetadataCache {
 
     pub async fn invalidate(&self, connection_id: &str, path: &str) {
         let key = Self::make_key(connection_id, path);
-        let mut entries = self.entries.write().await;
-        entries.remove(&key);
+        let mut state = self.state.write().await;
+        state.entries.remove(&key);
     }
 
     pub async fn invalidate_prefix(&self, connection_id: &str, path_prefix: &str) {
         let exact = Self::make_key(connection_id, path_prefix);
         let descendant_prefix = format!("{}/", exact);
-        let mut entries = self.entries.write().await;
-        entries.retain(|key, _| key != &exact && !key.starts_with(&descendant_prefix));
+        let mut state = self.state.write().await;
+        state
+            .entries
+            .retain(|key, _| key != &exact && !key.starts_with(&descendant_prefix));
+        // Queue records are intentionally left as tombstones and discarded lazily by
+        // evict_one(). This keeps invalidation from doing a second O(N) queue scan.
     }
 
     pub async fn clear(&self) {
-        let mut entries = self.entries.write().await;
-        entries.clear();
+        let mut state = self.state.write().await;
+        state.entries.clear();
+        state.eviction_order.clear();
     }
 }
 
@@ -215,6 +276,23 @@ impl FileMetadataCache for MetadataCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata(path: &str) -> FileMetadata {
+        FileMetadata {
+            name: path.trim_start_matches('/').to_string(),
+            path: path.to_string(),
+            kind: crate::domain::FileKind::File,
+            size: 1,
+            modified_at: None,
+            created_at: None,
+            permissions: None,
+            mime_type: None,
+            etag: String::new(),
+            is_readonly: false,
+            is_hidden: false,
+            symlink_target: None,
+        }
+    }
 
     #[tokio::test]
     async fn cancelling_single_flight_leader_releases_in_flight_slot() {
@@ -244,5 +322,44 @@ mod tests {
             .lock()
             .unwrap()
             .contains_key("local:/cancelled"));
+    }
+
+    #[tokio::test]
+    async fn bounded_cache_evicts_oldest_without_map_scan() {
+        let cache = MetadataCache::with_capacity(Duration::from_secs(60), 2);
+        cache.put("local", "/one", metadata("/one")).await;
+        cache.put("local", "/two", metadata("/two")).await;
+        cache.put("local", "/three", metadata("/three")).await;
+
+        assert!(cache.get("local", "/one").await.is_none());
+        assert!(cache.get("local", "/two").await.is_some());
+        assert!(cache.get("local", "/three").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn refreshing_key_does_not_let_stale_queue_record_evict_new_value() {
+        let cache = MetadataCache::with_capacity(Duration::from_secs(60), 2);
+        cache.put("local", "/one", metadata("/one")).await;
+        cache.put("local", "/two", metadata("/two")).await;
+        cache.put("local", "/one", metadata("/one")).await;
+        cache.put("local", "/three", metadata("/three")).await;
+
+        assert!(cache.get("local", "/one").await.is_some());
+        assert!(cache.get("local", "/two").await.is_none());
+        assert!(cache.get("local", "/three").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn expired_get_removes_observed_generation() {
+        let cache = MetadataCache::with_capacity(Duration::from_millis(1), 2);
+        cache.put("local", "/expired", metadata("/expired")).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(cache.get("local", "/expired").await.is_none());
+        assert!(!cache
+            .state
+            .read()
+            .await
+            .entries
+            .contains_key("local:/expired"));
     }
 }

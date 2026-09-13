@@ -21,16 +21,53 @@ pub struct SearchOutput {
 #[derive(Clone)]
 enum SearchMatcher {
     Regex(Regex),
-    Contains(String),
+    Contains {
+        query_lower: String,
+        query_is_ascii: bool,
+    },
 }
 
 impl SearchMatcher {
+    fn contains(query: &str) -> Self {
+        Self::Contains {
+            query_lower: query.to_lowercase(),
+            query_is_ascii: query.is_ascii(),
+        }
+    }
+
     fn matches(&self, name: &str) -> bool {
         match self {
             Self::Regex(regex) => regex.is_match(name),
-            Self::Contains(query_lower) => name.to_lowercase().contains(query_lower),
+            Self::Contains {
+                query_lower,
+                query_is_ascii,
+            } => {
+                if *query_is_ascii && name.is_ascii() {
+                    ascii_contains_ignore_case(name.as_bytes(), query_lower.as_bytes())
+                } else {
+                    // Preserve the previous Unicode lowercasing semantics exactly on the
+                    // uncommon non-ASCII path. The hot ASCII filename path allocates nothing.
+                    name.to_lowercase().contains(query_lower)
+                }
+            }
         }
     }
+}
+
+fn ascii_contains_ignore_case(haystack: &[u8], needle_lower: &[u8]) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if needle_lower.len() > haystack.len() {
+        return false;
+    }
+
+    haystack.windows(needle_lower.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle_lower)
+            .all(|(&candidate, &needle)| candidate.to_ascii_lowercase() == needle)
+    })
 }
 
 struct DirectoryScan {
@@ -58,7 +95,7 @@ pub async fn search_recursive(
                 .map_err(|e| VfsError::InvalidPath(format!("Invalid regex: {}", e)))?,
         )
     } else {
-        SearchMatcher::Contains(query.to_lowercase())
+        SearchMatcher::contains(query)
     };
     let resource_class = if provider.is_local() {
         ResourceClass::SearchLocal
@@ -266,10 +303,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plain_matcher_is_case_insensitive() {
-        let matcher = SearchMatcher::Contains("readme".to_string());
+    fn plain_matcher_is_case_insensitive_without_ascii_allocation_path() {
+        let matcher = SearchMatcher::contains("readme");
         assert!(matcher.matches("README.md"));
+        assert!(matcher.matches("project-ReadMe-final"));
         assert!(!matcher.matches("notes.txt"));
+    }
+
+    #[test]
+    fn plain_matcher_preserves_unicode_lowercase_semantics() {
+        let matcher = SearchMatcher::contains("ÄPFEL");
+        assert!(matcher.matches("äpfel.txt"));
+        assert!(matcher.matches("MEINE-ÄPFEL.txt"));
+        assert!(!matcher.matches("birne.txt"));
+    }
+
+    #[test]
+    fn empty_plain_query_matches_like_string_contains() {
+        let matcher = SearchMatcher::contains("");
+        assert!(matcher.matches("anything.txt"));
+        assert!(matcher.matches(""));
     }
 
     #[test]
