@@ -9,12 +9,23 @@ fn compact(src: &str) -> String {
 }
 
 #[test]
-fn connection_service_is_not_an_app_state_facade() {
+fn connection_service_is_not_an_app_state_or_persistence_facade() {
     let src = source("src/services/connection_service.rs");
     let compact = compact(&src);
-    assert!(!src.contains("AppState"));
-    assert!(!src.contains("AuthenticatedUser"));
+    for forbidden in [
+        "AppState",
+        "AuthenticatedUser",
+        "DbPool",
+        "CredentialStore",
+        "sqlx::",
+    ] {
+        assert!(
+            !src.contains(forbidden),
+            "ConnectionService must not depend on persistence detail `{forbidden}`"
+        );
+    }
     assert!(compact.contains("pubstructConnectionService"));
+    assert!(compact.contains("repository:Arc<dynConnectionRepository>"));
     assert!(compact.contains("actor:&Actor"));
 }
 
@@ -33,9 +44,10 @@ fn connection_http_uses_precomposed_narrow_capability_state() {
 }
 
 #[test]
-fn bootstrap_precomposes_and_loads_connection_capability() {
+fn bootstrap_precomposes_repository_and_connection_capability() {
     let src = source("src/bootstrap.rs");
     let compact = compact(&src);
+    assert!(compact.contains("SqliteConnectionRepository::new(db.clone(),credentials)"));
     assert!(compact.contains("letconnection_service=ConnectionService::new("));
     assert!(compact.contains(
         "connection_service.load_all_providers_from_db().await.expect(\"Failedtoloadpersistedstorageconnectionstate\")"
@@ -45,38 +57,39 @@ fn bootstrap_precomposes_and_loads_connection_capability() {
 
 #[test]
 fn persisted_connection_startup_failures_are_not_silenced() {
-    let src = source("src/services/connection_service.rs");
-    let compact = compact(&src);
-    let loader = compact
+    let service = compact(&source("src/services/connection_service.rs"));
+    let repository = compact(&source("src/infrastructure/connections.rs"));
+    let loader = service
         .split("pubasyncfnload_all_providers_from_db(&self)->Result<(),AppError>{")
         .nth(1)
-        .expect("connection startup loader must return Result");
-    let loader = loader
+        .expect("connection startup loader must return Result")
         .split("pubasyncfnlist_connections")
         .next()
         .unwrap();
+
+    assert!(loader.contains("self.repository.local_root_override().await?"));
+    assert!(loader.contains("self.repository.load_enabled().await?"));
+    assert!(loader.contains("ConnectionSecretError::Persistence(error)"));
+    assert!(loader.contains("ConnectionSecretError::Decryption(error)"));
+    assert!(loader.contains("self.registry.set_connection_error(&connection.id,&message).await"));
 
     for forbidden in [
         ".await.ok().flatten()",
         ".await.unwrap_or_default()",
         ".await.unwrap_or(None)",
-        ".decrypt(&r.0).ok()",
     ] {
         assert!(
-            !loader.contains(forbidden),
-            "connection startup must not silently discard persistent-state failure `{forbidden}`"
+            !repository.contains(forbidden),
+            "connection repository must not silently discard persistent-state failure `{forbidden}`"
         );
     }
-    assert!(loader.contains("Failedtoloadlocal_rootsetting"));
-    assert!(loader.contains("Failedtoloadenabledstorageconnections"));
-    assert!(loader.contains("Failedtoloadcredentialforstorageconnection"));
-    assert!(loader.contains("self.registry.set_connection_error(&id,&message).await"));
 }
 
 #[test]
-fn existing_credentials_are_strictly_loaded_during_connection_update() {
-    let src = compact(&source("src/services/connection_service.rs"));
-    let update = src
+fn credential_update_semantics_distinguish_keep_replace_and_clear() {
+    let service = compact(&source("src/services/connection_service.rs"));
+    let repository = compact(&source("src/infrastructure/connections.rs"));
+    let update = service
         .split("pubasyncfnupdate_connection(")
         .nth(1)
         .expect("update_connection must exist")
@@ -84,16 +97,19 @@ fn existing_credentials_are_strictly_loaded_during_connection_update() {
         .next()
         .unwrap();
 
-    assert!(!update.contains(".await.unwrap_or(None)"));
-    assert!(!update.contains(".decrypt(&encrypted).ok()"));
-    assert!(update.contains("Failedtoloadexistingcredential"));
-    assert!(update.contains("Failedtodecryptexistingcredentialfor"));
+    assert!(update.contains("SecretMutation::Clear"));
+    assert!(update.contains("SecretMutation::Replace(secret)"));
+    assert!(update.contains("SecretMutation::Keep"));
+    assert!(update.contains("self.repository.load_secret(id).await"));
+    assert!(repository.contains("SecretMutation::Clear=>"));
+    assert!(repository.contains("DELETEFROMconnection_credentialsWHEREconnection_id=?"));
 }
 
 #[test]
-fn connection_delete_unpublishes_before_cancellation_and_persists_a_barrier_before_delete() {
-    let src = compact(&source("src/services/connection_service.rs"));
-    let delete = src
+fn connection_delete_unpublishes_and_cancels_before_repository_barrier() {
+    let service = compact(&source("src/services/connection_service.rs"));
+    let repository = compact(&source("src/infrastructure/connections.rs"));
+    let delete = service
         .split("pubasyncfndelete_connection(")
         .nth(1)
         .expect("delete_connection must exist")
@@ -107,22 +123,21 @@ fn connection_delete_unpublishes_before_cancellation_and_persists_a_barrier_befo
     let cancel = delete
         .find("self.transfer_manager.cancel_job(&job.id,None,true).await")
         .expect("delete must request cancellation for active transfers");
-    let barrier = delete
-        .find("UPDATEtransfer_jobsSETstatus=CASEWHENstatus='queued'THEN'cancelled'ELSE'cancellation_requested'END")
-        .expect("delete must durably fence active transfer state");
-    let durable_delete = delete
-        .find("DELETEFROMconnectionsWHEREid=?")
-        .expect("delete must remove durable connection state");
-
-    assert!(
-        unpublish < cancel && cancel < barrier && barrier < durable_delete,
-        "connection deletion ordering must remain unpublish -> cancel live jobs -> persist cancellation barrier -> durable delete"
-    );
+    let durable_teardown = delete
+        .find("self.repository.delete_with_transfer_barrier(id).await?")
+        .expect("delete must delegate atomic durable teardown to repository");
+    assert!(unpublish < cancel && cancel < durable_teardown);
     assert!(delete.contains("self.registry.register_runtime(id.to_string(),runtime).await"));
-    assert!(
-        !delete.contains("let_=self.transfer_manager.cancel_job("),
-        "connection deletion must not silently discard cancellation errors"
-    );
+    assert!(!delete.contains("let_=self.transfer_manager.cancel_job("));
+
+    let barrier = repository
+        .find("UPDATEtransfer_jobsSETstatus=CASEWHENstatus='queued'THEN'cancelled'ELSE'cancellation_requested'END")
+        .expect("repository must durably fence active transfer state");
+    let durable_delete = repository
+        .find("DELETEFROMconnectionsWHEREid=?")
+        .expect("repository must remove durable connection state");
+    assert!(barrier < durable_delete);
+    assert!(repository.contains("tx.commit().await"));
 }
 
 #[test]
