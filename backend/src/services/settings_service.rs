@@ -52,14 +52,8 @@ impl SettingsService {
         }
     }
 
-    pub async fn get_system_setting(&self, key: &str) -> Option<String> {
-        match self.store.get(key).await {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(%error, key, "failed to read system setting");
-                None
-            }
-        }
+    pub async fn get_system_setting(&self, key: &str) -> Result<Option<String>, AppError> {
+        self.store.get(key).await
     }
 
     pub async fn set_system_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
@@ -91,7 +85,7 @@ impl SettingsService {
     }
 
     pub async fn get_settings(&self, _actor: &Actor) -> Result<SettingsResponse, AppError> {
-        let local_root = if let Some(custom) = self.get_system_setting("local_root").await {
+        let local_root = if let Some(custom) = self.get_system_setting("local_root").await? {
             custom
         } else {
             self.config
@@ -101,7 +95,7 @@ impl SettingsService {
                 .to_string()
         };
 
-        let temp_dir = if let Some(custom) = self.get_system_setting("temp_dir").await {
+        let temp_dir = if let Some(custom) = self.get_system_setting("temp_dir").await? {
             custom
         } else {
             self.config
@@ -112,21 +106,21 @@ impl SettingsService {
                 .unwrap_or_else(|| "./storage/temp".to_string())
         };
 
-        let allow_symlinks = if let Some(val) = self.get_system_setting("allow_symlinks").await {
+        let allow_symlinks = if let Some(val) = self.get_system_setting("allow_symlinks").await? {
             val == "true"
         } else {
             self.config.security.allow_symlinks_outside_root
         };
 
         let show_hidden_default =
-            if let Some(val) = self.get_system_setting("show_hidden_default").await {
+            if let Some(val) = self.get_system_setting("show_hidden_default").await? {
                 val == "true"
             } else {
                 self.config.filesystem.show_hidden_default
             };
 
         let read_only_default =
-            if let Some(val) = self.get_system_setting("read_only_default").await {
+            if let Some(val) = self.get_system_setting("read_only_default").await? {
                 val == "true"
             } else {
                 self.config.filesystem.read_only_default
@@ -134,25 +128,25 @@ impl SettingsService {
 
         let max_editable_size = self
             .get_system_setting("max_editable_size")
-            .await
+            .await?
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(self.config.limits.max_editable_size);
 
         let theme = self
             .get_system_setting("theme")
-            .await
+            .await?
             .unwrap_or_else(|| "dark".to_string());
         let default_view = self
             .get_system_setting("default_view")
-            .await
+            .await?
             .unwrap_or_else(|| "grid".to_string());
         let default_layout = self
             .get_system_setting("default_layout")
-            .await
+            .await?
             .unwrap_or_else(|| "split".to_string());
         let max_transfers = self
             .get_system_setting("max_concurrent_transfers")
-            .await
+            .await?
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(self.config.limits.max_concurrent_transfers);
 
