@@ -15,9 +15,11 @@ pub trait PresignSupport: Send + Sync {
     /// Generate a pre-signed URL for direct browser-to-storage download
     async fn presign_read_url(&self, path: &VfsPath, expire: Duration) -> Result<String, VfsError>;
 
-    /// Generate a pre-signed URL for direct browser-to-storage upload (PUT)
-    async fn presign_write_url(&self, path: &VfsPath, expire: Duration)
-        -> Result<String, VfsError>;
+    async fn presign_write_url(
+        &self,
+        path: &VfsPath,
+        expire: Duration,
+    ) -> Result<String, VfsError>;
 }
 
 #[async_trait]
@@ -25,8 +27,21 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Returns the provider operational capabilities
     fn capabilities(&self) -> Capabilities;
 
-    /// Return an asynchronous stream of directory entries (OpenDAL-native streaming primitive)
+    /// Return an asynchronous stream of directory entries (OpenDAL-native streaming primitive).
+    ///
+    /// Streams should stay cheap: provider-specific metadata that requires extra local syscalls or
+    /// remote requests may be omitted and added later through `enrich_listing_entries` once callers
+    /// have reduced the result set to the entries they actually need.
     async fn list_stream(&self, path: &VfsPath) -> Result<FileStreamBox, VfsError>;
+
+    /// Enrich a bounded set of directory entries with provider-specific metadata.
+    ///
+    /// The default is a no-op. Local filesystem implementations use this hook to batch permission
+    /// metadata work outside Tokio's async worker threads.
+    async fn enrich_listing_entries(&self, entries: &mut [FileEntry]) -> Result<(), VfsError> {
+        let _ = entries;
+        Ok(())
+    }
 
     /// List all entries in a directory (default implementation collects from list_stream)
     async fn list(&self, path: &VfsPath) -> Result<Vec<FileEntry>, VfsError> {
@@ -36,6 +51,7 @@ pub trait FileSystem: Send + Sync + 'static {
         while let Some(res) = stream.next().await {
             entries.push(res?);
         }
+        self.enrich_listing_entries(&mut entries).await?;
         Ok(entries)
     }
 
