@@ -7,6 +7,7 @@ pub mod files;
 pub mod realtime;
 pub mod settings;
 pub mod share;
+pub mod transfer_history;
 pub mod transfers;
 pub mod trash;
 pub mod uploads;
