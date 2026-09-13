@@ -360,6 +360,7 @@ mod tests {
             registry.providers_map(),
             db,
             4,
+            Arc::new(crate::runtime::ResourceBudget::default()),
             journal,
             shutdown.clone(),
             &tracker,
