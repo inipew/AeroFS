@@ -102,14 +102,18 @@ fn settings_persistence_remains_transactional() {
 #[test]
 fn settings_update_prepares_before_persisting_and_activates_after_commit() {
     let src = compact(&source("src/services/settings_service.rs"));
+    let update = src
+        .split("pubasyncfnupdate_settings(")
+        .nth(1)
+        .expect("SettingsService must expose update_settings");
 
-    let prepare = src
+    let prepare = update
         .find("prepare_local_root(root).await?")
         .expect("settings update must prepare the local provider before persistence");
-    let persist = src
+    let persist = update
         .find("self.store.upsert_many(&values).await?")
         .expect("settings update must persist settings atomically");
-    let activate = src
+    let activate = update
         .find("prepared.activate().await")
         .expect("prepared provider must be activated after persistence");
 
@@ -117,7 +121,7 @@ fn settings_update_prepares_before_persisting_and_activates_after_commit() {
         prepare < persist && persist < activate,
         "settings update ordering must remain prepare -> durable commit -> runtime activation"
     );
-    assert!(src.contains(
+    assert!(update.contains(
         "set_max_concurrent_transfers(app_settings.transfers.max_concurrent_transfers)"
     ));
 }
