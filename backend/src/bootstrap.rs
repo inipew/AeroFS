@@ -111,7 +111,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     let upload_locks = Arc::new(crate::services::UploadLockManager::default());
     let cfg_limits_archive = config.limits.archive_concurrency;
     let cfg_limits_search = config.limits.search_concurrency;
-    let max_editable_size = config.limits.max_editable_size;
     let max_upload_size = config.limits.max_upload_size;
     let local_root = config.filesystem.default_local_root.clone();
     let config = Arc::new(config);
@@ -194,8 +193,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         upload_locks.clone(),
         upload_locks.clone(),
         upload_execution,
-        local_root.clone(),
-        max_editable_size,
+        file_settings.clone(),
         max_upload_size,
     );
 
