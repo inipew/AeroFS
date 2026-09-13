@@ -7,8 +7,9 @@ use backend::domain::{Actor, ConnectionId};
 use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::filesystem::archive::ArchiveOverwriteMode;
 use backend::ports::transfer::TransferType;
-use backend::services::TransferService;
-use backend::state::{ArchiveState, FileApiState, RuntimeOwner, ShutdownReason};
+use backend::state::{
+    ArchiveState, FileApiState, RuntimeOwner, ShutdownReason, TransferState,
+};
 use backend::AppState;
 use tempfile::tempdir;
 
@@ -295,6 +296,8 @@ async fn test_archive_service_lifecycle() {
 #[tokio::test]
 async fn test_transfer_service_operations() {
     let (state, user, _runtime) = setup_test_context().await;
+    let transfers = TransferState::from_ref(&state);
+    let actor = actor_from_user(&user);
 
     write_file(
         &state,
@@ -304,27 +307,33 @@ async fn test_transfer_service_operations() {
     )
     .await;
 
-    let job_id = TransferService::create_transfer(
-        &state,
-        &user,
-        "Test Transfer".to_string(),
-        TransferType::Copy,
-        "local".to_string(),
-        "/transfer_source.txt".to_string(),
-        "local".to_string(),
-        "/transfer_destination.txt".to_string(),
-    )
-    .await
-    .expect("Create transfer failed");
+    let job_id = transfers
+        .use_cases
+        .create_transfer
+        .execute(
+            &actor,
+            backend::application::transfers::CreateTransferCommand {
+                name: "Test Transfer".to_string(),
+                transfer_type: TransferType::Copy,
+                source_connection: ConnectionId::local(),
+                source_path: "/transfer_source.txt".to_string(),
+                destination_connection: ConnectionId::local(),
+                destination_path: "/transfer_destination.txt".to_string(),
+            },
+        )
+        .await
+        .expect("Create transfer failed");
     assert!(!job_id.is_empty());
 
-    let jobs = TransferService::list_transfers(&state, &user)
+    let jobs = transfers
+        .use_cases
+        .list(&actor)
         .await
         .expect("List transfers failed");
     assert!(jobs.iter().any(|j| j.id == job_id));
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = TransferService::dismiss_transfer(&state, &user, &job_id).await;
-    let _ = TransferService::clear_finished_transfers(&state, &user).await;
+    let _ = transfers.use_cases.dismiss(&actor, &job_id).await;
+    let _ = transfers.use_cases.clear_finished(&actor).await;
 }
