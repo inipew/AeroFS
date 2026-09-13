@@ -4,7 +4,6 @@ use backend::bootstrap::build_application;
 use backend::config::AppConfig;
 use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
-use backend::services::EditorService;
 use backend::state::{AppState, ArchiveState, FileApiState, RuntimeOwner, ShutdownReason};
 use backend::vfs::factory::ProviderFactory;
 use backend::vfs::registry::ProviderRegistry;
@@ -111,11 +110,23 @@ async fn stat_file(
     Ok(metadata)
 }
 
+async fn read_text(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    path: &str,
+) -> Result<String, backend::errors::AppError> {
+    let file_api = FileApiState::from_ref(state);
+    let metadata = stat_file(state, user, path).await?;
+    file_api
+        .service
+        .read_text_for_editing(&ConnectionId::local(), path, metadata.size)
+        .await
+}
+
 #[tokio::test]
 async fn test_archive_targz_streaming_zero_ram_buffering() {
     let (state, admin, _temp) = setup_test_context().await;
     let archive = ArchiveState::from_ref(&state);
-    let file_api = FileApiState::from_ref(&state);
     let actor = actor_from_user(&admin);
     let connection = ConnectionId::local();
 
@@ -165,16 +176,14 @@ async fn test_archive_targz_streaming_zero_ram_buffering() {
         .unwrap();
     assert!(extract_res.success);
 
-    let (read_f1, _) =
-        EditorService::read_for_editing(&file_api, &admin, "local", "/extracted_dest/file1.txt")
-            .await
-            .unwrap();
+    let read_f1 = read_text(&state, &admin, "/extracted_dest/file1.txt")
+        .await
+        .unwrap();
     assert_eq!(read_f1.as_bytes(), f1_data);
 
-    let (read_f2, _) =
-        EditorService::read_for_editing(&file_api, &admin, "local", "/extracted_dest/file2.txt")
-            .await
-            .unwrap();
+    let read_f2 = read_text(&state, &admin, "/extracted_dest/file2.txt")
+        .await
+        .unwrap();
     assert_eq!(read_f2.as_bytes(), f2_data);
 }
 
