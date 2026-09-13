@@ -2,6 +2,7 @@
 pub mod archive;
 pub mod authorization;
 pub mod cache;
+pub mod connections;
 pub mod effects;
 pub mod filesystem;
 pub mod mutation;
