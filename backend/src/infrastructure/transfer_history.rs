@@ -95,40 +95,49 @@ fn nonnegative(field: &str, value: i64) -> Result<u64, AppError> {
 }
 
 fn decode_job(row: SqliteRow) -> Result<TransferJob, AppError> {
-    let transfer_type: String = row.try_get("transfer_type")?;
-    let status: String = row.try_get("status")?;
-    let phase: String = row.try_get("phase")?;
-    let execution_mode: String = row.try_get("execution_mode")?;
-    let staging: String = row.try_get("staging")?;
-    let dismissed_at: Option<String> = row.try_get("dismissed_at")?;
-    let created_at: String = row.try_get("created_at")?;
-    let updated_at: String = row.try_get("updated_at")?;
-    let eta_seconds: Option<i64> = row.try_get("eta_seconds")?;
+    macro_rules! column {
+        ($name:literal) => {
+            row.try_get($name).map_err(|error| {
+                AppError::Internal(anyhow::anyhow!(
+                    "failed to decode persisted transfer column '{}': {}",
+                    $name,
+                    error
+                ))
+            })?
+        };
+    }
+
+    let transfer_type: String = column!("transfer_type");
+    let status: String = column!("status");
+    let phase: String = column!("phase");
+    let execution_mode: String = column!("execution_mode");
+    let staging: String = column!("staging");
+    let dismissed_at: Option<String> = column!("dismissed_at");
+    let created_at: String = column!("created_at");
+    let updated_at: String = column!("updated_at");
+    let eta_seconds: Option<i64> = column!("eta_seconds");
 
     Ok(TransferJob {
-        id: row.try_get("id")?,
-        user_id: row.try_get("user_id")?,
-        name: row.try_get("name")?,
+        id: column!("id"),
+        user_id: column!("user_id"),
+        name: column!("name"),
         transfer_type: parse_type(&transfer_type)?,
-        source_connection_id: row.try_get("source_connection_id")?,
-        source_path: row.try_get("source_path")?,
-        destination_connection_id: row.try_get("destination_connection_id")?,
-        destination_path: row.try_get("destination_path")?,
+        source_connection_id: column!("source_connection_id"),
+        source_path: column!("source_path"),
+        destination_connection_id: column!("destination_connection_id"),
+        destination_path: column!("destination_path"),
         status: parse_status(&status)?,
         phase: parse_phase(&phase)?,
         execution_mode: parse_execution_mode(&execution_mode)?,
         staging: parse_staging(&staging)?,
-        transferred_bytes: nonnegative("transferred_bytes", row.try_get("transferred_bytes")?)?,
-        total_bytes: nonnegative("total_bytes", row.try_get("total_bytes")?)?,
-        speed_bytes_per_sec: nonnegative(
-            "speed_bytes_per_sec",
-            row.try_get("speed_bytes_per_sec")?,
-        )?,
+        transferred_bytes: nonnegative("transferred_bytes", column!("transferred_bytes"))?,
+        total_bytes: nonnegative("total_bytes", column!("total_bytes"))?,
+        speed_bytes_per_sec: nonnegative("speed_bytes_per_sec", column!("speed_bytes_per_sec"))?,
         eta_seconds: eta_seconds
             .map(|value| nonnegative("eta_seconds", value))
             .transpose()?,
-        checksum: row.try_get("checksum")?,
-        error_message: row.try_get("error_message")?,
+        checksum: column!("checksum"),
+        error_message: column!("error_message"),
         dismissed_at: dismissed_at
             .as_deref()
             .map(|value| parse_timestamp("dismissed_at", value))
