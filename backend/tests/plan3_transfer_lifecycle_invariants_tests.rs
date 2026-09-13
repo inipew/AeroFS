@@ -126,9 +126,7 @@ async fn test_retry_rejected_after_permission_revoked() {
 
     let perm_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO permissions (id, user_id, connection_id, can_read, can_write, can_create, can_delete, can_rename, can_upload, can_download)\
-         VALUES (?, ?, 'local', 0, 1, 1, 1, 1, 1, 1)\
-         ON CONFLICT(user_id, connection_id) DO UPDATE SET can_read = 0",
+        "INSERT INTO permissions (id, user_id, connection_id, can_read, can_write, can_create, can_delete, can_rename, can_upload, can_download)\n         VALUES (?, ?, 'local', 0, 1, 1, 1, 1, 1, 1)\n         ON CONFLICT(user_id, connection_id) DO UPDATE SET can_read = 0",
     )
     .bind(perm_id)
     .bind(&alice_id)
@@ -152,8 +150,7 @@ async fn test_retry_rejected_when_connection_disabled() {
     let fixture = setup_fixture().await;
     let remote_id = "disabled-remote-conn";
     sqlx::query(
-        "INSERT INTO connections (id, name, provider, base_path, read_only, enabled, created_at, updated_at)\
-         VALUES (?, 'Disabled Remote', 'local', '/', 0, 0, datetime('now'), datetime('now'))",
+        "INSERT INTO connections (id, name, provider, base_path, read_only, enabled, created_at, updated_at)\n         VALUES (?, 'Disabled Remote', 'local', '/', 0, 0, datetime('now'), datetime('now'))",
     )
     .bind(remote_id)
     .execute(&fixture.db)
@@ -323,8 +320,7 @@ async fn test_cancellation_db_fallback_terminal_or_finalizing() {
         updated_at: now,
     };
     sqlx::query(
-        "INSERT INTO transfer_jobs (id, user_id, name, transfer_type, source_connection_id, source_path, destination_connection_id, destination_path, status, phase, transferred_bytes, total_bytes, speed_bytes_per_sec, created_at, updated_at)\
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO transfer_jobs (id, user_id, name, transfer_type, source_connection_id, source_path, destination_connection_id, destination_path, status, phase, transferred_bytes, total_bytes, speed_bytes_per_sec, created_at, updated_at)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&job.id)
     .bind(&job.user_id)
