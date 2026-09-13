@@ -4,11 +4,11 @@ use crate::errors::AppError;
 use crate::filesystem::safepath::SafePath;
 use crate::ports::{
     authorization::{Authorization, FileAction},
+    cache::FileMetadataCache,
     effects::{FileAccessEffects, FileMutationEffects},
     filesystem::{ConnectionStorageMetadata, FileSystemResolver},
     settings::FileSettings,
 };
-use crate::services::MetadataCache;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
@@ -38,7 +38,7 @@ pub struct FileApiService {
     mutation_effects: Arc<dyn FileMutationEffects>,
     file_settings: Arc<dyn FileSettings>,
     connection_storage: Arc<dyn ConnectionStorageMetadata>,
-    metadata_cache: Arc<MetadataCache>,
+    metadata_cache: Arc<dyn FileMetadataCache>,
 }
 
 impl FileApiService {
@@ -50,7 +50,7 @@ impl FileApiService {
         mutation_effects: Arc<dyn FileMutationEffects>,
         file_settings: Arc<dyn FileSettings>,
         connection_storage: Arc<dyn ConnectionStorageMetadata>,
-        metadata_cache: Arc<MetadataCache>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
     ) -> Self {
         Self {
             authorization,
