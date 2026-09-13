@@ -45,7 +45,7 @@ impl ReadinessProbe for RuntimeReadinessProbe {
             .readiness_degraded_tasks(background_failure_threshold)
             .into_iter()
             .map(|(name, health)| BackgroundTaskDegradation {
-                name,
+                name: name.to_string(),
                 consecutive_failures: health.consecutive_failures,
                 last_error: health.last_error,
                 restart_exhausted: health.restart_exhausted,
