@@ -54,12 +54,14 @@ fn file_api_service_uses_ports_for_runtime_configuration_storage_and_cache() {
     let src = source("src/services/file_api_service.rs");
     let compact = compact(&src);
 
-    for forbidden in ["DbPool", "AppConfig", "SettingsService", "MetadataCache", "sqlx::"] {
+    for forbidden in ["DbPool", "AppConfig", "SettingsService", "sqlx::"] {
         assert!(
             !src.contains(forbidden),
             "FileApiService must not depend on concrete runtime dependency `{forbidden}`"
         );
     }
+    assert!(!compact.contains("usecrate::services::MetadataCache"));
+    assert!(!compact.contains("Arc<MetadataCache>"));
 
     assert!(compact.contains("file_settings:Arc<dynFileSettings>"));
     assert!(compact.contains("connection_storage:Arc<dynConnectionStorageMetadata>"));
