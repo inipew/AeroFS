@@ -190,7 +190,12 @@ impl ProgressBroadcastGate {
             .get("total_bytes")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        let is_final_progress = total > 0 && transferred >= total;
+        // Directory transfers discover total bytes incrementally. Equality while the job is still
+        // `transferring` can therefore be temporary, so only a non-transferring phase gets the
+        // immediate final-byte bypass.
+        let is_final_progress = total > 0
+            && transferred >= total
+            && phase.as_deref() != Some("transferring");
 
         match self.transfers.get_mut(transfer_id) {
             None => {
@@ -576,6 +581,11 @@ mod tests {
             "job-1",
             &progress("transferring", "running", 2, 100),
             start + Duration::from_millis(100),
+        ));
+        assert!(!gate.should_emit(
+            "job-1",
+            &progress("transferring", "running", 100, 100),
+            start + Duration::from_millis(150),
         ));
         assert!(gate.should_emit(
             "job-1",
