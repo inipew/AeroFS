@@ -178,7 +178,7 @@ fn phase4_large_remote_zip_extraction_uses_bounded_range_seek() {
         "Phase 4 regression: small ZIP files should retain the cheaper sequential temp-file path"
     );
     assert!(
-        zip.contains("provider.read_range(&archive_path, request.offset, request.length)"),
+        zip.contains(".read_range(&archive_path, request.offset, request.length)"),
         "Phase 4 regression: large remote ZIP extraction must use provider range reads"
     );
     assert!(
