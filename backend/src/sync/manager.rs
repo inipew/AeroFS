@@ -2,9 +2,8 @@ use crate::db::DbPool;
 use crate::domain::VfsPath;
 use crate::events::EventJournal;
 use crate::runtime::TaskSupervisor;
-use crate::sync::diff::ManifestDiffer;
 use crate::sync::models::{SyncJob, SyncOpKind, SyncOperation, SyncStatus, SyncStrategy};
-use crate::sync::scanner::VfsScanner;
+use crate::sync::streaming::StreamingSyncPlan;
 use crate::transfer::TransferManager;
 use crate::vfs::FileSystem;
 use chrono::Utc;
@@ -129,7 +128,6 @@ impl SyncManager {
 
             if let Err(_e) = manager.run_sync_pipeline(&job_id, cancel_token).await {
                 let _ = manager.update_job_status(&job_id, SyncStatus::Failed).await;
-                // Log or handle error e
             }
         });
     }
@@ -151,17 +149,15 @@ impl SyncManager {
         let src_fs = self.get_provider(&job.source_connection_id).await?;
         let dst_fs = self.get_provider(&job.destination_connection_id).await?;
 
-        let source_manifests = VfsScanner::scan_directory(
-            &src_fs,
+        let mut plan = StreamingSyncPlan::prepare(
+            &self.db,
+            Arc::clone(&src_fs),
             &job.source_connection_id,
             &job.source_path,
-            &cancel,
-        )
-        .await?;
-        let dest_manifests = VfsScanner::scan_directory(
-            &dst_fs,
+            Arc::clone(&dst_fs),
             &job.destination_connection_id,
             &job.destination_path,
+            job.strategy,
             &cancel,
         )
         .await?;
@@ -169,121 +165,135 @@ impl SyncManager {
         if cancel.is_cancelled() {
             return Ok(());
         }
+
         self.update_job_status(job_id, SyncStatus::Planning).await?;
+        self.update_job_status(job_id, SyncStatus::Reconciling).await?;
 
-        let ops = ManifestDiffer::diff(&source_manifests, &dest_manifests, job.strategy);
+        self.update_sync_job_counts(
+            job_id,
+            plan.total_operations(),
+            0,
+            0,
+            SyncStatus::Executing,
+        )
+        .await?;
 
-        self.update_job_status(job_id, SyncStatus::Reconciling)
-            .await?;
-
-        let total_files = ops.len() as u64;
-        self.update_sync_job_counts(job_id, total_files, 0, 0, SyncStatus::Executing)
-            .await?;
-
-        for op in ops {
-            if cancel.is_cancelled() {
-                return Ok(());
-            }
-
-            let op_id = self.persist_operation(job_id, &op).await?;
-
-            match &op.kind {
-                SyncOpKind::Create | SyncOpKind::Update => {
-                    let tid_res = self
-                        .transfer_manager
-                        .submit_job(
-                            Some(job.user_id.clone()),
-                            op.relative_path.clone(),
-                            crate::transfer::engine::TransferType::Copy,
-                            job.source_connection_id.clone(),
-                            format!("{}/{}", job.source_path, op.relative_path),
-                            job.destination_connection_id.clone(),
-                            format!("{}/{}", job.destination_path, op.relative_path),
-                        )
-                        .await;
-                    match tid_res {
-                        Ok(transfer_job_id) => {
-                            self.update_operation_status(
-                                &op_id,
-                                "running",
-                                Some(&transfer_job_id),
-                                None,
-                            )
-                            .await?;
-                        }
-                        Err(e) => {
-                            self.update_operation_status(
-                                &op_id,
-                                "failed",
-                                None,
-                                Some(&e.to_string()),
-                            )
-                            .await?;
-                        }
-                    }
+        while let Some(batch) = plan.next_batch().await? {
+            for op in batch {
+                if cancel.is_cancelled() {
+                    return Ok(());
                 }
-                SyncOpKind::Delete => {
-                    let target = VfsPath::new(
-                        &job.destination_connection_id,
-                        format!("{}/{}", job.destination_path, op.relative_path),
-                    )?;
-                    match dst_fs.delete(&target).await {
-                        Ok(_) => {
-                            self.update_operation_status(&op_id, "completed", None, None)
-                                .await?;
-                            self.increment_synced(job_id).await?;
-                        }
-                        Err(e) => {
-                            self.update_operation_status(
-                                &op_id,
-                                "failed",
-                                None,
-                                Some(&e.to_string()),
-                            )
-                            .await?;
-                        }
-                    }
-                }
-                SyncOpKind::Rename { old_path } => {
-                    let from = VfsPath::new(
-                        &job.destination_connection_id,
-                        format!("{}/{}", job.destination_path, old_path),
-                    )?;
-                    let to = VfsPath::new(
-                        &job.destination_connection_id,
-                        format!("{}/{}", job.destination_path, op.relative_path),
-                    )?;
-                    match dst_fs.rename(&from, &to).await {
-                        Ok(_) => {
-                            self.update_operation_status(&op_id, "completed", None, None)
-                                .await?;
-                            self.increment_synced(job_id).await?;
-                        }
-                        Err(e) => {
-                            self.update_operation_status(
-                                &op_id,
-                                "failed",
-                                None,
-                                Some(&e.to_string()),
-                            )
-                            .await?;
-                        }
-                    }
-                }
-                SyncOpKind::Noop => {
-                    self.update_operation_status(&op_id, "completed", None, None)
-                        .await?;
-                    self.increment_synced(job_id).await?;
-                }
-                SyncOpKind::Conflict => {
-                    self.update_operation_status(&op_id, "conflict", None, None)
-                        .await?;
-                    self.increment_conflict(job_id).await?;
-                }
+                self.execute_operation(job_id, &job, &dst_fs, op).await?;
             }
         }
 
-        // Wait, transfer operations might complete later.
+        self.check_job_completion(job_id).await?;
+        Ok(())
+    }
+
+    async fn execute_operation(
+        &self,
+        job_id: &str,
+        job: &SyncJob,
+        dst_fs: &Arc<dyn FileSystem>,
+        op: SyncOperation,
+    ) -> anyhow::Result<()> {
+        let op_id = self.persist_operation(job_id, &op).await?;
+
+        match &op.kind {
+            SyncOpKind::Create | SyncOpKind::Update => {
+                let tid_res = self
+                    .transfer_manager
+                    .submit_job(
+                        Some(job.user_id.clone()),
+                        op.relative_path.clone(),
+                        crate::transfer::engine::TransferType::Copy,
+                        job.source_connection_id.clone(),
+                        format!("{}/{}", job.source_path, op.relative_path),
+                        job.destination_connection_id.clone(),
+                        format!("{}/{}", job.destination_path, op.relative_path),
+                    )
+                    .await;
+                match tid_res {
+                    Ok(transfer_job_id) => {
+                        self.update_operation_status(
+                            &op_id,
+                            "running",
+                            Some(&transfer_job_id),
+                            None,
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        self.update_operation_status(
+                            &op_id,
+                            "failed",
+                            None,
+                            Some(&e.to_string()),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            SyncOpKind::Delete => {
+                let target = VfsPath::new(
+                    &job.destination_connection_id,
+                    format!("{}/{}", job.destination_path, op.relative_path),
+                )?;
+                match dst_fs.delete(&target).await {
+                    Ok(_) => {
+                        self.update_operation_status(&op_id, "completed", None, None)
+                            .await?;
+                        self.increment_synced(job_id).await?;
+                    }
+                    Err(e) => {
+                        self.update_operation_status(
+                            &op_id,
+                            "failed",
+                            None,
+                            Some(&e.to_string()),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            SyncOpKind::Rename { old_path } => {
+                let from = VfsPath::new(
+                    &job.destination_connection_id,
+                    format!("{}/{}", job.destination_path, old_path),
+                )?;
+                let to = VfsPath::new(
+                    &job.destination_connection_id,
+                    format!("{}/{}", job.destination_path, op.relative_path),
+                )?;
+                match dst_fs.rename(&from, &to).await {
+                    Ok(_) => {
+                        self.update_operation_status(&op_id, "completed", None, None)
+                            .await?;
+                        self.increment_synced(job_id).await?;
+                    }
+                    Err(e) => {
+                        self.update_operation_status(
+                            &op_id,
+                            "failed",
+                            None,
+                            Some(&e.to_string()),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            SyncOpKind::Noop => {
+                self.update_operation_status(&op_id, "completed", None, None)
+                    .await?;
+                self.increment_synced(job_id).await?;
+            }
+            SyncOpKind::Conflict => {
+                self.update_operation_status(&op_id, "conflict", None, None)
+                    .await?;
+                self.increment_conflict(job_id).await?;
+            }
+        }
         Ok(())
     }
 
@@ -430,7 +440,7 @@ impl SyncManager {
                 total_files: r.get::<i64, _>("total_files") as u64,
                 synced_files: r.get::<i64, _>("synced_files") as u64,
                 conflict_files: r.get::<i64, _>("conflict_files") as u64,
-                created_at: Utc::now(), // simplification
+                created_at: Utc::now(),
                 updated_at: Utc::now(),
             };
             self.jobs.write().await.insert(job_id.to_string(), j);
@@ -470,7 +480,6 @@ impl SyncManager {
                     }
 
                     all_completed = false;
-                    // Check if transfer job was already submitted
                     if let Some(ref tid) = op.transfer_job_id {
                         let transfer_jobs = self.transfer_manager.list_jobs(None, true, true).await;
                         if let Some(tj) = transfer_jobs.iter().find(|t| &t.id == tid) {
@@ -482,15 +491,12 @@ impl SyncManager {
                                 | crate::transfer::engine::TransferStatus::Interrupted => {
                                     let _ = self.transfer_manager.retry_job(tid, None, true).await;
                                 }
-                                _ => {
-                                    // Transfer is Queued, Running, or CancellationRequested
-                                }
+                                _ => {}
                             }
                             continue;
                         }
                     }
 
-                    // Operation is pending without active transfer job: execute now
                     let dst_fs = match self.get_provider(&job.destination_connection_id).await {
                         Ok(fs) => fs,
                         Err(_) => continue,
@@ -572,7 +578,6 @@ impl SyncManager {
         op_id: &str,
         resolution: &str,
     ) -> anyhow::Result<()> {
-        // Find op
         let row = sqlx::query("SELECT relative_path FROM sync_operations WHERE id = ? AND job_id = ? AND status = 'conflict'")
             .bind(op_id).bind(job_id).fetch_optional(&self.db).await?;
 
