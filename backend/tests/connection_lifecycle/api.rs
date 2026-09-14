@@ -121,6 +121,59 @@ async fn admin_can_create_list_get_and_delete_remote_connection_without_exposing
 }
 
 #[tokio::test]
+async fn sftp_connection_kind_round_trips_through_http_detail_contract() {
+    let app = TestAppBuilder::new().running().build().await;
+    let cookie = app.login_admin().await;
+    let create = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/connections")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "SFTP Storage",
+                        "provider": "sftp",
+                        "host": "127.0.0.1",
+                        "port": 22,
+                        "username": "root",
+                        "base_path": "/srv/data"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created = json_body(create).await;
+    let id = created["id"].as_str().unwrap();
+
+    let detail = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/connections/{id}"))
+                .method("GET")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail = json_body(detail).await;
+    assert_eq!(detail["connection"]["provider"], "sftp");
+    assert_eq!(detail["connection"]["host"], "127.0.0.1");
+    assert_eq!(detail["connection"]["port"], 22);
+    assert_eq!(detail["capabilities"]["read"], true);
+}
+
+#[tokio::test]
 async fn local_connection_test_endpoint_is_immediate_and_successful() {
     let app = TestAppBuilder::new().running().build().await;
     let cookie = app.login_admin().await;
