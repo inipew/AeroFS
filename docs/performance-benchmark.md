@@ -70,6 +70,9 @@ For repeatable regression runs, `--assert-recovery` turns selected recovery prop
 - recovery thread count <= baseline + 2
 - every `resource_budget.*.in_use` counter returns to its baseline
 - `providers.active_leases` returns to its baseline
+- every `execution.*` counter returns to its own baseline, including active/queued/running transfers and active/executing/paused sync jobs
+
+Execution assertions compare against the measured baseline rather than hard-coding zero. This allows a benchmark to coexist with unrelated pre-existing paused or queued work while still detecting workload-created state that failed to drain.
 
 Example:
 
@@ -87,7 +90,7 @@ python3 tools/perf/aerofs_perf.py \
   --workload './tools/load.sh'
 ```
 
-RSS/PSS may remain above baseline because allocator arenas and the kernel page cache are not equivalent to live AeroFS state. A failure in permit/lease counters is therefore a stronger leak signal than RSS alone.
+RSS/PSS may remain above baseline because allocator arenas and the kernel page cache are not equivalent to live AeroFS state. A failure in permit, lease, or execution counters is therefore a stronger leak signal than RSS alone.
 
 ## Recommended scenario matrix
 
@@ -122,6 +125,9 @@ A healthy lifecycle generally has the following shape:
 ```text
 resource_budget.*.in_use    baseline -> elevated -> baseline
 providers.active_leases     baseline -> elevated -> baseline
+execution.transfer_active   baseline -> elevated -> baseline
+execution.transfer_queue_depth baseline -> elevated -> baseline
+execution.sync_active       baseline -> elevated -> baseline
 metadata_cache.in_flight    baseline -> elevated -> baseline
 database_pool.in_use        baseline -> elevated -> baseline
 FD/thread count             baseline -> bounded peak -> near baseline

@@ -202,12 +202,14 @@ def recovery_failures(
     check_delta("fd_count", max_fd_delta)
     check_delta("threads", max_thread_delta)
 
-    # Resource-budget permits and provider leases should return to their baseline,
-    # regardless of allocator/RSS behavior.
+    # Logical resources are stronger leak signals than allocator/RSS behavior. Every
+    # permit, provider lease, and durable execution counter must return to its own
+    # pre-workload baseline; a non-zero baseline is valid when unrelated work already exists.
     for key, entry in metrics.items():
-        if not (
-            key.startswith("metrics.resource_budget.") and key.endswith(".in_use")
-        ) and key != "metrics.providers.active_leases":
+        is_resource_permit = key.startswith("metrics.resource_budget.") and key.endswith(".in_use")
+        is_provider_lease = key == "metrics.providers.active_leases"
+        is_execution_state = key.startswith("metrics.execution.")
+        if not (is_resource_permit or is_provider_lease or is_execution_state):
             continue
         delta = entry.get("recovery_minus_baseline")
         if _numeric(delta) and delta > 0:
