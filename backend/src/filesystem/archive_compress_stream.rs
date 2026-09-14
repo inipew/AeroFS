@@ -104,68 +104,6 @@ fn output_pipe() -> (BlockingChannelWriter, ChannelAsyncReader) {
     )
 }
 
-async fn collect_archive_files(
-    provider: &Arc<dyn FileSystem>,
-    connection_id: &str,
-    base_dir: &str,
-    relative_paths: &[String],
-) -> Result<Vec<(String, VfsPath)>, VfsError> {
-    let mut files = Vec::new();
-
-    for rel in relative_paths {
-        let full_vfs = if base_dir == "/" {
-            VfsPath::new(connection_id, format!("/{}", rel.trim_start_matches('/')))?
-        } else {
-            VfsPath::new(
-                connection_id,
-                format!(
-                    "{}/{}",
-                    base_dir.trim_end_matches('/'),
-                    rel.trim_start_matches('/')
-                ),
-            )?
-        };
-
-        let meta = provider.stat(&full_vfs).await?;
-        if meta.kind == FileKind::File {
-            if files.len() >= MAX_ARCHIVE_FILES {
-                return Err(SecurityError::PathTraversal(format!(
-                    "Archive file count exceeded limit ({MAX_ARCHIVE_FILES})"
-                ))
-                .into());
-            }
-            files.push((rel.trim_start_matches('/').to_string(), full_vfs));
-        } else if meta.kind == FileKind::Directory {
-            let mut stack = vec![(rel.trim_start_matches('/').to_string(), full_vfs)];
-            while let Some((parent_rel, parent_vfs)) = stack.pop() {
-                let mut stream = provider.list_stream(&parent_vfs).await?;
-                while let Some(entry) = stream.next().await {
-                    let entry = entry?;
-                    if files.len() >= MAX_ARCHIVE_FILES {
-                        return Err(SecurityError::PathTraversal(format!(
-                            "Archive file count exceeded limit ({MAX_ARCHIVE_FILES})"
-                        ))
-                        .into());
-                    }
-                    let child_rel = if parent_rel.is_empty() {
-                        entry.name.clone()
-                    } else {
-                        format!("{}/{}", parent_rel, entry.name)
-                    };
-                    let child_vfs = VfsPath::new(connection_id, &entry.path)?;
-                    if entry.kind == FileKind::Directory {
-                        stack.push((child_rel, child_vfs));
-                    } else {
-                        files.push((child_rel, child_vfs));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(files)
-}
-
 async fn send_reader_to_worker(
     mut reader: Box<dyn AsyncRead + Unpin + Send>,
     tx: &mpsc::Sender<ArchiveWriteCommand>,
@@ -186,6 +124,90 @@ async fn send_reader_to_worker(
             .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
     }
     Ok(total)
+}
+
+async fn stream_archive_file(
+    provider: &Arc<dyn FileSystem>,
+    relative_path: String,
+    full_vfs: &VfsPath,
+    tx: &mpsc::Sender<ArchiveWriteCommand>,
+) -> Result<(), VfsError> {
+    let meta = provider.stat(full_vfs).await?;
+    tx.send(ArchiveWriteCommand::StartEntry {
+        path: relative_path,
+        size: meta.size,
+    })
+    .await
+    .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+
+    let reader = provider.read_stream(full_vfs).await?;
+    let written = send_reader_to_worker(reader, tx).await?;
+    tx.send(ArchiveWriteCommand::EndEntry { written })
+        .await
+        .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+    Ok(())
+}
+
+async fn stream_archive_files(
+    provider: &Arc<dyn FileSystem>,
+    connection_id: &str,
+    base_dir: &str,
+    relative_paths: &[String],
+    tx: &mpsc::Sender<ArchiveWriteCommand>,
+) -> Result<(), VfsError> {
+    let mut file_count = 0usize;
+
+    for rel in relative_paths {
+        let relative_path = rel.trim_start_matches('/').to_string();
+        let full_vfs = if base_dir == "/" {
+            VfsPath::new(connection_id, format!("/{relative_path}"))?
+        } else {
+            VfsPath::new(
+                connection_id,
+                format!("{}/{relative_path}", base_dir.trim_end_matches('/')),
+            )?
+        };
+
+        let meta = provider.stat(&full_vfs).await?;
+        if meta.kind == FileKind::File {
+            if file_count >= MAX_ARCHIVE_FILES {
+                return Err(SecurityError::PathTraversal(format!(
+                    "Archive file count exceeded limit ({MAX_ARCHIVE_FILES})"
+                ))
+                .into());
+            }
+            file_count += 1;
+            stream_archive_file(provider, relative_path, &full_vfs, tx).await?;
+        } else if meta.kind == FileKind::Directory {
+            let mut stack = vec![(relative_path, full_vfs)];
+            while let Some((parent_rel, parent_vfs)) = stack.pop() {
+                let mut stream = provider.list_stream(&parent_vfs).await?;
+                while let Some(entry) = stream.next().await {
+                    let entry = entry?;
+                    if file_count >= MAX_ARCHIVE_FILES {
+                        return Err(SecurityError::PathTraversal(format!(
+                            "Archive file count exceeded limit ({MAX_ARCHIVE_FILES})"
+                        ))
+                        .into());
+                    }
+                    let child_rel = if parent_rel.is_empty() {
+                        entry.name.clone()
+                    } else {
+                        format!("{}/{}", parent_rel, entry.name)
+                    };
+                    let child_vfs = VfsPath::new(connection_id, &entry.path)?;
+                    if entry.kind == FileKind::Directory {
+                        stack.push((child_rel, child_vfs));
+                    } else {
+                        file_count += 1;
+                        stream_archive_file(provider, child_rel, &child_vfs, tx).await?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn staging_path(target: &VfsPath) -> Result<VfsPath, VfsError> {
@@ -237,8 +259,6 @@ pub async fn compress_targz_streaming(
         .await;
     }
 
-    let files_to_pack =
-        collect_archive_files(provider, connection_id, base_dir, relative_paths).await?;
     let staging = staging_path(target_targz_path)?;
     let (input_tx, mut input_rx) =
         mpsc::channel::<ArchiveWriteCommand>(ARCHIVE_STREAM_CHANNEL_CAPACITY);
@@ -324,22 +344,14 @@ pub async fn compress_targz_streaming(
 
     let producer = async {
         let result = async {
-            for (rel_path, full_vfs) in files_to_pack {
-                let meta = provider.stat(&full_vfs).await?;
-                input_tx
-                    .send(ArchiveWriteCommand::StartEntry {
-                        path: rel_path,
-                        size: meta.size,
-                    })
-                    .await
-                    .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
-                let reader = provider.read_stream(&full_vfs).await?;
-                let written = send_reader_to_worker(reader, &input_tx).await?;
-                input_tx
-                    .send(ArchiveWriteCommand::EndEntry { written })
-                    .await
-                    .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
-            }
+            stream_archive_files(
+                provider,
+                connection_id,
+                base_dir,
+                relative_paths,
+                &input_tx,
+            )
+            .await?;
             input_tx
                 .send(ArchiveWriteCommand::Finish)
                 .await

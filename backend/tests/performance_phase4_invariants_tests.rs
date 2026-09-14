@@ -65,3 +65,34 @@ fn phase4_bootstrap_wires_the_same_budget_into_queued_and_inline_transfers() {
         "Phase 4 regression: inline uploads must receive the exact shared ResourceBudget"
     );
 }
+
+#[test]
+fn phase4_targz_compression_streams_traversal_without_collecting_all_files() {
+    let archive = source("src/filesystem/archive_compress_stream.rs");
+    let compressor = section(
+        &archive,
+        "pub async fn compress_targz_streaming(",
+        "#[cfg(test)]",
+    );
+
+    assert!(
+        archive.contains("async fn stream_archive_files("),
+        "Phase 4 regression: TAR.GZ compression must retain incremental provider traversal"
+    );
+    assert!(
+        archive.contains("stream_archive_file(provider, child_rel, &child_vfs, tx).await?;"),
+        "Phase 4 regression: discovered files must stream directly into the compressor pipeline"
+    );
+    assert!(
+        !archive.contains("collect_archive_files"),
+        "Phase 4 regression: TAR.GZ compression must not restore the upfront file metadata Vec"
+    );
+    assert!(
+        !compressor.contains("files_to_pack"),
+        "Phase 4 regression: compression must start before the complete traversal is materialized"
+    );
+    assert!(
+        compressor.contains("ARCHIVE_STREAM_CHANNEL_CAPACITY"),
+        "Phase 4 regression: TAR.GZ compressor input must remain bounded"
+    );
+}
