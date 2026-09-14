@@ -130,7 +130,7 @@ where
             }
         }
         let now = Instant::now();
-        if now.duration_since(last_emit).as_millis() >= 100 {
+        if now.duration_since(last_emit).as_millis() >= 250 {
             let sample = rate_estimator.observe(now, uploaded_bytes, total_for_progress);
             manager
                 .update_inline_progress(
