@@ -76,6 +76,10 @@ jobs:
           mkdir -p frontend/dist
           echo '<!DOCTYPE html><html><head><title>AeroFS</title></head><body><div id="app"></div></body></html>' > frontend/dist/index.html
 
+      - name: Test shared backend TestKit
+        working-directory: backend
+        run: cargo test --locked --test testkit_foundation_tests
+
       - name: Test backend
         working-directory: backend
         run: cargo test --locked
