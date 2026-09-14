@@ -35,6 +35,8 @@ pub struct PersistenceCheckpoint {
 #[derive(Clone)]
 pub struct TransferManager {
     providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
+    /// In-memory execution state only. Terminal transfer history remains authoritative in SQLite
+    /// and is loaded on demand so long-lived daemons do not retain every completed job in RAM.
     jobs: Arc<RwLock<HashMap<String, TransferJob>>>,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     queue_tx: mpsc::Sender<String>,
@@ -85,15 +87,14 @@ impl TransferManager {
         let providers_clone = Arc::clone(&providers);
         let resource_budget_clone = Arc::clone(&resource_budget);
 
-        // 1. Synchronous startup recovery: Load jobs from SQLite into memory
-        // Awaited directly so server readiness is announced only after recovery completes.
+        // 1. Synchronous startup recovery: load recent jobs from SQLite and keep only jobs
+        // that still need execution in RAM. Terminal history remains DB-backed.
         {
             let db_init = db.clone();
             let jobs_init = Arc::clone(&jobs);
             if let Ok(saved_jobs) = Self::load_jobs_from_db(&db_init).await {
                 let mut map = jobs_init.write().await;
                 for mut job in saved_jobs {
-                    // Only keep non-dismissed and active/recent jobs in RAM
                     if job.dismissed_at.is_some() {
                         continue;
                     }
@@ -102,6 +103,9 @@ impl TransferManager {
                             job.status = TransferStatus::Interrupted;
                             job.error_message =
                                 Some("Transfer interrupted by server restart".into());
+                            job.speed_bytes_per_sec = 0;
+                            job.eta_seconds = None;
+                            job.updated_at = Utc::now();
                             tracing::info!("transfer.interrupted: job_id={}", job.id);
                             let _ = Self::save_job_to_db(&db_init, &job).await;
                         }
@@ -115,10 +119,13 @@ impl TransferManager {
                         }
                         TransferStatus::Queued => {
                             let _ = queue_tx_clone.send(job.id.clone()).await;
+                            map.insert(job.id.clone(), job);
                         }
-                        _ => {}
+                        TransferStatus::Completed
+                        | TransferStatus::Failed
+                        | TransferStatus::Cancelled
+                        | TransferStatus::Interrupted => {}
                     }
-                    map.insert(job.id.clone(), job);
                 }
             }
             tracing::info!("transfer.recovery: completed");
@@ -248,10 +255,6 @@ impl TransferManager {
                                 job.speed_bytes_per_sec = 0;
                                 job.eta_seconds = None;
                                 job.updated_at = Utc::now();
-                                {
-                                    let mut map = jobs_worker.write().await;
-                                    map.insert(job.id.clone(), job.clone());
-                                }
                                 let _ = Self::save_job_conditional(
                                     &db_worker,
                                     &job,
@@ -278,10 +281,6 @@ impl TransferManager {
                                             job.speed_bytes_per_sec = 0;
                                             job.eta_seconds = None;
                                             job.updated_at = Utc::now();
-                                            {
-                                                let mut map = jobs_worker.write().await;
-                                                map.insert(job.id.clone(), job.clone());
-                                            }
                                             let _ = Self::save_job_to_db(&db_worker, &job).await;
                                             let _ = event_journal_worker
                                                 .append(DomainEvent::transfer_cancelled(&job), Some(&job.id))
@@ -297,10 +296,6 @@ impl TransferManager {
                                             job.speed_bytes_per_sec = 0;
                                             job.eta_seconds = Some(0);
                                             job.updated_at = Utc::now();
-                                            {
-                                                let mut map = jobs_worker.write().await;
-                                                map.insert(job.id.clone(), job.clone());
-                                            }
                                             let _ = Self::save_job_conditional_completed(&db_worker, &job).await;
                                             let _ = event_journal_worker
                                                 .append(
@@ -336,10 +331,6 @@ impl TransferManager {
                                         job.speed_bytes_per_sec = 0;
                                         job.eta_seconds = None;
                                         job.updated_at = Utc::now();
-                                        {
-                                            let mut map = jobs_worker.write().await;
-                                            map.insert(job.id.clone(), job.clone());
-                                        }
                                         let _ = Self::save_job_to_db(&db_worker, &job).await;
                                         let _ = event_journal_worker
                                             .append(DomainEvent::transfer_failed(&job), Some(&job.id))
@@ -351,6 +342,9 @@ impl TransferManager {
                         }
                     }
 
+                    // Terminal transfer history is DB-backed. Reclaim execution state and
+                    // cancellation bookkeeping as soon as this worker reaches a terminal path.
+                    jobs_worker.write().await.remove(&job_id);
                     cancel_tokens_worker.write().await.remove(&job_id);
                 });
             }
@@ -720,6 +714,7 @@ impl TransferManager {
                 .append(DomainEvent::transfer_completed(&job), Some(&job.id))
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), true));
+            self.jobs.write().await.remove(job_id);
         }
         self.checkpoints.lock().unwrap().remove(job_id);
         self.cancel_tokens.write().await.remove(job_id);
@@ -746,6 +741,7 @@ impl TransferManager {
                 .append(DomainEvent::transfer_failed(&job), Some(&job.id))
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
+            self.jobs.write().await.remove(job_id);
         }
         self.checkpoints.lock().unwrap().remove(job_id);
         self.cancel_tokens.write().await.remove(job_id);
@@ -778,6 +774,7 @@ impl TransferManager {
                 .append(DomainEvent::transfer_cancelled(&job), Some(&job.id))
                 .await;
             let _ = self.completion_tx.send((job.id.clone(), false));
+            self.jobs.write().await.remove(job_id);
         }
         self.checkpoints.lock().unwrap().remove(job_id);
         self.cancel_tokens.write().await.remove(job_id);
@@ -789,29 +786,24 @@ impl TransferManager {
         is_admin: bool,
         include_dismissed: bool,
     ) -> Vec<TransferJob> {
-        if include_dismissed {
-            if let Ok(saved) = Self::load_jobs_from_db(&self.db).await {
-                let mut list: Vec<TransferJob> = saved
-                    .into_iter()
-                    .filter(|j| {
-                        if is_admin {
-                            return true;
-                        }
-                        match (&j.user_id, user_id) {
-                            (Some(owner), Some(uid)) => owner == uid,
-                            (None, _) => true,
-                            _ => false,
-                        }
-                    })
-                    .collect();
-                list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
-                return list;
+        let mut jobs_by_id: HashMap<String, TransferJob> = Self::load_jobs_from_db(&self.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|job| (job.id.clone(), job))
+            .collect();
+
+        // Overlay active in-memory state so callers see sub-persistence-interval progress while
+        // terminal history can be reclaimed immediately after completion.
+        {
+            let active = self.jobs.read().await;
+            for job in active.values() {
+                jobs_by_id.insert(job.id.clone(), job.clone());
             }
         }
 
-        let map = self.jobs.read().await;
-        let mut list: Vec<TransferJob> = map
-            .values()
+        let mut list: Vec<TransferJob> = jobs_by_id
+            .into_values()
             .filter(|j| {
                 if !include_dismissed && j.dismissed_at.is_some() {
                     return false;
@@ -821,10 +813,10 @@ impl TransferManager {
                 }
                 match (&j.user_id, user_id) {
                     (Some(owner), Some(uid)) => owner == uid,
+                    (None, _) if include_dismissed => true,
                     _ => false,
                 }
             })
-            .cloned()
             .collect();
         list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         list
@@ -842,7 +834,9 @@ impl TransferManager {
 
     pub async fn insert_job_for_test(&self, job: TransferJob) {
         let _ = Self::save_job_to_db(&self.db, &job).await;
-        self.jobs.write().await.insert(job.id.clone(), job);
+        if !job.status.is_terminal() && job.dismissed_at.is_none() {
+            self.jobs.write().await.insert(job.id.clone(), job);
+        }
     }
 
     pub async fn cancel_job(
@@ -903,6 +897,8 @@ impl TransferManager {
                     .event_journal
                     .append(DomainEvent::transfer_cancelled(&job), Some(&job.id))
                     .await;
+                self.jobs.write().await.remove(id);
+                self.cancel_tokens.write().await.remove(id);
             } else {
                 let _ = self
                     .event_journal
@@ -1073,13 +1069,7 @@ impl TransferManager {
         };
 
         if let Err(e) = Self::save_job_to_db(&self.db, &updated_job).await {
-            let mut map = self.jobs.write().await;
-            if let Some(j) = map.get_mut(id) {
-                j.status = old_status;
-                j.phase = old_phase;
-                j.error_message = old_error;
-                j.updated_at = Utc::now();
-            }
+            self.jobs.write().await.remove(id);
             return Err(RetryTransferError::Internal(format!(
                 "Failed to persist retry state: {}",
                 e
@@ -1095,16 +1085,13 @@ impl TransferManager {
             .await;
 
         if let Err(e) = self.queue_tx.send(id.to_string()).await {
-            let rollback_job = {
-                let mut map = self.jobs.write().await;
-                let j = map.get_mut(id).unwrap();
-                j.status = old_status;
-                j.phase = old_phase;
-                j.error_message = old_error;
-                j.updated_at = Utc::now();
-                j.clone()
-            };
+            let mut rollback_job = updated_job.clone();
+            rollback_job.status = old_status;
+            rollback_job.phase = old_phase;
+            rollback_job.error_message = old_error;
+            rollback_job.updated_at = Utc::now();
             let _ = Self::save_job_to_db(&self.db, &rollback_job).await;
+            self.jobs.write().await.remove(id);
             let _ = self
                 .event_journal
                 .append(
@@ -2119,7 +2106,7 @@ impl TransferManager {
                         return Err(anyhow::anyhow!("Transfer cancelled by user"));
                     }
                     res = pipe_writer.write_all(&buffer[..n]) => res?,
-                };
+                }
 
                 transferred += n as u64;
                 let bytes_since_start = transferred.saturating_sub(resume_offset);
@@ -2420,6 +2407,7 @@ impl TransferManager {
         let rows = sqlx::query(
             "SELECT id, user_id, name, transfer_type, source_connection_id, source_path,
                     destination_connection_id, destination_path, status, phase,
+                    execution_mode, staging,
                     transferred_bytes, total_bytes, speed_bytes_per_sec,
                     eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
              FROM transfer_jobs
@@ -2436,6 +2424,7 @@ impl TransferManager {
         let row = sqlx::query(
             "SELECT id, user_id, name, transfer_type, source_connection_id, source_path,
                     destination_connection_id, destination_path, status, phase,
+                    execution_mode, staging,
                     transferred_bytes, total_bytes, speed_bytes_per_sec,
                     eta_seconds, checksum, error_message, dismissed_at, created_at, updated_at
              FROM transfer_jobs
