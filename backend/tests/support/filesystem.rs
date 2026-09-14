@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use backend::{
     domain::{Capabilities, ConnectionId, FileEntry, FileKind, FileMetadata, VfsPath},
-    errors::{VfsError},
+    errors::VfsError,
     ports::filesystem::FileSystemResolver,
     vfs::{AsyncReadBox, FileSystem},
 };
@@ -17,6 +17,7 @@ pub struct MemoryFileSystem {
     directories: RwLock<HashSet<String>>,
     permissions: RwLock<HashMap<String, String>>,
     capabilities: RwLock<Capabilities>,
+    permission_failure: RwLock<Option<String>>,
 }
 
 impl MemoryFileSystem {
@@ -55,6 +56,20 @@ impl MemoryFileSystem {
             .expect("memory fs permissions lock")
             .get(&normalize(path))
             .cloned()
+    }
+
+    pub fn fail_permissions(&self, message: impl Into<String>) {
+        *self
+            .permission_failure
+            .write()
+            .expect("memory fs permission failure lock") = Some(message.into());
+    }
+
+    pub fn clear_permission_failure(&self) {
+        *self
+            .permission_failure
+            .write()
+            .expect("memory fs permission failure lock") = None;
     }
 }
 
@@ -96,7 +111,10 @@ impl FileSystem for MemoryFileSystem {
             .clone()
     }
 
-    async fn list_stream(&self, path: &VfsPath) -> Result<backend::vfs::traits::FileStreamBox, VfsError> {
+    async fn list_stream(
+        &self,
+        path: &VfsPath,
+    ) -> Result<backend::vfs::traits::FileStreamBox, VfsError> {
         let parent = normalize(&path.path);
         let files = self.files.read().expect("memory fs files lock");
         let dirs = self.directories.read().expect("memory fs directories lock");
@@ -189,13 +207,20 @@ impl FileSystem for MemoryFileSystem {
         Ok(Box::new(StreamReader::new(stream)))
     }
 
-    async fn read_range(&self, path: &VfsPath, offset: u64, length: u64) -> Result<AsyncReadBox, VfsError> {
+    async fn read_range(
+        &self,
+        path: &VfsPath,
+        offset: u64,
+        length: u64,
+    ) -> Result<AsyncReadBox, VfsError> {
         let content = self
             .bytes(&path.path)
             .ok_or_else(|| VfsError::NotFound(path.path.clone()))?;
         let start = (offset as usize).min(content.len());
         let end = start.saturating_add(length as usize).min(content.len());
-        let stream = futures::stream::iter(vec![Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&content[start..end]))]);
+        let stream = futures::stream::iter(vec![Ok::<Bytes, std::io::Error>(
+            Bytes::copy_from_slice(&content[start..end]),
+        )]);
         Ok(Box::new(StreamReader::new(stream)))
     }
 
@@ -233,7 +258,10 @@ impl FileSystem for MemoryFileSystem {
         let from = normalize(&from.path);
         let to = normalize(&to.path);
         if let Some(content) = self.files.write().expect("memory fs files lock").remove(&from) {
-            self.files.write().expect("memory fs files lock").insert(to, content);
+            self.files
+                .write()
+                .expect("memory fs files lock")
+                .insert(to, content);
             return Ok(());
         }
         Err(VfsError::NotFound(from))
@@ -248,6 +276,14 @@ impl FileSystem for MemoryFileSystem {
     }
 
     async fn set_permissions(&self, path: &VfsPath, permissions: &str) -> Result<(), VfsError> {
+        if let Some(message) = self
+            .permission_failure
+            .read()
+            .expect("memory fs permission failure lock")
+            .clone()
+        {
+            return Err(VfsError::IoError(message));
+        }
         self.permissions
             .write()
             .expect("memory fs permissions lock")
