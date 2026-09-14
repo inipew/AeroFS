@@ -127,11 +127,6 @@ fn phase4_targz_existing_local_target_uses_safe_atomic_replace() {
 #[test]
 fn phase4_zip_compression_streams_traversal_and_stages_commits() {
     let zip = source("src/filesystem/archive_zip_stream.rs");
-    let compressor = section(
-        &zip,
-        "pub async fn compress_zip_streaming(",
-        "}",
-    );
     let service = source("src/services/archive_service.rs");
 
     assert!(
@@ -155,11 +150,11 @@ fn phase4_zip_compression_streams_traversal_and_stages_commits() {
         "Phase 4 regression: safe ZIP commits must promote provider-side staging"
     );
     assert!(
-        service.contains("compress_zip_streaming("),
-        "Phase 4 regression: ArchiveService must continue using the hardened ZIP path"
+        zip.contains("tempfile::NamedTempFile::new()"),
+        "ZIP must retain a seekable local file for ZipWriter central-directory finalization"
     );
     assert!(
-        compressor.contains("NamedTempFile"),
-        "ZIP still requires a local seekable file for ZipWriter central-directory finalization"
+        service.contains("compress_zip_streaming("),
+        "Phase 4 regression: ArchiveService must continue using the hardened ZIP path"
     );
 }
