@@ -3,6 +3,7 @@ use crate::runtime::{ResourceBudget, ResourceBudgetMetrics, TaskSupervisor};
 use crate::services::{MetadataCache, MetadataCacheMetrics};
 use crate::vfs::registry::ProviderRegistry;
 use serde::Serialize;
+use sqlx::Row;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +20,22 @@ pub struct DatabasePoolMetrics {
     pub in_use_connections: usize,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DurableExecutionMetrics {
+    /// Durable transfer rows that still belong to the execution lifecycle.
+    pub transfer_active: usize,
+    /// Durable background transfers waiting for a worker.
+    pub transfer_queue_depth: usize,
+    /// Durable transfers currently running or completing cancellation.
+    pub transfer_running: usize,
+    /// Durable sync jobs that have not reached completed/failed/conflict.
+    pub sync_active: usize,
+    /// Sync jobs currently doing scan/plan/reconcile/execute/verify work.
+    pub sync_executing: usize,
+    /// Sync jobs intentionally retained in the paused lifecycle state.
+    pub sync_paused: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeMetricsSnapshot {
     pub active_supervised_tasks: usize,
@@ -26,10 +43,12 @@ pub struct RuntimeMetricsSnapshot {
     pub providers: ProviderRuntimeMetrics,
     pub metadata_cache: MetadataCacheMetrics,
     pub database_pool: DatabasePoolMetrics,
+    pub execution: DurableExecutionMetrics,
 }
 
-/// Lightweight operational snapshot used to verify that permits, leases, cache state and DB
-/// connections return toward their idle baseline after foreground work completes.
+/// Lightweight operational snapshot used to verify that permits, leases, cache state, durable
+/// execution state, and DB connections return toward their idle baseline after foreground work
+/// completes.
 #[derive(Clone)]
 pub struct RuntimeMetricsCollector {
     resource_budget: Arc<ResourceBudget>,
@@ -56,6 +75,66 @@ impl RuntimeMetricsCollector {
         }
     }
 
+    async fn durable_execution_metrics(&self) -> DurableExecutionMetrics {
+        let transfer = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN status IN ('queued', 'running', 'cancellation_requested') THEN 1
+                    ELSE 0
+                END), 0) AS active,
+                COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+                COALESCE(SUM(CASE
+                    WHEN status IN ('running', 'cancellation_requested') THEN 1
+                    ELSE 0
+                END), 0) AS running
+            FROM transfer_jobs
+            WHERE status IN ('queued', 'running', 'cancellation_requested')
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await;
+
+        let sync = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN status NOT IN ('completed', 'failed', 'conflict') THEN 1
+                    ELSE 0
+                END), 0) AS active,
+                COALESCE(SUM(CASE
+                    WHEN status IN ('scanning', 'planning', 'reconciling', 'executing', 'verifying')
+                    THEN 1 ELSE 0
+                END), 0) AS executing,
+                COALESCE(SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END), 0) AS paused
+            FROM sync_jobs
+            WHERE status NOT IN ('completed', 'failed', 'conflict')
+            "#,
+        )
+        .fetch_one(&self.db)
+        .await;
+
+        match (transfer, sync) {
+            (Ok(transfer), Ok(sync)) => DurableExecutionMetrics {
+                transfer_active: transfer.get::<i64, _>("active").max(0) as usize,
+                transfer_queue_depth: transfer.get::<i64, _>("queued").max(0) as usize,
+                transfer_running: transfer.get::<i64, _>("running").max(0) as usize,
+                sync_active: sync.get::<i64, _>("active").max(0) as usize,
+                sync_executing: sync.get::<i64, _>("executing").max(0) as usize,
+                sync_paused: sync.get::<i64, _>("paused").max(0) as usize,
+            },
+            (transfer_result, sync_result) => {
+                if let Err(error) = transfer_result {
+                    tracing::warn!(%error, "runtime metrics: failed to query transfer execution state");
+                }
+                if let Err(error) = sync_result {
+                    tracing::warn!(%error, "runtime metrics: failed to query sync execution state");
+                }
+                DurableExecutionMetrics::default()
+            }
+        }
+    }
+
     pub async fn snapshot(&self) -> RuntimeMetricsSnapshot {
         let runtimes = self.registry.runtimes_map();
         let runtimes = runtimes.read().await;
@@ -72,6 +151,7 @@ impl RuntimeMetricsCollector {
 
         let open_connections = self.db.size();
         let idle_connections = self.db.num_idle();
+        let execution = self.durable_execution_metrics().await;
 
         RuntimeMetricsSnapshot {
             active_supervised_tasks: self.supervisor.active_tasks(),
@@ -87,6 +167,7 @@ impl RuntimeMetricsCollector {
                 idle_connections,
                 in_use_connections: (open_connections as usize).saturating_sub(idle_connections),
             },
+            execution,
         }
     }
 }
