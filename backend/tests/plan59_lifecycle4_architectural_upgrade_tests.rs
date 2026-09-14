@@ -352,7 +352,7 @@ async fn test_sync_manager_creation_and_reconciliation() {
     assert_eq!(job.user_id, "user-1");
     assert_eq!(job.status, backend::sync::SyncStatus::Created);
 
-    let list = sync_mgr.list_jobs().await.unwrap();
-    assert!(!list.is_empty());
-    assert_eq!(list[0].id, job.id);
+    let page = sync_mgr.list_jobs_page(None, Some(10)).await.unwrap();
+    assert!(!page.items.is_empty());
+    assert_eq!(page.items[0].id, job.id);
 }
