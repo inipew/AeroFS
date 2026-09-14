@@ -98,17 +98,17 @@ impl RuntimeMetricsCollector {
         let sync = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(CASE
-                    WHEN status NOT IN ('completed', 'failed', 'conflict') THEN 1
-                    ELSE 0
-                END), 0) AS active,
+                COUNT(*) AS active,
                 COALESCE(SUM(CASE
                     WHEN status IN ('scanning', 'planning', 'reconciling', 'executing', 'verifying')
                     THEN 1 ELSE 0
                 END), 0) AS executing,
                 COALESCE(SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END), 0) AS paused
             FROM sync_jobs
-            WHERE status NOT IN ('completed', 'failed', 'conflict')
+            WHERE status IN (
+                'created', 'scanning', 'planning', 'reconciling',
+                'executing', 'verifying', 'paused'
+            )
             "#,
         )
         .fetch_one(&self.db)
