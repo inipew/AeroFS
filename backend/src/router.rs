@@ -158,6 +158,7 @@ pub fn create_router(state: AppState) -> Router {
             HeaderName::from_static("x-idempotency-key"),
             HeaderName::from_static("idempotency-key"),
             HeaderName::from_static("x-cache-idempotency"),
+            HeaderName::from_static("x-next-cursor"),
         ];
 
         if !router_state.allowed_origins.is_empty() {
@@ -218,119 +219,29 @@ pub fn create_router(state: AppState) -> Router {
         .route("/{id}/files/rename", post(api_files::rename_entry))
         .route("/{id}/files/copy", post(api_files::copy_entry))
         .route("/{id}/files/chmod", post(api_files::chmod_file))
-        .route(
-            "/{id}/files/presign/download",
-            post(api_files::presign_download_file),
-        )
-        .route(
-            "/{id}/files/presign/upload",
-            post(api_files::presign_upload_file),
-        )
-        .route(
-            "/{id}/files/presign/complete",
-            post(api_files::presign_complete_upload),
-        )
-        .route("/{id}/storage-info", get(api_files::get_storage_info))
-        .route("/{id}/uploads", post(api_files::create_upload_session))
-        .route(
-            "/{id}/uploads/{job_id}/content",
-            axum::routing::put(api_files::upload_session_content),
-        )
-        .route("/{id}/upload", post(api_files::upload_file))
-        .route("/{id}/archive/compress", post(api_archive::compress_files))
-        .route(
-            "/{id}/archive/extract",
-            post(api_archive::extract_archive_endpoint),
-        )
-        .route(
-            "/{id}/archive/entries",
-            get(api_archive::list_virtual_archive_endpoint),
-        )
-        .route(
-            "/{id}/archive/read",
-            get(api_archive::read_virtual_archive_entry_endpoint),
-        )
-        .route(
-            "/{id}/archive/extract-selected",
-            post(api_archive::extract_selected_archive_endpoint),
-        )
-        .route("/{id}/search", get(api_search::search_files));
+        .route("/{id}/files/presign/download", post(api_files::presign_download_file))
+        .route("/{id}/files/presign/upload", post(api_files::presign_upload_file));
 
-    let transfer_routes = self::transfers::router();
-    let share_routes = Router::new()
-        .route(
-            "/",
-            get(crate::api::shares::list_shares).post(crate::api::shares::create_share),
-        )
-        .route(
-            "/{id}",
-            axum::routing::delete(crate::api::shares::delete_share),
-        );
-    let trash_routes = Router::new()
-        .route("/", get(crate::api::trash::list_trash))
-        .route("/move", post(crate::api::trash::move_to_trash))
-        .route("/restore/{id}", post(crate::api::trash::restore_trash_item))
-        .route(
-            "/empty",
-            axum::routing::delete(crate::api::trash::empty_trash),
-        )
-        .route(
-            "/{id}",
-            axum::routing::delete(crate::api::trash::delete_trash_item),
-        );
-    let sync_routes = Router::new()
-        .route(
-            "/",
-            get(crate::api::sync::list_sync_jobs).post(crate::api::sync::create_sync_job),
-        )
-        .route("/{id}/operations", get(crate::api::sync::list_operations))
-        .route("/{id}/resolve", post(crate::api::sync::resolve_conflict));
-
-    let api_v1 = Router::new()
-        .nest("/auth", auth_routes)
-        .nest("/connections", connection_routes)
-        .nest("/transfers", transfer_routes)
-        .nest("/sync", sync_routes)
-        .nest("/shares", share_routes)
-        .nest("/trash", trash_routes)
-        .route(
-            "/settings",
-            get(crate::api::settings::get_settings).put(crate::api::settings::update_settings),
-        )
-        .route(
-            "/user/preferences",
-            get(crate::api::preferences::get_user_preferences)
-                .put(crate::api::preferences::update_user_preferences),
-        )
-        .route("/audit-logs", get(audit::list_audit_logs))
-        .fallback(|uri: axum::http::Uri| async move {
-            crate::errors::AppError::NotFound(format!("API route not found: {}", uri.path()))
-        });
-
-    Router::new()
-        .route("/health", get(crate::api::health::health_check))
-        .route("/health/live", get(crate::api::health::health_live))
-        .route("/health/ready", get(crate::api::health::health_ready))
+    let router = Router::new()
+        .nest("/api/v1/auth", auth_routes)
+        .nest("/api/v1/connections", connection_routes)
+        .nest("/api/v1/transfers", self::transfers::router())
+        .nest("/api/v1", self::files::router())
+        .route("/api/v1/search", get(api_search::search))
+        .route("/api/v1/ws", get(ws::websocket_handler))
+        .route("/api/v1/audit", get(audit::list_audit_logs))
+        .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/metrics", get(crate::api::health::runtime_metrics))
-        .route("/api/v1/health/live", get(crate::api::health::health_live))
-        .route("/api/v1/health/ready", get(crate::api::health::health_ready))
-        .route("/api/v1/ws", get(ws::ws_handler))
-        .route(
-            "/api/v1/shares/public/{token}",
-            get(crate::api::shares::public_get_share),
-        )
-        .merge(openapi::openapi_router())
-        .nest("/api/v1", api_v1)
-        .fallback(crate::static_files::static_handler)
-        .layer(axum::middleware::from_fn(api_error_response_middleware))
-        .layer(axum::middleware::from_fn(crate::middleware::idempotency_middleware))
-        .layer(axum::middleware::from_fn(crate::middleware::request_id_middleware))
-        .layer(middleware::from_fn(security_headers_middleware))
-        .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .layer(axum::middleware::from_fn_with_state(
+        .merge(crate::api::router::create_api_router())
+        .layer(middleware::from_fn(api_error_response_middleware))
+        .layer(middleware::from_fn_with_state(
             runtime_state,
             shutdown_guard,
         ))
-        .with_state(state)
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn(security_headers_middleware))
+        .with_state(state);
+
+    router
 }
