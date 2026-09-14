@@ -9,7 +9,7 @@ use crate::services::MetadataCache;
 use crate::transfer::TransferManager;
 use crate::vfs::factory::ProviderFactory;
 use crate::vfs::registry::ProviderRegistry;
-use crate::vfs::runtime::StorageRuntime;
+use crate::vfs::runtime::{ProviderLoader, StorageRuntime};
 use crate::vfs::FileSystem;
 use async_trait::async_trait;
 use std::path::Path;
@@ -40,6 +40,7 @@ impl RegistryConnectionRuntime {
 struct PreparedRegistryConnection {
     id: String,
     provider: Arc<dyn FileSystem>,
+    provider_loader: Option<ProviderLoader>,
     registry: Arc<ProviderRegistry>,
 }
 
@@ -49,7 +50,13 @@ impl PreparedConnectionRuntime for PreparedRegistryConnection {
         if let Some(existing) = self.registry.get_runtime(&self.id).await {
             existing.set_state(crate::vfs::ProviderState::Draining).await;
         }
-        self.registry.register(self.id, self.provider).await;
+        if let Some(loader) = self.provider_loader {
+            self.registry
+                .register_reclaimable(self.id, self.provider, loader)
+                .await;
+        } else {
+            self.registry.register(self.id, self.provider).await;
+        }
     }
 }
 
@@ -117,6 +124,7 @@ impl ConnectionRuntime for RegistryConnectionRuntime {
         Ok(Box::new(PreparedRegistryConnection {
             id: "local".to_string(),
             provider,
+            provider_loader: None,
             registry: self.registry.clone(),
         }))
     }
@@ -134,9 +142,26 @@ impl ConnectionRuntime for RegistryConnectionRuntime {
             .map_err(|error| {
                 AppError::BadRequest(format!("Failed to build provider: {}", error))
             })?;
+
+        let provider_loader = if connection.provider == ProviderKind::Local {
+            None
+        } else {
+            let connection = connection.clone();
+            let secret = secret.map(str::to_owned);
+            let config = config.clone();
+            Some(Arc::new(move || {
+                ProviderFactory::build_with_config(
+                    &connection,
+                    secret.as_deref(),
+                    Some(&config),
+                )
+            }) as ProviderLoader)
+        };
+
         Ok(Box::new(PreparedRegistryConnection {
             id: connection.id.clone(),
             provider,
+            provider_loader,
             registry: self.registry.clone(),
         }))
     }
