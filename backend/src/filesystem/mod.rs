@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod archive_compress_stream;
+mod archive_input_bridge;
 pub mod archive_stream;
 pub mod safepath;
 pub mod search;
