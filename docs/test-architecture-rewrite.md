@@ -32,6 +32,18 @@ Phase 1 does **not** delete those tests. It establishes the replacement infrastr
 
 The TestKit is intentionally small in Phase 1. Provider doubles, event recorders, deterministic failure injection, and richer domain builders should be added only when the subsystem migration demonstrates a real need.
 
+## Phase 2 transfer migration
+
+Phase 2 adds a transfer-specific TestKit layer without exposing `TransferManager` through the application boundary:
+
+- `support::transfer` owns actor creation, application-level transfer submission/listing, job lookup, and condition-based status convergence.
+- `transfer_lifecycle_tests.rs` owns product behavior: copy/move, recursive copy, durable terminal history, retry from failed durable state, concurrent retry admission, dismiss/clear, ownership, cancellation cleanup, and connection-drain behavior.
+- `transfer_engine_invariants_tests.rs` owns intentionally implementation-level guarantees that cannot be expressed faithfully at the application boundary: retry permission revalidation, unavailable/disabled providers, cleanup-phase move recovery, retry CAS, finalizing cancellation, progress checkpoint persistence, enum/string stability, and terminal DB fallback parity.
+
+The old transfer suites remain in place during the first validation run. They are removed only after both the replacement suites and the complete legacy suite pass together on CI.
+
+One legacy transfer test is intentionally not migrated as a requirement: `test_transfer_dynamic_limits_update` only changed a settings value and then asserted that an unrelated small copy still completed. It did not verify concurrency changed. Runtime/settings concurrency behavior belongs in the settings/runtime migration with an observable concurrency contract rather than preserving that weak assertion.
+
 ## Rewrite rules
 
 Every legacy test is handled with the following sequence:
@@ -87,7 +99,11 @@ The exact physical grouping can evolve during migration; behavior ownership matt
 
 ### Phase 2 — Transfer lifecycle
 
-Rewrite transfer queueing, execution, cancellation, retry, persistence, ownership, and terminal-state reclamation tests around behavior-oriented fixtures. Replace transfer polling helpers and consolidate overlapping `plan3`, `plan38`, `plan39`, `p1_transfer_*`, and `transfer_tests` coverage.
+- consolidate queue/execution/cancellation/retry/persistence/ownership behavior around `support::transfer`
+- separate product behavior from engine invariants
+- replace fixed transfer polling loops with named convergence deadlines
+- run old and new transfer suites together before deleting superseded files
+- remove historical `plan3`, `plan38`, `plan39`, and duplicate `transfer_tests` ownership once CI proves equivalence
 
 ### Phase 3 — Sync and recovery
 
