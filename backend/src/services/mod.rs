@@ -20,7 +20,7 @@ pub mod user_service;
 pub use archive_service::ArchiveService;
 pub use audit_service::AuditService;
 pub use auth_service::AuthService;
-pub use cache::MetadataCache;
+pub use cache::{MetadataCache, MetadataCacheMetrics};
 pub use connection_service::{ConnectionService, CreateConnectionRequest, UpdateConnectionRequest};
 pub use editor_service::EditorService;
 pub use file_api_service::{FileApiService, RecursiveChmodResult, StorageInfoSnapshot};
