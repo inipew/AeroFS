@@ -68,7 +68,7 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(rss["recovery_tail_median"], 105.0)
         self.assertEqual(summary["throughput"]["mib_per_second"], 1.0)
 
-    def test_recovery_failures_catch_resource_leaks(self):
+    def test_recovery_failures_catch_logical_resource_and_execution_leaks(self):
         summary = {
             "metrics": {
                 "rss_kib": {
@@ -87,12 +87,38 @@ class MetricsTests(unittest.TestCase):
                     "recovery_to_baseline_ratio": None,
                     "recovery_minus_baseline": 2,
                 },
+                "metrics.execution.transfer_active": {
+                    "baseline_median": 0,
+                    "recovery_tail_median": 1,
+                    "recovery_to_baseline_ratio": None,
+                    "recovery_minus_baseline": 1,
+                },
             }
         }
         failures = perf.recovery_failures(summary, 1.25, 1.25, 5, 2)
-        self.assertEqual(len(failures), 2)
+        self.assertEqual(len(failures), 3)
         self.assertTrue(any("resource_budget.transfer.in_use" in value for value in failures))
         self.assertTrue(any("providers.active_leases" in value for value in failures))
+        self.assertTrue(any("execution.transfer_active" in value for value in failures))
+
+    def test_execution_recovery_allows_preexisting_baseline_work(self):
+        summary = {
+            "metrics": {
+                "metrics.execution.sync_paused": {
+                    "baseline_median": 2,
+                    "recovery_tail_median": 2,
+                    "recovery_to_baseline_ratio": 1.0,
+                    "recovery_minus_baseline": 0,
+                },
+                "metrics.execution.transfer_queue_depth": {
+                    "baseline_median": 1,
+                    "recovery_tail_median": 1,
+                    "recovery_to_baseline_ratio": 1.0,
+                    "recovery_minus_baseline": 0,
+                },
+            }
+        }
+        self.assertEqual(perf.recovery_failures(summary, 1.25, 1.25, 5, 2), [])
 
 
 if __name__ == "__main__":
