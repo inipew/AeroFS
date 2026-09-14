@@ -1,5 +1,7 @@
 use crate::errors::AppError;
-use crate::sync::{SyncJob, SyncOperationRow, SyncStrategy};
+use crate::sync::{
+    SyncHistoryPage, SyncJob, SyncOperationRow, SyncPageCursor, SyncStrategy,
+};
 use async_trait::async_trait;
 
 /// Request-facing sync control capability.
@@ -18,9 +20,18 @@ pub trait SyncControl: Send + Sync {
         strategy: SyncStrategy,
     ) -> Result<SyncJob, AppError>;
 
-    async fn list_jobs(&self) -> Result<Vec<SyncJob>, AppError>;
+    async fn list_jobs(
+        &self,
+        cursor: Option<&SyncPageCursor>,
+        limit: Option<usize>,
+    ) -> Result<SyncHistoryPage<SyncJob>, AppError>;
 
-    async fn list_operations(&self, job_id: &str) -> Result<Vec<SyncOperationRow>, AppError>;
+    async fn list_operations(
+        &self,
+        job_id: &str,
+        cursor: Option<&SyncPageCursor>,
+        limit: Option<usize>,
+    ) -> Result<SyncHistoryPage<SyncOperationRow>, AppError>;
 
     async fn resolve_conflict(
         &self,
