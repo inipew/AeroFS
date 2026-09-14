@@ -378,9 +378,9 @@ pub async fn compress_targz_streaming(
 
 #[cfg(test)]
 mod tests {
-    use super::{output_pipe, ARCHIVE_STREAM_CHUNK};
+    use super::{output_pipe, Bytes, Pin, Poll, ARCHIVE_STREAM_CHUNK};
     use std::io::Write;
-    use tokio::io::{AsyncReadExt, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
     #[tokio::test]
     async fn blocking_output_pipe_preserves_bytes_and_eof() {
@@ -408,7 +408,10 @@ mod tests {
         let waker = futures::task::noop_waker();
         let mut cx = std::task::Context::from_waker(&waker);
         let mut pinned = Pin::new(&mut reader);
-        assert!(matches!(pinned.as_mut().poll_read(&mut cx, &mut read_buf), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            pinned.as_mut().poll_read(&mut cx, &mut read_buf),
+            Poll::Ready(Ok(()))
+        ));
         assert_eq!(reader.current.as_deref(), Some(&b"abc"[..]));
     }
 }
