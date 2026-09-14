@@ -1,6 +1,7 @@
 use crate::domain::{FileKind, PermissionInheritanceMode, VfsPath};
 use crate::errors::{SecurityError, VfsError};
 use crate::filesystem::archive::{validate_archive_entry_path, ArchiveOverwriteMode};
+use crate::filesystem::archive_input_bridge::{input_pipe, pump_async_reader};
 use crate::vfs::FileSystem;
 use flate2::read::GzDecoder;
 use std::io::Read;
@@ -94,7 +95,11 @@ async fn apply_permissions(
     Ok(())
 }
 
-fn destination_path(connection_id: &str, target_dir: &str, rel_path: &str) -> Result<VfsPath, VfsError> {
+fn destination_path(
+    connection_id: &str,
+    target_dir: &str,
+    rel_path: &str,
+) -> Result<VfsPath, VfsError> {
     let full_path = if target_dir == "/" {
         format!("/{}", rel_path.trim_start_matches('/'))
     } else {
@@ -386,13 +391,11 @@ fn run_zip_worker(
     send_command(&tx, ExtractCommand::Finish)
 }
 
-fn run_targz_worker(
-    temp_path: &Path,
+fn run_targz_worker<R: Read>(
+    reader: R,
     tx: tokio::sync::mpsc::Sender<ExtractCommand>,
 ) -> Result<(), VfsError> {
-    let file = std::fs::File::open(temp_path)
-        .map_err(|error| VfsError::IoError(format!("Failed opening staged archive: {error}")))?;
-    let decoder = GzDecoder::new(file);
+    let decoder = GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive
         .entries()
@@ -525,12 +528,30 @@ pub async fn extract_targz_streaming(
     target_dir: &str,
     overwrite_mode: ArchiveOverwriteMode,
 ) -> Result<(usize, usize), VfsError> {
-    extract_with_worker(
-        provider,
-        archive_path,
+    let source = provider.read_stream(archive_path).await?;
+    let (input_tx, input_reader) = input_pipe();
+    let (command_tx, command_rx) =
+        tokio::sync::mpsc::channel(EXTRACT_STREAM_CHANNEL_CAPACITY);
+
+    let worker = tokio::task::spawn_blocking(move || run_targz_worker(input_reader, command_tx));
+    let producer = pump_async_reader(source, input_tx);
+    let consumer = consume_commands(
+        Arc::clone(provider),
+        &archive_path.connection_id,
         target_dir,
         overwrite_mode,
-        |path, tx| run_targz_worker(path, tx),
-    )
-    .await
+        command_rx,
+    );
+
+    let (producer_result, consumer_result) = tokio::join!(producer, consumer);
+    let worker_result = worker
+        .await
+        .map_err(|error| VfsError::IoError(format!("Archive extraction task panicked: {error}")))?;
+
+    match (consumer_result, worker_result, producer_result) {
+        (Err(consumer_error), _, _) => Err(consumer_error),
+        (Ok(_), Err(worker_error), _) => Err(worker_error),
+        (Ok(_), Ok(()), Err(producer_error)) => Err(producer_error),
+        (Ok(counts), Ok(()), Ok(())) => Ok(counts),
+    }
 }
