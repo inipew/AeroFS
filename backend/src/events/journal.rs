@@ -9,6 +9,8 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 const TRANSFER_PROGRESS_BROADCAST_INTERVAL: Duration = Duration::from_millis(250);
+const FNV1A_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV1A_PRIME: u64 = 0x100000001b3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -102,7 +104,7 @@ impl DomainEvent {
             action: "rename".into(),
             old_path: Some(from_str),
             parent_path: parent,
-            old_parent_path: old_parent,
+            old_parent_path: None,
         }
     }
 
@@ -163,8 +165,8 @@ pub enum ReplayOutcome {
 #[derive(Debug, Clone)]
 struct ProgressEmissionState {
     last_emitted_at: Instant,
-    phase: Option<String>,
-    status: Option<String>,
+    phase_fingerprint: u64,
+    status_fingerprint: u64,
 }
 
 #[derive(Debug, Default)]
@@ -172,16 +174,26 @@ struct ProgressBroadcastGate {
     transfers: HashMap<String, ProgressEmissionState>,
 }
 
+fn progress_field_fingerprint(value: Option<&str>) -> u64 {
+    let Some(value) = value else {
+        return 0;
+    };
+
+    let mut hash = FNV1A_OFFSET_BASIS;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV1A_PRIME);
+    }
+    // Reserve zero for a missing field so `None` can never alias an actual string.
+    if hash == 0 { 1 } else { hash }
+}
+
 impl ProgressBroadcastGate {
     fn should_emit(&mut self, transfer_id: &str, payload: &serde_json::Value, now: Instant) -> bool {
-        let phase = payload
-            .get("phase")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let status = payload
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
+        let phase = payload.get("phase").and_then(serde_json::Value::as_str);
+        let status = payload.get("status").and_then(serde_json::Value::as_str);
+        let phase_fingerprint = progress_field_fingerprint(phase);
+        let status_fingerprint = progress_field_fingerprint(status);
         let transferred = payload
             .get("transferred_bytes")
             .and_then(serde_json::Value::as_u64)
@@ -193,9 +205,7 @@ impl ProgressBroadcastGate {
         // Directory transfers discover total bytes incrementally. Equality while the job is still
         // `transferring` can therefore be temporary, so only a non-transferring phase gets the
         // immediate final-byte bypass.
-        let is_final_progress = total > 0
-            && transferred >= total
-            && phase.as_deref() != Some("transferring");
+        let is_final_progress = total > 0 && transferred >= total && phase != Some("transferring");
 
         match self.transfers.get_mut(transfer_id) {
             None => {
@@ -203,23 +213,22 @@ impl ProgressBroadcastGate {
                     transfer_id.to_string(),
                     ProgressEmissionState {
                         last_emitted_at: now,
-                        phase,
-                        status,
+                        phase_fingerprint,
+                        status_fingerprint,
                     },
                 );
                 true
             }
             Some(state) => {
-                let phase_changed = state.phase != phase;
-                let status_changed = state.status != status;
-                let interval_elapsed =
-                    now.saturating_duration_since(state.last_emitted_at)
-                        >= TRANSFER_PROGRESS_BROADCAST_INTERVAL;
+                let phase_changed = state.phase_fingerprint != phase_fingerprint;
+                let status_changed = state.status_fingerprint != status_fingerprint;
+                let interval_elapsed = now.saturating_duration_since(state.last_emitted_at)
+                    >= TRANSFER_PROGRESS_BROADCAST_INTERVAL;
 
                 if phase_changed || status_changed || is_final_progress || interval_elapsed {
                     state.last_emitted_at = now;
-                    state.phase = phase;
-                    state.status = status;
+                    state.phase_fingerprint = phase_fingerprint;
+                    state.status_fingerprint = status_fingerprint;
                     true
                 } else {
                     false
@@ -618,6 +627,28 @@ mod tests {
             "job-1",
             &progress("finalizing", "cancellation_requested", 100, 100),
             start + Duration::from_millis(30),
+        ));
+    }
+
+    #[test]
+    fn progress_gate_detects_unknown_phase_and_status_changes() {
+        let start = Instant::now();
+        let mut gate = ProgressBroadcastGate::default();
+
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("future_phase_a", "future_status_a", 1, 100),
+            start,
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("future_phase_b", "future_status_a", 2, 100),
+            start + Duration::from_millis(1),
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("future_phase_b", "future_status_b", 3, 100),
+            start + Duration::from_millis(2),
         ));
     }
 
