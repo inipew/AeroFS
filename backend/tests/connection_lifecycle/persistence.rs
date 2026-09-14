@@ -1,6 +1,6 @@
 use backend::{
     domain::{Connection, ConnectionStatus, ProviderKind},
-    infrastructure::{CredentialStore, SqliteConnectionRepository},
+    infrastructure::{connections::SqliteConnectionRepository, CredentialStore},
     ports::connections::{ConnectionRepository, SecretMutation},
 };
 use chrono::Utc;
