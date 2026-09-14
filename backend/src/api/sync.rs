@@ -111,10 +111,7 @@ pub async fn create_sync_job(
     ))
 }
 
-/// List sync jobs using bounded keyset pagination.
-///
-/// The response body intentionally remains the legacy array shape for compatibility. When more
-/// rows are available, the opaque cursor for the next page is returned in `X-Next-Cursor`.
+/// List all sync jobs
 #[utoipa::path(
     get,
     path = "/api/v1/sync",
@@ -145,10 +142,7 @@ pub async fn list_sync_jobs(
     Ok((headers, Json(page.items)))
 }
 
-/// List operations for a sync job using bounded keyset pagination.
-///
-/// The response body remains the existing array shape and `X-Next-Cursor` carries the next-page
-/// cursor when additional operations exist.
+/// List operations for a sync job
 #[utoipa::path(
     get,
     path = "/api/v1/sync/{id}/operations",
