@@ -1,6 +1,6 @@
 use backend::{
     domain::{Actor, Connection, ConnectionStatus, ProviderKind},
-    ports::connections::ConnectionRuntime,
+    ports::connections::{ConnectionRepository, ConnectionRuntime},
     services::connection_service::{
         ConnectionService, CreateConnectionRequest, UpdateConnectionRequest,
     },
@@ -145,7 +145,10 @@ async fn update_secret_semantics_keep_replace_and_clear_without_losing_ordering(
         .await
         .unwrap();
     assert_eq!(fixture.repository.secret(id).as_deref(), Some("original"));
-    assert_eq!(fixture.runtime.prepared_secrets().last().unwrap().1.as_deref(), Some("original"));
+    assert_eq!(
+        fixture.runtime.prepared_secrets().last().unwrap().1.as_deref(),
+        Some("original")
+    );
 
     fixture
         .service
@@ -166,7 +169,10 @@ async fn update_secret_semantics_keep_replace_and_clear_without_losing_ordering(
         .await
         .unwrap();
     assert_eq!(fixture.repository.secret(id).as_deref(), Some("replacement"));
-    assert_eq!(fixture.runtime.prepared_secrets().last().unwrap().1.as_deref(), Some("replacement"));
+    assert_eq!(
+        fixture.runtime.prepared_secrets().last().unwrap().1.as_deref(),
+        Some("replacement")
+    );
 
     fixture
         .service
@@ -190,18 +196,24 @@ async fn update_secret_semantics_keep_replace_and_clear_without_losing_ordering(
     assert_eq!(fixture.runtime.prepared_secrets().last().unwrap().1, None);
 
     let events = fixture.events.lock().unwrap().clone();
-    for chunk in events
+    let update_events: Vec<String> = events
+        .into_iter()
+        .filter(|event| event.contains(id) || event == "runtime.validate_target")
+        .collect();
+    let one_update = vec![
+        "runtime.validate_target".to_string(),
+        format!("runtime.prepare:{id}"),
+        format!("repository.update:{id}"),
+        format!("runtime.activate:{id}"),
+        format!("effects.invalidate_metadata:{id}"),
+    ];
+    let expected: Vec<String> = one_update
         .iter()
-        .filter(|event| event.contains(id) || event.as_str() == "runtime.validate_target")
-        .collect::<Vec<_>>()
-        .chunks(5)
-    {
-        assert_eq!(chunk[0].as_str(), "runtime.validate_target");
-        assert_eq!(chunk[1].as_str(), format!("runtime.prepare:{id}"));
-        assert_eq!(chunk[2].as_str(), format!("repository.update:{id}"));
-        assert_eq!(chunk[3].as_str(), format!("runtime.activate:{id}"));
-        assert_eq!(chunk[4].as_str(), format!("effects.invalidate_metadata:{id}"));
-    }
+        .cloned()
+        .chain(one_update.iter().cloned())
+        .chain(one_update.iter().cloned())
+        .collect();
+    assert_eq!(update_events, expected);
 }
 
 #[tokio::test]
