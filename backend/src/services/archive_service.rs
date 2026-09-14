@@ -1,9 +1,10 @@
 use crate::domain::{Actor, ConnectionId, VfsPath};
 use crate::errors::AppError;
 use crate::filesystem::archive::{
-    compress_targz, compress_zip, extract_selected_archive_entries, list_virtual_archive_entries,
+    compress_zip, extract_selected_archive_entries, list_virtual_archive_entries,
     read_virtual_archive_entry, ArchiveFormat, ArchiveOverwriteMode, VirtualArchiveEntry,
 };
+use crate::filesystem::archive_compress_stream::compress_targz_streaming;
 use crate::filesystem::archive_stream::{extract_targz_streaming, extract_zip_streaming};
 use crate::ports::{
     archive::ArchiveEffects,
@@ -100,7 +101,7 @@ impl ArchiveService {
                 .await?;
             }
             ArchiveFormat::TarGz => {
-                compress_targz(
+                compress_targz_streaming(
                     &provider,
                     connection.as_str(),
                     base_path,
