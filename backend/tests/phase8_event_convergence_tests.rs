@@ -1,6 +1,6 @@
 use backend::db::init_db;
 use backend::events::{DomainEvent, EventJournal};
-use backend::runtime::TaskSupervisor;
+use backend::runtime::{ResourceBudget, TaskSupervisor};
 use backend::sync::SyncManager;
 use backend::transfer::TransferManager;
 use backend::vfs::ProviderRegistry;
@@ -62,11 +62,12 @@ async fn sync_transfer_completion_projection_is_idempotent() {
     let registry = Arc::new(ProviderRegistry::new());
     let event_journal = Arc::new(EventJournal::init(db.clone()).await.unwrap());
     let tracker = TaskTracker::new();
+    let resource_budget = Arc::new(ResourceBudget::default());
     let transfer_manager = TransferManager::new(
         registry.providers_map(),
         db.clone(),
         4,
-        Arc::new(backend::runtime::ResourceBudget::default()),
+        resource_budget.clone(),
         event_journal.clone(),
         CancellationToken::new(),
         &tracker,
@@ -76,6 +77,7 @@ async fn sync_transfer_completion_projection_is_idempotent() {
         db.clone(),
         transfer_manager,
         TaskSupervisor::new(),
+        resource_budget,
         event_journal,
         registry.providers_map(),
     );
