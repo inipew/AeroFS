@@ -467,8 +467,8 @@ impl SyncManager {
         let now = Utc::now().to_rfc3339();
 
         let updated = sqlx::query(
-            "UPDATE sync_operations\
-             SET status = ?, transfer_job_id = ?, error_message = ?, updated_at = ?\
+            "UPDATE sync_operations \
+             SET status = ?, transfer_job_id = ?, error_message = ?, updated_at = ? \
              WHERE id = ? AND status NOT IN ('completed', 'failed')",
         )
         .bind(status)
