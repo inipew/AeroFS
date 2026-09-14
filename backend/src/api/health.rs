@@ -64,6 +64,17 @@ pub async fn health_ready(State(state): State<HealthState>) -> Result<impl IntoR
     }))
 }
 
+/// Operational diagnostics endpoint intentionally kept outside the generated public API contract.
+/// It exposes only aggregate counters needed to compare idle -> busy -> idle resource baselines.
+pub async fn runtime_metrics(
+    State(state): State<HealthState>,
+) -> Result<impl IntoResponse, AppError> {
+    let collector = state.metrics.ok_or_else(|| {
+        AppError::ServiceUnavailable("Runtime metrics collector is unavailable".to_string())
+    })?;
+    Ok(Json(collector.snapshot().await))
+}
+
 /// Legacy / backward compatible health endpoint
 #[utoipa::path(
     get,

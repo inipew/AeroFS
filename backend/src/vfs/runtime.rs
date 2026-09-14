@@ -138,7 +138,6 @@ impl StorageRuntime {
         self.provider_loader.is_some()
     }
 
-    /// Resolve the heavyweight provider, lazily rebuilding it if an idle reaper reclaimed it.
     pub async fn provider_for_operation(&self) -> Result<Arc<dyn FileSystem>, VfsError> {
         if let Some(provider) = self.provider.read().await.as_ref().cloned() {
             return Ok(provider);
@@ -168,7 +167,6 @@ impl StorageRuntime {
         Ok(provider)
     }
 
-    /// Acquire an active connection lease (panels, transfers, sync, and direct VFS operations).
     pub async fn acquire_lease(&self) -> ConnectionLeaseGuard {
         self.active_leases.fetch_add(1, Ordering::AcqRel);
         self.last_active_ms
@@ -192,10 +190,6 @@ impl StorageRuntime {
         now.saturating_sub(last) >= ttl.as_millis().min(u64::MAX as u128) as u64
     }
 
-    /// Drop the heavyweight remote provider if it is truly idle.
-    ///
-    /// The lease count is checked both before and after taking the provider write lock, closing
-    /// the race where a new operation starts while the reaper is deciding to reclaim it.
     pub async fn reclaim_if_idle(&self, ttl: Duration) -> bool {
         if !self.is_reclaimable() || !self.is_idle(ttl) {
             return false;
@@ -231,8 +225,6 @@ impl StorageRuntime {
     }
 }
 
-/// File-system decorator that makes `StorageRuntime`'s concurrency budget and lease tracking
-/// invariants rather than optional conventions.
 #[derive(Clone)]
 pub struct BudgetedFileSystem {
     runtime: Arc<StorageRuntime>,
@@ -421,5 +413,27 @@ impl FileSystem for BudgetedFileSystem {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_drop_updates_timestamp_and_releases_count_synchronously() {
+        let leases = Arc::new(AtomicUsize::new(1));
+        let last_active_ms = Arc::new(AtomicU64::new(0));
+        let before = monotonic_millis();
+
+        {
+            let _guard = ConnectionLeaseGuard {
+                leases: leases.clone(),
+                last_active_ms: last_active_ms.clone(),
+            };
+        }
+
+        assert_eq!(leases.load(Ordering::Acquire), 0);
+        assert!(last_active_ms.load(Ordering::Acquire) >= before);
     }
 }

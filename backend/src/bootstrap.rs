@@ -28,7 +28,7 @@ use crate::infrastructure::{
     uploads::TransferUploadExecution,
     CredentialStore,
 };
-use crate::runtime::ResourceBudget;
+use crate::runtime::{ResourceBudget, RuntimeMetricsCollector};
 use crate::services::{
     ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
     PreferencesService, RealtimeService, SearchService, SettingsService, ShareService, SyncService,
@@ -89,9 +89,6 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             .expect("Failed to initialize durable event journal"),
     );
 
-    // One admission controller owns all heavy I/O capacity. Local/network caps equal the
-    // configured global cap, so they classify pressure without introducing an undocumented
-    // tighter limit; global_io_concurrency remains the authoritative aggregate ceiling.
     let resource_budget = Arc::new(ResourceBudget::with_limits(
         config.limits.global_io_concurrency,
         config.limits.global_io_concurrency,
@@ -138,6 +135,13 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         event_journal.clone(),
         metadata_cache.clone(),
         runtime.shutdown_token.clone(),
+    );
+    let runtime_metrics = RuntimeMetricsCollector::new(
+        resource_budget.clone(),
+        runtime.supervisor.clone(),
+        registry.clone(),
+        metadata_cache.clone(),
+        db.clone(),
     );
 
     let upload_locks = Arc::new(crate::services::UploadLockManager::default());
@@ -309,13 +313,16 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
             file_filesystem.clone(),
             resource_budget.clone(),
         )),
-        health: HealthState::new(HealthService::new(Arc::new(RuntimeReadinessProbe::new(
-            db.clone(),
-            local_root.clone(),
-            registry.clone(),
-            runtime.view(),
-            runtime.supervisor.clone(),
-        )))),
+        health: HealthState::with_metrics(
+            HealthService::new(Arc::new(RuntimeReadinessProbe::new(
+                db.clone(),
+                local_root.clone(),
+                registry.clone(),
+                runtime.view(),
+                runtime.supervisor.clone(),
+            ))),
+            runtime_metrics,
+        ),
         realtime: RealtimeState::new(RealtimeService::new(
             Arc::new(SqliteRealtimeAuthorization::new(db.clone())),
             event_journal.clone(),

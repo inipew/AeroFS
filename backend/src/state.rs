@@ -1,7 +1,7 @@
 use crate::application::{
     files::FileUseCases, transfers::TransferUseCases, UploadApplicationService,
 };
-use crate::runtime::TaskSupervisor;
+use crate::runtime::{RuntimeMetricsCollector, TaskSupervisor};
 use crate::services::{
     ArchiveService, AuditService, AuthService, ConnectionService, FileApiService, HealthService,
     PreferencesService, RealtimeService, SearchService, SettingsService, ShareService, SyncService,
@@ -75,7 +75,6 @@ impl ShutdownReason {
     }
 }
 
-/// Read-only runtime projection safe to expose to request-facing capabilities.
 #[derive(Clone)]
 pub struct RuntimeView {
     phase: Arc<AtomicU8>,
@@ -98,7 +97,6 @@ impl RuntimeView {
     }
 }
 
-/// Process-owned runtime control plane. This must stay outside HTTP `AppState`.
 #[derive(Clone)]
 pub struct RuntimeOwner {
     pub shutdown_token: CancellationToken,
@@ -245,11 +243,22 @@ impl SearchState {
 #[derive(Clone)]
 pub struct HealthState {
     pub service: HealthService,
+    pub metrics: Option<RuntimeMetricsCollector>,
 }
 
 impl HealthState {
     pub fn new(service: HealthService) -> Self {
-        Self { service }
+        Self {
+            service,
+            metrics: None,
+        }
+    }
+
+    pub fn with_metrics(service: HealthService, metrics: RuntimeMetricsCollector) -> Self {
+        Self {
+            service,
+            metrics: Some(metrics),
+        }
     }
 }
 
@@ -362,8 +371,6 @@ impl FileApiState {
     }
 }
 
-/// Capability container handed to request adapters.
-/// Concrete infrastructure and process lifecycle ownership stay in bootstrap/services.
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) router: RouterState,
