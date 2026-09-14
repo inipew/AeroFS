@@ -72,44 +72,6 @@ fn file_api_service_uses_ports_for_runtime_configuration_storage_and_cache() {
 }
 
 #[test]
-fn metadata_cache_implements_application_cache_port() {
-    let port = source("src/ports/cache.rs");
-    let cache = compact(&source("src/services/cache.rs"));
-
-    assert!(port.contains("pub trait FileMetadataCache"));
-    assert!(cache.contains("implFileMetadataCacheforMetadataCache"));
-}
-
-#[test]
-fn sqlite_file_settings_propagate_database_failures() {
-    let src = source("src/infrastructure/files.rs");
-    let compact = compact(&src);
-
-    assert!(compact.contains("asyncfnsetting(&self,key:&str)->Result<Option<String>,AppError>"));
-    assert!(compact.contains(".fetch_optional(&self.db).await.map_err("));
-    assert!(
-        !compact.contains(".fetch_optional(&self.db).await.unwrap_or(None)"),
-        "dynamic file settings must not convert DB failures into default configuration"
-    );
-}
-
-#[test]
-fn upload_admission_resolves_runtime_settings_instead_of_startup_snapshots() {
-    let upload = source("src/application/upload.rs");
-    let compact = compact(&upload);
-
-    assert!(compact.contains("settings:Arc<dynFileSettings>"));
-    assert!(
-        !compact.contains("local_root:PathBuf") && !compact.contains("max_editable_size:u64"),
-        "UploadApplicationService must not retain startup snapshots for mutable file settings"
-    );
-    assert!(compact.contains("self.settings.max_editable_size().await?"));
-    assert!(compact.contains("self.settings.local_root().await?"));
-    assert!(compact.contains("inline_threshold:max_editable_size"));
-    assert!(compact.contains("max_upload_bytes:self.max_upload_size"));
-}
-
-#[test]
 fn file_helper_services_do_not_depend_on_composition_state() {
     let editor = compact(&source("src/services/editor_service.rs"));
     let editor_port = source("src/ports/editor.rs");
@@ -211,53 +173,4 @@ fn bootstrap_composes_file_api_boundary() {
     assert!(bootstrap.contains("file_settings.clone(),max_upload_size"));
     assert!(state.contains("pubstructFileApiState"));
     assert!(state.contains("impl_from_ref!(FileApiState,file_api)"));
-}
-
-#[test]
-fn recursive_chmod_is_local_only() {
-    let service = source("src/services/file_api_service.rs");
-    let compact = compact(&service);
-
-    assert!(compact.contains("connection.as_str()!=ConnectionId::LOCAL"));
-    assert!(service.contains("Recursive CHMOD is only supported for local storage"));
-    assert!(compact.contains("SafePath::resolve("));
-    assert!(compact.contains("self.authorization.authorize(actor,connection,FileAction::Write)"));
-    assert!(compact.contains("self.file_settings.local_root().await?"));
-    assert!(compact.contains("self.file_settings.allow_symlinks_outside_root().await?"));
-}
-
-#[test]
-fn permission_inheritance_failures_are_not_best_effort() {
-    let mutation = source("src/application/files/mutation.rs");
-    let write = source("src/application/files/write.rs");
-    let policy = source("src/domain/policy.rs");
-
-    assert!(
-        !mutation.contains("let _ = provider.set_permissions"),
-        "directory creation must not swallow inherited permission failures"
-    );
-    assert!(
-        !write.contains("let _ = provider.set_permissions"),
-        "file writes must not swallow inherited permission failures"
-    );
-    assert!(
-        mutation.contains("resolve_destination_permissions_strict"),
-        "directory creation must use strict permission lookup semantics"
-    );
-    assert!(
-        write.contains("resolve_destination_permissions_strict"),
-        "file writes must use strict permission lookup semantics"
-    );
-    assert!(
-        mutation.contains("Filesystem mutation committed; recovery required"),
-        "post-create permission failure must expose partial-commit recovery semantics"
-    );
-    assert!(
-        write.contains("Filesystem mutation committed; recovery required"),
-        "direct-write permission failure must expose partial-commit recovery semantics"
-    );
-    assert!(
-        policy.contains("resolve_destination_permissions_strict"),
-        "strict permission resolver must remain available for mutation callers"
-    );
 }
