@@ -1,6 +1,8 @@
+mod support;
+
 use backend::{
     bootstrap::build_user_service,
-    db::{init_db, DbPool},
+    db::DbPool,
     domain::Actor,
     events::{DomainEvent, EventJournal},
     infrastructure::transfers::SqliteTransferControl,
@@ -14,7 +16,7 @@ use backend::{
 };
 use chrono::Utc;
 use std::sync::Arc;
-use tempfile::tempdir;
+use support::{eventually_default, TestDatabase};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 struct TransferFixture {
@@ -33,14 +35,12 @@ impl Drop for TransferFixture {
 }
 
 async fn setup_fixture() -> TransferFixture {
-    let temp = tempdir().unwrap();
-    let db_path = temp.path().join("transfer_invariants.db");
+    let TestDatabase { pool: db, temp, .. } =
+        TestDatabase::seeded("transfer_invariants.db").await;
     let storage_dir = temp.path().join("storage");
     std::fs::create_dir_all(&storage_dir).unwrap();
     std::fs::write(storage_dir.join("source.txt"), b"Invariant test file payload").unwrap();
 
-    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    let db = init_db(&database_url).await.unwrap();
     let journal = Arc::new(EventJournal::init(db.clone()).await.unwrap());
     let registry = ProviderRegistry::new();
     let local = ProviderFactory::build_local("local", storage_dir).unwrap();
@@ -111,8 +111,25 @@ fn control(fixture: &TransferFixture) -> SqliteTransferControl {
     )
 }
 
+#[test]
+fn transfer_phase_string_roundtrip_is_stable() {
+    let phases = [
+        (TransferPhase::Preparing, "preparing"),
+        (TransferPhase::Transferring, "transferring"),
+        (TransferPhase::Finalizing, "finalizing"),
+        (TransferPhase::Verifying, "verifying"),
+        (TransferPhase::CleaningUp, "cleaning_up"),
+        (TransferPhase::Completed, "completed"),
+    ];
+
+    for (phase, serialized) in phases {
+        assert_eq!(phase.as_str(), serialized);
+        assert_eq!(TransferPhase::from_str(serialized), phase);
+    }
+}
+
 #[tokio::test]
-async fn test_retry_rejected_after_permission_revoked() {
+async fn retry_revalidates_permissions_after_failure() {
     let fixture = setup_fixture().await;
     let users = build_user_service(fixture.db.clone());
     let alice_id = users
@@ -120,7 +137,7 @@ async fn test_retry_rejected_after_permission_revoked() {
         .await
         .unwrap();
 
-    let mut job = failed_job("test-job-alice-failed", "local", "/source.txt");
+    let mut job = failed_job("alice-failed", "local", "/source.txt");
     job.user_id = Some(alice_id.clone());
     fixture.manager.insert_job_for_test(job).await;
 
@@ -139,14 +156,12 @@ async fn test_retry_rejected_after_permission_revoked() {
         username: "alice".into(),
         is_admin: false,
     };
-    let result = control(&fixture)
-        .retry(&alice, "test-job-alice-failed")
-        .await;
+    let result = control(&fixture).retry(&alice, "alice-failed").await;
     assert!(matches!(result, Err(backend::errors::AppError::Forbidden(_))));
 }
 
 #[tokio::test]
-async fn test_retry_rejected_when_connection_disabled() {
+async fn retry_rejects_disabled_connection() {
     let fixture = setup_fixture().await;
     let remote_id = "disabled-remote-conn";
     sqlx::query(
@@ -159,59 +174,51 @@ async fn test_retry_rejected_when_connection_disabled() {
 
     fixture
         .manager
-        .insert_job_for_test(failed_job(
-            "test-job-disabled-conn",
-            remote_id,
-            "/file.txt",
-        ))
+        .insert_job_for_test(failed_job("disabled-connection", remote_id, "/file.txt"))
         .await;
 
     let result = control(&fixture)
-        .retry(&admin_actor(), "test-job-disabled-conn")
+        .retry(&admin_actor(), "disabled-connection")
         .await;
     assert!(matches!(result, Err(backend::errors::AppError::BadRequest(_))));
 }
 
 #[tokio::test]
-async fn test_retry_rejected_when_provider_unavailable() {
+async fn retry_rejects_unavailable_provider() {
     let fixture = setup_fixture().await;
-    let job_id = "test-job-missing-provider";
+    let job_id = "missing-provider";
     fixture
         .manager
         .insert_job_for_test(failed_job(job_id, "nonexistent-provider", "/missing.txt"))
         .await;
 
     match fixture.manager.retry_job(job_id, None, true).await {
-        Err(RetryTransferError::ProviderUnavailable(msg)) => {
-            assert!(msg.contains("nonexistent-provider"));
+        Err(RetryTransferError::ProviderUnavailable(message)) => {
+            assert!(message.contains("nonexistent-provider"));
         }
-        other => panic!("Expected ProviderUnavailable, got {other:?}"),
+        other => panic!("expected ProviderUnavailable, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn test_retry_rejected_when_source_missing() {
+async fn retry_rejects_missing_source() {
     let fixture = setup_fixture().await;
-    let job_id = "test-job-missing-source-file";
+    let job_id = "missing-source";
     fixture
         .manager
-        .insert_job_for_test(failed_job(
-            job_id,
-            "local",
-            "/does_not_exist_anywhere.txt",
-        ))
+        .insert_job_for_test(failed_job(job_id, "local", "/does_not_exist_anywhere.txt"))
         .await;
 
     match fixture.manager.retry_job(job_id, None, true).await {
-        Err(RetryTransferError::SourceUnavailable(msg)) => {
-            assert!(msg.contains("is not accessible"));
+        Err(RetryTransferError::SourceUnavailable(message)) => {
+            assert!(message.contains("is not accessible"));
         }
-        other => panic!("Expected SourceUnavailable, got {other:?}"),
+        other => panic!("expected SourceUnavailable, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn test_retry_move_recovery_from_cleaning_up_without_recopy() {
+async fn move_retry_from_cleanup_resumes_cleanup_without_recopy() {
     let fixture = setup_fixture().await;
     let storage_dir = fixture.temp.path().join("storage");
     let move_src = storage_dir.join("move_to_clean.txt");
@@ -219,7 +226,7 @@ async fn test_retry_move_recovery_from_cleaning_up_without_recopy() {
     std::fs::write(&move_src, b"Move cleanup payload").unwrap();
     std::fs::write(&move_dst, b"Move cleanup payload already copied").unwrap();
 
-    let job_id = "test-move-cleaning-up-recovery";
+    let job_id = "move-cleanup-recovery";
     let mut job = failed_job(job_id, "local", "/move_to_clean.txt");
     job.transfer_type = TransferType::Move;
     job.destination_path = "/move_cleaned_dest.txt".into();
@@ -233,50 +240,49 @@ async fn test_retry_move_recovery_from_cleaning_up_without_recopy() {
     assert_eq!(queued.status, TransferStatus::Queued);
     assert_eq!(queued.phase, TransferPhase::CleaningUp);
 
-    for _ in 0..30 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if fixture.manager.get_job(job_id).await.unwrap().status == TransferStatus::Completed {
-            break;
-        }
-    }
-    let final_job = fixture.manager.get_job(job_id).await.unwrap();
-    assert_eq!(final_job.status, TransferStatus::Completed);
+    let final_job = eventually_default("move retry to finish cleanup", || async {
+        let job = fixture.manager.get_job(job_id).await?;
+        (job.status == TransferStatus::Completed).then_some(job)
+    })
+    .await;
     assert_eq!(final_job.phase, TransferPhase::Completed);
     assert!(!move_src.exists());
     assert!(move_dst.exists());
 }
 
 #[tokio::test]
-async fn test_concurrent_retry_race_condition_cas_guard() {
+async fn concurrent_retry_compare_and_swap_admits_one_attempt() {
     let fixture = setup_fixture().await;
-    let job_id = "test-concurrent-retry-job";
+    let job_id = "concurrent-retry";
     fixture
         .manager
         .insert_job_for_test(failed_job(job_id, "local", "/source.txt"))
         .await;
 
-    let tm1 = fixture.manager.clone();
-    let tm2 = fixture.manager.clone();
-    let t1 = tokio::spawn(async move { tm1.retry_job(job_id, None, true).await });
-    let t2 = tokio::spawn(async move { tm2.retry_job(job_id, None, true).await });
-    let (r1, r2) = tokio::join!(t1, t2);
-    let r1 = r1.unwrap();
-    let r2 = r2.unwrap();
-    let success_count = usize::from(r1.is_ok()) + usize::from(r2.is_ok());
-    assert_eq!(success_count, 1);
+    let first = fixture.manager.clone();
+    let second = fixture.manager.clone();
+    let first_task = tokio::spawn(async move { first.retry_job(job_id, None, true).await });
+    let second_task = tokio::spawn(async move { second.retry_job(job_id, None, true).await });
+    let (first_result, second_result) = tokio::join!(first_task, second_task);
+    let first_result = first_result.unwrap();
+    let second_result = second_result.unwrap();
+    assert_eq!(
+        usize::from(first_result.is_ok()) + usize::from(second_result.is_ok()),
+        1
+    );
 
-    let error = if let Err(error) = r1 {
+    let error = if let Err(error) = first_result {
         error
     } else {
-        r2.unwrap_err()
+        second_result.unwrap_err()
     };
     assert!(matches!(error, RetryTransferError::InvalidStatus(_, _)));
 }
 
 #[tokio::test]
-async fn test_retry_dismissed_job_rejected() {
+async fn dismissed_terminal_job_cannot_be_retried() {
     let fixture = setup_fixture().await;
-    let job_id = "test-dismissed-job";
+    let job_id = "dismissed-job";
     let mut job = failed_job(job_id, "local", "/source.txt");
     job.dismissed_at = Some(Utc::now());
     fixture.manager.insert_job_for_test(job).await;
@@ -292,9 +298,9 @@ async fn test_retry_dismissed_job_rejected() {
 }
 
 #[tokio::test]
-async fn test_cancellation_db_fallback_terminal_or_finalizing() {
+async fn db_fallback_rejects_cancellation_after_finalizing_begins() {
     let fixture = setup_fixture().await;
-    let job_id = "test-sqlite-finalizing-job";
+    let job_id = "sqlite-finalizing-job";
     let now = Utc::now();
     let job = TransferJob {
         id: job_id.into(),
@@ -346,9 +352,9 @@ async fn test_cancellation_db_fallback_terminal_or_finalizing() {
 }
 
 #[tokio::test]
-async fn test_persistence_checkpoint_throttling_on_phase_and_status() {
+async fn phase_change_forces_progress_checkpoint_persistence() {
     let fixture = setup_fixture().await;
-    let job_id = "test-checkpoint-persistence";
+    let job_id = "checkpoint-persistence";
     let now = Utc::now();
     let job = TransferJob {
         id: job_id.into(),
@@ -389,9 +395,9 @@ async fn test_persistence_checkpoint_throttling_on_phase_and_status() {
 }
 
 #[tokio::test]
-async fn test_fast_transfer_final_progress_and_payload_parity() {
+async fn terminal_inline_completion_is_reloaded_from_durable_history_with_payload_parity() {
     let fixture = setup_fixture().await;
-    let job_id = "test-fast-transfer-parity";
+    let job_id = "fast-transfer-parity";
     let now = Utc::now();
     let job = TransferJob {
         id: job_id.into(),
@@ -432,10 +438,10 @@ async fn test_fast_transfer_final_progress_and_payload_parity() {
     assert_eq!(final_job.transferred_bytes, 42);
     assert_eq!(final_job.total_bytes, 42);
 
-    let json_resp = serde_json::to_value(final_job.to_response()).unwrap();
-    assert_eq!(json_resp["id"], job_id);
-    assert_eq!(json_resp["transferred_bytes"], 42);
-    assert_eq!(json_resp["capabilities"]["can_cancel"], false);
+    let json_response = serde_json::to_value(final_job.to_response()).unwrap();
+    assert_eq!(json_response["id"], job_id);
+    assert_eq!(json_response["transferred_bytes"], 42);
+    assert_eq!(json_response["capabilities"]["can_cancel"], false);
 
     let event = DomainEvent::transfer_completed(&final_job);
     let payload = match event {
