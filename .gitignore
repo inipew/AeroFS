@@ -8,6 +8,9 @@
 /backend/.trash/
 filemanager.db
 
+# Performance benchmark artifacts
+/perf-results/
+
 # Frontend Build Artifacts
 /frontend/node_modules/
 /frontend/dist/

@@ -141,6 +141,33 @@ async fn wait_completed(app: &axum::Router, cookie: &str, job_id: &str) -> Trans
     panic!("transfer {job_id} did not complete");
 }
 
+async fn wait_cancelled_or_completed(
+    app: &axum::Router,
+    cookie: &str,
+    job_id: &str,
+) -> TransferJob {
+    let mut last_status = None;
+    for _ in 0..50 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        if let Some(job) = list_transfers(app, cookie)
+            .await
+            .into_iter()
+            .find(|job| job.id == job_id)
+        {
+            if matches!(
+                job.status,
+                TransferStatus::Cancelled | TransferStatus::Completed
+            ) {
+                return job;
+            }
+            last_status = Some(job.status);
+        }
+    }
+    panic!(
+        "transfer {job_id} did not reach cancelled/completed terminal state; last status: {last_status:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_transfer_engine_queue_and_execution() {
     let ctx = setup_app().await;
@@ -182,13 +209,7 @@ async fn test_transfer_cancellation_state_machine() {
         StatusCode::OK | StatusCode::CONFLICT
     ));
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-    let jobs = list_transfers(&ctx.app, &ctx.cookie).await;
-    let job = jobs.iter().find(|job| job.id == job_id).unwrap();
-    assert!(matches!(
-        job.status,
-        TransferStatus::Cancelled | TransferStatus::Completed
-    ));
+    let job = wait_cancelled_or_completed(&ctx.app, &ctx.cookie, &job_id).await;
     if cancel_resp.status() == StatusCode::OK {
         assert_eq!(job.status, TransferStatus::Cancelled);
     }
