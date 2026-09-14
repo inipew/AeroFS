@@ -46,6 +46,22 @@ The replacement suites were first run beside all legacy transfer suites. After t
 
 One legacy transfer test was intentionally not migrated as a requirement: `test_transfer_dynamic_limits_update` only changed a settings value and then asserted that an unrelated small copy still completed. It did not verify concurrency changed. Runtime/settings concurrency behavior belongs in the settings/runtime migration with an observable concurrency contract rather than preserving that weak assertion.
 
+## Phase 3 sync and recovery migration
+
+Phase 3 keeps sync tests behind one top-level `sync_tests.rs` integration crate and uses modules for lifecycle, history, contracts, and recovery. This avoids increasing Rust integration-crate fragmentation while giving failures clear behavioral ownership.
+
+- `support::sync` owns application-level job creation, bounded history queries, and condition-based sync convergence.
+- `sync/lifecycle.rs` verifies source-wins execution, durable terminal history, conflicts, and conflict resolution through the application boundary.
+- `sync/history.rs` verifies real keyset pagination through `SyncService`, including duplicate-free job traversal and strict operation scoping per job.
+- `sync/contracts.rs` replaces source-text architecture assertions with trait-backed `SyncService` tests and preserves pure manifest-diff/conflict-filename contracts.
+- `sync/recovery.rs` uses file-backed real migrations and durable state injection to verify multi-page interrupted recovery, transfer-completion idempotency, restart convergence, and bounded streaming-plan batches.
+
+The recovery test deliberately uses **300 operations**, crossing the 256-row recovery batch boundary, and the streaming planner test uses **300 files**, proving that operation batches remain bounded by `SCAN_BATCH_SIZE` without asserting source-code shape.
+
+Replacement and legacy sync coverage first passed together in CI #436. Only after that equivalence proof were `p2_sync_boundary_tests.rs` and the three sync-specific cases in mixed `plan59_lifecycle4_architectural_upgrade_tests.rs` removed. Non-sync `plan59` coverage remains for later subsystem phases. `plan40_sync_architecture_tests.rs` also remains because its actual contents belong to request middleware, event replay, staging visibility, and transfer behavior rather than sync.
+
+The top-level Rust integration-test count remains **47** because one historical sync crate is replaced by one grouped sync crate; the historically named subset drops from **32 to 31**.
+
 ## Rewrite rules
 
 Every legacy test is handled with the following sequence:
@@ -109,7 +125,11 @@ The exact physical grouping can evolve during migration; behavior ownership matt
 
 ### Phase 3 — Sync and recovery
 
-Rewrite sync lifecycle, streaming planning, recovery, conflict handling, transfer mapping, history pagination, and restart convergence tests. Remove phase-number ownership from sync contracts.
+- consolidate sync lifecycle/history/contracts/recovery behind one grouped integration target
+- replace source-text sync boundary assertions with trait-backed contracts
+- verify >1 recovery page and >1 streaming batch behavior with durable/file-backed fixtures
+- validate legacy and replacement sync coverage together
+- remove `p2_sync_boundary_tests.rs` and sync ownership from mixed `plan59`
 
 ### Phase 4 — File/VFS operations
 
