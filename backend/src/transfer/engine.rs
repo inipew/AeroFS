@@ -138,7 +138,6 @@ impl TransferManager {
             tracing::debug!("transfer.scheduler.start");
             let mut rx = queue_rx_shared.lock().await;
             loop {
-                // Wait for next job first (with shutdown guard), then acquire concurrency permit
                 let job_id = tokio::select! {
                     _ = scheduler_token.cancelled() => {
                         tracing::info!("transfer.scheduler.stop: shutdown requested");
@@ -270,8 +269,7 @@ impl TransferManager {
                                             map.get(&job.id)
                                                 .map(|j| {
                                                     j.status == TransferStatus::Cancelled
-                                                        || j.status
-                                                            == TransferStatus::CancellationRequested
+                                                        || j.status == TransferStatus::CancellationRequested
                                                 })
                                                 .unwrap_or(false)
                                         } || cancel_token.is_cancelled();
@@ -286,10 +284,7 @@ impl TransferManager {
                                             }
                                             let _ = Self::save_job_to_db(&db_worker, &job).await;
                                             let _ = event_journal_worker
-                                                .append(
-                                                    DomainEvent::transfer_cancelled(&job),
-                                                    Some(&job.id),
-                                                )
+                                                .append(DomainEvent::transfer_cancelled(&job), Some(&job.id))
                                                 .await;
                                         } else {
                                             let _ = crate::transfer::checkpoint::TransferCheckpoint::delete(
@@ -329,12 +324,8 @@ impl TransferManager {
                                                     )
                                                     .await;
                                             }
-
                                             let _ = event_journal_worker
-                                                .append(
-                                                    DomainEvent::transfer_completed(&job),
-                                                    Some(&job.id),
-                                                )
+                                                .append(DomainEvent::transfer_completed(&job), Some(&job.id))
                                                 .await;
                                             let _ = completion_tx_worker.send((job.id.clone(), true));
                                         }
@@ -351,10 +342,7 @@ impl TransferManager {
                                         }
                                         let _ = Self::save_job_to_db(&db_worker, &job).await;
                                         let _ = event_journal_worker
-                                            .append(
-                                                DomainEvent::transfer_failed(&job),
-                                                Some(&job.id),
-                                            )
+                                            .append(DomainEvent::transfer_failed(&job), Some(&job.id))
                                             .await;
                                         let _ = completion_tx_worker.send((job.id.clone(), false));
                                     }
@@ -1734,7 +1722,7 @@ impl TransferManager {
             let ticker_journal = Arc::clone(event_journal);
 
             let ticker_handle = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(100));
+                let mut interval = tokio::time::interval(Duration::from_millis(250));
                 let mut rate_estimator =
                     crate::transfer::rate::TransferRateEstimator::new(Instant::now(), 0);
                 loop {
@@ -2137,7 +2125,7 @@ impl TransferManager {
                 let bytes_since_start = transferred.saturating_sub(resume_offset);
                 let now = Instant::now();
 
-                if now.duration_since(last_emit) >= Duration::from_millis(100)
+                if now.duration_since(last_emit) >= Duration::from_millis(250)
                     || transferred == total_bytes
                 {
                     last_emit = now;
