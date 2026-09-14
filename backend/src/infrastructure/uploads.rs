@@ -3,6 +3,7 @@ use crate::ports::upload::{
     CreateInlineUploadJob, InlineUploadContext, PreparedInlineUpload, UploadByteStream,
     UploadExecution, UploadPlan, UploadStaging,
 };
+use crate::runtime::{ResourceBudget, ResourceClass};
 use crate::transfer::{
     executor, planner::TransferPlanner, planner::UploadConstraints, TransferExecutionMode,
     TransferManager, TransferPlan, TransferStaging,
@@ -14,11 +15,15 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct TransferUploadExecution {
     manager: TransferManager,
+    resource_budget: Arc<ResourceBudget>,
 }
 
 impl TransferUploadExecution {
-    pub fn new(manager: TransferManager) -> Self {
-        Self { manager }
+    pub fn new(manager: TransferManager, resource_budget: Arc<ResourceBudget>) -> Self {
+        Self {
+            manager,
+            resource_budget,
+        }
     }
 
     fn to_port_plan(plan: &TransferPlan) -> UploadPlan {
@@ -92,6 +97,29 @@ impl UploadExecution for TransferUploadExecution {
                 return Err(AppError::Internal(anyhow::anyhow!(
                     "transfer cancellation token missing"
                 )));
+            }
+        };
+
+        // The HTTP request body is always network ingress. A local destination therefore
+        // consumes both network and local capacity, while a remote destination consumes
+        // network capacity only. Both classes also consume the exact transfer semaphore
+        // shared with queued TransferManager workers.
+        let resource_class = if provider.is_local() {
+            ResourceClass::TransferMixed
+        } else {
+            ResourceClass::TransferNetwork
+        };
+        let _resource_permit = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Err(AppError::Cancelled(
+                    "upload cancelled while waiting for transfer capacity".into(),
+                ));
+            }
+            permit = self.resource_budget.acquire(resource_class) => {
+                permit.map_err(|error| AppError::Internal(anyhow::anyhow!(
+                    "inline upload resource admission failed: {}",
+                    error
+                )))?
             }
         };
 

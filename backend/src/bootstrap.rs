@@ -109,7 +109,10 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
     )
     .await;
     let transfer_engine = TransferEngine::new(transfer_manager.clone());
-    let upload_execution = Arc::new(TransferUploadExecution::new(transfer_manager.clone()));
+    let upload_execution = Arc::new(TransferUploadExecution::new(
+        transfer_manager.clone(),
+        resource_budget.clone(),
+    ));
 
     let sync_manager = Arc::new(SyncManager::new(
         db.clone(),
