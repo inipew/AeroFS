@@ -1,6 +1,8 @@
 use crate::errors::AppError;
 use crate::ports::sync::SyncControl;
-use crate::sync::{SyncJob, SyncManager, SyncOperationRow, SyncStrategy};
+use crate::sync::{
+    SyncHistoryPage, SyncJob, SyncManager, SyncOperationRow, SyncPageCursor, SyncStrategy,
+};
 use async_trait::async_trait;
 
 /// Infrastructure adapter implementation for the existing durable SyncManager.
@@ -30,12 +32,23 @@ impl SyncControl for SyncManager {
         .map_err(AppError::Internal)
     }
 
-    async fn list_jobs(&self) -> Result<Vec<SyncJob>, AppError> {
-        SyncManager::list_jobs(self).await.map_err(AppError::Internal)
+    async fn list_jobs(
+        &self,
+        cursor: Option<&SyncPageCursor>,
+        limit: Option<usize>,
+    ) -> Result<SyncHistoryPage<SyncJob>, AppError> {
+        SyncManager::list_jobs_page(self, cursor, limit)
+            .await
+            .map_err(AppError::Internal)
     }
 
-    async fn list_operations(&self, job_id: &str) -> Result<Vec<SyncOperationRow>, AppError> {
-        SyncManager::list_operations(self, job_id)
+    async fn list_operations(
+        &self,
+        job_id: &str,
+        cursor: Option<&SyncPageCursor>,
+        limit: Option<usize>,
+    ) -> Result<SyncHistoryPage<SyncOperationRow>, AppError> {
+        SyncManager::list_operations_page(self, job_id, cursor, limit)
             .await
             .map_err(AppError::Internal)
     }
