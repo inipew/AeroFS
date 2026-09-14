@@ -95,6 +95,20 @@ jobs:
       - name: Test performance harness
         run: python3 -m unittest discover -s tools/perf -p 'test_*.py' -v
 
+      - name: Smoke test idle-load-idle observer
+        run: |
+          output="${RUNNER_TEMP}/aerofs-perf-smoke"
+          python3 tools/perf/aerofs_perf.py \
+            --pid $$ \
+            --no-metrics \
+            --baseline-seconds 0.15 \
+            --recovery-seconds 0.15 \
+            --sample-interval 0.05 \
+            --output-dir "$output" \
+            --workload 'sleep 0.15'
+          test -s "$output/samples.csv"
+          test -s "$output/summary.json"
+
   contract:
     name: OpenAPI Contract
     runs-on: ubuntu-latest
