@@ -96,3 +96,70 @@ fn phase4_targz_compression_streams_traversal_without_collecting_all_files() {
         "Phase 4 regression: TAR.GZ compressor input must remain bounded"
     );
 }
+
+#[test]
+fn phase4_targz_existing_local_target_uses_safe_atomic_replace() {
+    let archive = source("src/filesystem/archive_compress_stream.rs");
+    let compressor = section(
+        &archive,
+        "pub async fn compress_targz_streaming(",
+        "#[cfg(test)]",
+    );
+
+    assert!(
+        archive.contains("fn can_replace_atomically(provider: &Arc<dyn FileSystem>) -> bool"),
+        "Phase 4 regression: archive commit policy must keep an explicit atomic-replace predicate"
+    );
+    assert!(
+        archive.contains("provider.is_local() && capabilities.atomic_rename"),
+        "Phase 4 regression: existing-target streaming must remain conservative and local-only"
+    );
+    assert!(
+        compressor.contains("(exists && !can_replace_atomically(provider))"),
+        "Phase 4 regression: unsafe existing-target providers must retain the fallback path"
+    );
+    assert!(
+        compressor.contains("provider.rename(&staging, target_targz_path).await"),
+        "Phase 4 regression: safe streaming commits must promote provider-side staging atomically"
+    );
+}
+
+#[test]
+fn phase4_zip_compression_streams_traversal_and_stages_commits() {
+    let zip = source("src/filesystem/archive_zip_stream.rs");
+    let compressor = section(
+        &zip,
+        "pub async fn compress_zip_streaming(",
+        "}",
+    );
+    let service = source("src/services/archive_service.rs");
+
+    assert!(
+        zip.contains("async fn stream_archive_files("),
+        "Phase 4 regression: ZIP compression must not collect the full directory tree before work starts"
+    );
+    assert!(
+        !zip.contains("collect_archive_files"),
+        "Phase 4 regression: ZIP compression must not restore the upfront file metadata Vec"
+    );
+    assert!(
+        zip.contains("mpsc::channel::<ArchiveWriteCommand>(ARCHIVE_STREAM_CHANNEL_CAPACITY)"),
+        "Phase 4 regression: ZIP producer-to-compressor handoff must remain bounded"
+    );
+    assert!(
+        zip.contains("let can_stage_commit = capabilities.atomic_rename"),
+        "Phase 4 regression: ZIP provider-side staging must stay gated by rename semantics"
+    );
+    assert!(
+        zip.contains("provider.rename(&staging, target_zip_path).await"),
+        "Phase 4 regression: safe ZIP commits must promote provider-side staging"
+    );
+    assert!(
+        service.contains("compress_zip_streaming("),
+        "Phase 4 regression: ArchiveService must continue using the hardened ZIP path"
+    );
+    assert!(
+        compressor.contains("NamedTempFile"),
+        "ZIP still requires a local seekable file for ZipWriter central-directory finalization"
+    );
+}
