@@ -2,6 +2,7 @@ use crate::domain::FileMetadata;
 use crate::errors::AppError;
 use crate::ports::cache::FileMetadataCache;
 use async_trait::async_trait;
+use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -9,6 +10,17 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
 
 const MAX_METADATA_ENTRIES: usize = 10_000;
+const EVICTION_QUEUE_MIN_COMPACT: usize = 64;
+const EVICTION_QUEUE_LIVE_MULTIPLIER: usize = 4;
+const EVICTION_QUEUE_CAPACITY_MULTIPLIER: usize = 2;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetadataCacheMetrics {
+    pub entries: usize,
+    pub eviction_queue_entries: usize,
+    pub in_flight: usize,
+    pub max_entries: usize,
+}
 
 #[derive(Clone)]
 struct CachedMetadata {
@@ -39,8 +51,7 @@ impl CacheState {
     }
 
     /// Evict stale queue records first, then the oldest still-live entry.
-    /// Each queue record is pushed and popped at most once, making capacity
-    /// enforcement amortized O(1) instead of scanning the entire map.
+    /// Each queue record is pushed and popped at most once between compactions.
     fn evict_one(&mut self) {
         while let Some((key, generation)) = self.eviction_order.pop_front() {
             let Some(entry) = self.entries.get(&key) else {
@@ -52,6 +63,36 @@ impl CacheState {
             self.entries.remove(&key);
             break;
         }
+    }
+
+    /// Tombstones are useful because invalidation remains O(number of live entries), but an
+    /// unbounded tombstone queue can otherwise retain path strings long after cache entries are
+    /// gone. Compact only after the queue is materially larger than both the live set and the
+    /// configured capacity, keeping the O(N) pass amortized instead of paying it per invalidation.
+    fn maybe_compact_eviction_order(&mut self, max_entries: usize) {
+        let queue_len = self.eviction_order.len();
+        if queue_len < EVICTION_QUEUE_MIN_COMPACT {
+            return;
+        }
+
+        let live_bound = self
+            .entries
+            .len()
+            .saturating_mul(EVICTION_QUEUE_LIVE_MULTIPLIER)
+            .max(EVICTION_QUEUE_MIN_COMPACT);
+        let capacity_bound = max_entries
+            .saturating_mul(EVICTION_QUEUE_CAPACITY_MULTIPLIER)
+            .max(EVICTION_QUEUE_MIN_COMPACT);
+
+        if queue_len <= live_bound && queue_len <= capacity_bound {
+            return;
+        }
+
+        self.eviction_order.retain(|(key, generation)| {
+            self.entries
+                .get(key)
+                .is_some_and(|entry| entry.generation == *generation)
+        });
     }
 }
 
@@ -144,11 +185,10 @@ impl MetadataCache {
             }
         };
 
-        // Expired reads clean up only the entry they observed. Re-checking the
-        // generation prevents a racing put() from being deleted.
         if let Some(generation) = expired_generation {
             let mut state = self.state.write().await;
             state.remove_if_generation(&key, generation);
+            state.maybe_compact_eviction_order(self.max_entries);
         }
         None
     }
@@ -176,6 +216,22 @@ impl MetadataCache {
             },
         );
         state.eviction_order.push_back((key, generation));
+        state.maybe_compact_eviction_order(self.max_entries);
+    }
+
+    pub async fn metrics(&self) -> MetadataCacheMetrics {
+        let state = self.state.read().await;
+        let in_flight = self
+            .in_flight
+            .lock()
+            .map(|entries| entries.len())
+            .unwrap_or_default();
+        MetadataCacheMetrics {
+            entries: state.entries.len(),
+            eviction_queue_entries: state.eviction_order.len(),
+            in_flight,
+            max_entries: self.max_entries,
+        }
     }
 
     /// Single-flight coalesced fetch. A leader token owns the in-flight slot;
@@ -242,6 +298,7 @@ impl MetadataCache {
         let key = Self::make_key(connection_id, path);
         let mut state = self.state.write().await;
         state.entries.remove(&key);
+        state.maybe_compact_eviction_order(self.max_entries);
     }
 
     pub async fn invalidate_prefix(&self, connection_id: &str, path_prefix: &str) {
@@ -251,8 +308,7 @@ impl MetadataCache {
         state
             .entries
             .retain(|key, _| key != &exact && !key.starts_with(&descendant_prefix));
-        // Queue records are intentionally left as tombstones and discarded lazily by
-        // evict_one(). This keeps invalidation from doing a second O(N) queue scan.
+        state.maybe_compact_eviction_order(self.max_entries);
     }
 
     pub async fn clear(&self) {
@@ -361,5 +417,25 @@ mod tests {
             .await
             .entries
             .contains_key("local:/expired"));
+    }
+
+    #[tokio::test]
+    async fn eviction_tombstones_are_compacted_and_bounded() {
+        let cache = MetadataCache::with_capacity(Duration::from_secs(60), 8);
+
+        for i in 0..2_000 {
+            let path = format!("/same-{}", i % 4);
+            cache.put("remote", &path, metadata(&path)).await;
+            if i % 3 == 0 {
+                cache.invalidate("remote", &path).await;
+            }
+        }
+
+        let metrics = cache.metrics().await;
+        assert!(metrics.entries <= 8);
+        assert!(
+            metrics.eviction_queue_entries
+                <= EVICTION_QUEUE_MIN_COMPACT.max(metrics.entries * EVICTION_QUEUE_LIVE_MULTIPLIER)
+        );
     }
 }
