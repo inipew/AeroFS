@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 const TRANSFER_PROGRESS_BROADCAST_INTERVAL: Duration = Duration::from_millis(250);
+const PROGRESS_FIELD_INLINE_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -160,11 +161,40 @@ pub enum ReplayOutcome {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProgressFieldKey {
+    Missing,
+    Inline {
+        len: u8,
+        bytes: [u8; PROGRESS_FIELD_INLINE_CAPACITY],
+    },
+    Heap(Box<str>),
+}
+
+impl ProgressFieldKey {
+    fn from_optional(value: Option<&str>) -> Self {
+        let Some(value) = value else {
+            return Self::Missing;
+        };
+
+        if value.len() <= PROGRESS_FIELD_INLINE_CAPACITY {
+            let mut bytes = [0u8; PROGRESS_FIELD_INLINE_CAPACITY];
+            bytes[..value.len()].copy_from_slice(value.as_bytes());
+            Self::Inline {
+                len: value.len() as u8,
+                bytes,
+            }
+        } else {
+            Self::Heap(value.into())
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ProgressEmissionState {
     last_emitted_at: Instant,
-    phase: Option<String>,
-    status: Option<String>,
+    phase: ProgressFieldKey,
+    status: ProgressFieldKey,
 }
 
 #[derive(Debug, Default)]
@@ -174,14 +204,10 @@ struct ProgressBroadcastGate {
 
 impl ProgressBroadcastGate {
     fn should_emit(&mut self, transfer_id: &str, payload: &serde_json::Value, now: Instant) -> bool {
-        let phase = payload
-            .get("phase")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let status = payload
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
+        let phase = payload.get("phase").and_then(serde_json::Value::as_str);
+        let status = payload.get("status").and_then(serde_json::Value::as_str);
+        let phase_key = ProgressFieldKey::from_optional(phase);
+        let status_key = ProgressFieldKey::from_optional(status);
         let transferred = payload
             .get("transferred_bytes")
             .and_then(serde_json::Value::as_u64)
@@ -193,9 +219,7 @@ impl ProgressBroadcastGate {
         // Directory transfers discover total bytes incrementally. Equality while the job is still
         // `transferring` can therefore be temporary, so only a non-transferring phase gets the
         // immediate final-byte bypass.
-        let is_final_progress = total > 0
-            && transferred >= total
-            && phase.as_deref() != Some("transferring");
+        let is_final_progress = total > 0 && transferred >= total && phase != Some("transferring");
 
         match self.transfers.get_mut(transfer_id) {
             None => {
@@ -203,23 +227,22 @@ impl ProgressBroadcastGate {
                     transfer_id.to_string(),
                     ProgressEmissionState {
                         last_emitted_at: now,
-                        phase,
-                        status,
+                        phase: phase_key,
+                        status: status_key,
                     },
                 );
                 true
             }
             Some(state) => {
-                let phase_changed = state.phase != phase;
-                let status_changed = state.status != status;
-                let interval_elapsed =
-                    now.saturating_duration_since(state.last_emitted_at)
-                        >= TRANSFER_PROGRESS_BROADCAST_INTERVAL;
+                let phase_changed = state.phase != phase_key;
+                let status_changed = state.status != status_key;
+                let interval_elapsed = now.saturating_duration_since(state.last_emitted_at)
+                    >= TRANSFER_PROGRESS_BROADCAST_INTERVAL;
 
                 if phase_changed || status_changed || is_final_progress || interval_elapsed {
                     state.last_emitted_at = now;
-                    state.phase = phase;
-                    state.status = status;
+                    state.phase = phase_key;
+                    state.status = status_key;
                     true
                 } else {
                     false
@@ -618,6 +641,43 @@ mod tests {
             "job-1",
             &progress("finalizing", "cancellation_requested", 100, 100),
             start + Duration::from_millis(30),
+        ));
+    }
+
+    #[test]
+    fn progress_gate_detects_unknown_phase_and_status_changes() {
+        let start = Instant::now();
+        let mut gate = ProgressBroadcastGate::default();
+
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("future_phase_a", "future_status_a", 1, 100),
+            start,
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("future_phase_b", "future_status_a", 2, 100),
+            start + Duration::from_millis(1),
+        ));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress("future_phase_b", "future_status_b", 3, 100),
+            start + Duration::from_millis(2),
+        ));
+    }
+
+    #[test]
+    fn progress_gate_detects_long_future_values_without_collision_shortcuts() {
+        let start = Instant::now();
+        let mut gate = ProgressBroadcastGate::default();
+        let phase_a = "future_phase_name_that_is_longer_than_inline_capacity_a";
+        let phase_b = "future_phase_name_that_is_longer_than_inline_capacity_b";
+
+        assert!(gate.should_emit("job-1", &progress(phase_a, "running", 1, 100), start));
+        assert!(gate.should_emit(
+            "job-1",
+            &progress(phase_b, "running", 2, 100),
+            start + Duration::from_millis(1),
         ));
     }
 
