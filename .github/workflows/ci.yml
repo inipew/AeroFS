@@ -80,6 +80,21 @@ jobs:
         working-directory: backend
         run: cargo test --locked
 
+  perf-harness:
+    name: Perf Harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile performance harness
+        run: python3 -m py_compile tools/perf/aerofs_perf.py tools/perf/test_aerofs_perf.py
+
+      - name: Test performance harness
+        run: python3 -m unittest discover -s tools/perf -p 'test_*.py' -v
+
   contract:
     name: OpenAPI Contract
     runs-on: ubuntu-latest
