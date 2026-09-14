@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use backend::{
-    domain::{Actor, ConnectionId},
+    domain::{Actor, ConnectionId, FileKind},
     errors::AppError,
     ports::{
         authorization::{Authorization, FileAction},
@@ -8,7 +8,8 @@ use backend::{
     },
     services::SyncService,
     sync::{
-        SyncHistoryPage, SyncJob, SyncOperationRow, SyncPageCursor, SyncStatus, SyncStrategy,
+        ConflictResolver, FileManifest, ManifestDiffer, SyncHistoryPage, SyncJob, SyncOpKind,
+        SyncOperationRow, SyncPageCursor, SyncStatus, SyncStrategy,
     },
 };
 use chrono::Utc;
@@ -162,4 +163,99 @@ async fn sync_service_authorizes_then_delegates_through_sync_control_port() {
             strategy: SyncStrategy::SourceWins,
         }]
     );
+}
+
+#[test]
+fn manifest_diff_maps_unchanged_changed_and_new_files_by_strategy() {
+    let src = vec![
+        FileManifest {
+            path: "same.txt".into(),
+            kind: FileKind::File,
+            size: 100,
+            modified_at: None,
+            content_hash: Some("hash1".into()),
+            etag: None,
+        },
+        FileManifest {
+            path: "modified.txt".into(),
+            kind: FileKind::File,
+            size: 200,
+            modified_at: None,
+            content_hash: Some("hash2-src".into()),
+            etag: None,
+        },
+        FileManifest {
+            path: "new.txt".into(),
+            kind: FileKind::File,
+            size: 300,
+            modified_at: None,
+            content_hash: Some("hash3".into()),
+            etag: None,
+        },
+    ];
+    let dst = vec![
+        FileManifest {
+            path: "same.txt".into(),
+            kind: FileKind::File,
+            size: 100,
+            modified_at: None,
+            content_hash: Some("hash1".into()),
+            etag: None,
+        },
+        FileManifest {
+            path: "modified.txt".into(),
+            kind: FileKind::File,
+            size: 250,
+            modified_at: None,
+            content_hash: Some("hash2-dst".into()),
+            etag: None,
+        },
+    ];
+
+    let source_wins = ManifestDiffer::diff(&src, &dst, SyncStrategy::SourceWins);
+    assert_eq!(
+        source_wins
+            .iter()
+            .find(|op| op.relative_path == "same.txt")
+            .unwrap()
+            .kind,
+        SyncOpKind::Noop
+    );
+    assert_eq!(
+        source_wins
+            .iter()
+            .find(|op| op.relative_path == "modified.txt")
+            .unwrap()
+            .kind,
+        SyncOpKind::Update
+    );
+    assert_eq!(
+        source_wins
+            .iter()
+            .find(|op| op.relative_path == "new.txt")
+            .unwrap()
+            .kind,
+        SyncOpKind::Create
+    );
+
+    let keep_both = ManifestDiffer::diff(&src, &dst, SyncStrategy::KeepBoth);
+    assert_eq!(
+        keep_both
+            .iter()
+            .find(|op| op.relative_path == "modified.txt")
+            .unwrap()
+            .kind,
+        SyncOpKind::Conflict
+    );
+}
+
+#[test]
+fn conflict_filename_preserves_stem_and_extension_shape() {
+    let with_extension = ConflictResolver::generate_conflict_filename("report.pdf");
+    assert!(with_extension.starts_with("report (conflict-"));
+    assert!(with_extension.ends_with(").pdf"));
+
+    let without_extension = ConflictResolver::generate_conflict_filename("README");
+    assert!(without_extension.starts_with("README (conflict-"));
+    assert!(without_extension.ends_with(')'));
 }
