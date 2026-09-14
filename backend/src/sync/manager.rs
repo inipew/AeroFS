@@ -6,9 +6,9 @@ use crate::sync::models::{SyncJob, SyncOpKind, SyncOperation, SyncStatus, SyncSt
 use crate::sync::streaming::StreamingSyncPlan;
 use crate::transfer::TransferManager;
 use crate::vfs::FileSystem;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{QueryBuilder, Row, Sqlite};
+use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -48,6 +48,8 @@ pub struct SyncManager {
     resource_budget: Arc<ResourceBudget>,
     event_journal: Arc<EventJournal>,
     providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
+    /// Active execution state only. Completed/failed/conflict history is authoritative in
+    /// SQLite and loaded on demand so long-lived daemons do not retain every sync job in RAM.
     jobs: Arc<RwLock<HashMap<String, SyncJob>>>,
 }
 
@@ -73,6 +75,93 @@ impl SyncManager {
 
     pub fn supervisor(&self) -> &TaskSupervisor {
         &self.supervisor
+    }
+
+    fn is_terminal_status(status: SyncStatus) -> bool {
+        matches!(
+            status,
+            SyncStatus::Completed | SyncStatus::Failed | SyncStatus::Conflict
+        )
+    }
+
+    fn status_from_str(status: &str) -> SyncStatus {
+        match status {
+            "created" => SyncStatus::Created,
+            "scanning" => SyncStatus::Scanning,
+            "planning" => SyncStatus::Planning,
+            "reconciling" => SyncStatus::Reconciling,
+            "executing" => SyncStatus::Executing,
+            "verifying" => SyncStatus::Verifying,
+            "completed" => SyncStatus::Completed,
+            "paused" => SyncStatus::Paused,
+            "failed" => SyncStatus::Failed,
+            "conflict" => SyncStatus::Conflict,
+            _ => SyncStatus::Created,
+        }
+    }
+
+    fn parse_db_timestamp(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .map(|timestamp| timestamp.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    }
+
+    fn sync_job_from_row(row: &SqliteRow) -> SyncJob {
+        let status: String = row.get("status");
+        let strategy: String = row.get("strategy");
+        let created_at: String = row.get("created_at");
+        let updated_at: String = row.get("updated_at");
+
+        SyncJob {
+            id: row.get("id"),
+            user_id: row.get("user_id"),
+            source_connection_id: row.get("source_connection_id"),
+            source_path: row.get("source_path"),
+            destination_connection_id: row.get("destination_connection_id"),
+            destination_path: row.get("destination_path"),
+            status: Self::status_from_str(&status),
+            strategy: strategy.parse().unwrap_or(SyncStrategy::KeepBoth),
+            total_files: row.get::<i64, _>("total_files") as u64,
+            synced_files: row.get::<i64, _>("synced_files") as u64,
+            conflict_files: row.get::<i64, _>("conflict_files") as u64,
+            created_at: Self::parse_db_timestamp(&created_at),
+            updated_at: Self::parse_db_timestamp(&updated_at),
+        }
+    }
+
+    async fn load_jobs_from_db(db: &DbPool) -> anyhow::Result<Vec<SyncJob>> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, source_connection_id, source_path, destination_connection_id, \
+             destination_path, status, strategy, total_files, synced_files, conflict_files, \
+             created_at, updated_at FROM sync_jobs ORDER BY created_at DESC",
+        )
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows.iter().map(Self::sync_job_from_row).collect())
+    }
+
+    async fn load_single_job_from_db(
+        db: &DbPool,
+        job_id: &str,
+    ) -> anyhow::Result<Option<SyncJob>> {
+        let row = sqlx::query(
+            "SELECT id, user_id, source_connection_id, source_path, destination_connection_id, \
+             destination_path, status, strategy, total_files, synced_files, conflict_files, \
+             created_at, updated_at FROM sync_jobs WHERE id = ?",
+        )
+        .bind(job_id)
+        .fetch_optional(db)
+        .await?;
+
+        Ok(row.as_ref().map(Self::sync_job_from_row))
+    }
+
+    async fn get_job(&self, job_id: &str) -> anyhow::Result<Option<SyncJob>> {
+        if let Some(job) = self.jobs.read().await.get(job_id).cloned() {
+            return Ok(Some(job));
+        }
+        Self::load_single_job_from_db(&self.db, job_id).await
     }
 
     fn resource_class_for_connections(source: &str, destination: &str) -> ResourceClass {
@@ -378,7 +467,9 @@ impl SyncManager {
         let now = Utc::now().to_rfc3339();
 
         let updated = sqlx::query(
-            "UPDATE sync_operations\n             SET status = ?, transfer_job_id = ?, error_message = ?, updated_at = ?\n             WHERE id = ? AND status NOT IN ('completed', 'failed')",
+            "UPDATE sync_operations\
+             SET status = ?, transfer_job_id = ?, error_message = ?, updated_at = ?\
+             WHERE id = ? AND status NOT IN ('completed', 'failed')",
         )
         .bind(status)
         .bind(transfer_job_id)
@@ -452,39 +543,25 @@ impl SyncManager {
     }
 
     async fn refresh_job(&self, job_id: &str) -> anyhow::Result<()> {
-        let row = sqlx::query("SELECT * FROM sync_jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_optional(&self.db)
-            .await?;
-        if let Some(r) = row {
-            let status_str: String = r.get("status");
-            let strategy_str: String = r.get("strategy");
-            let j = SyncJob {
-                id: r.get("id"),
-                user_id: r.get("user_id"),
-                source_connection_id: r.get("source_connection_id"),
-                source_path: r.get("source_path"),
-                destination_connection_id: r.get("destination_connection_id"),
-                destination_path: r.get("destination_path"),
-                status: match status_str.as_str() {
-                    "created" => SyncStatus::Created,
-                    "scanning" => SyncStatus::Scanning,
-                    "planning" => SyncStatus::Planning,
-                    "reconciling" => SyncStatus::Reconciling,
-                    "executing" => SyncStatus::Executing,
-                    "completed" => SyncStatus::Completed,
-                    "failed" => SyncStatus::Failed,
-                    "conflict" => SyncStatus::Conflict,
-                    _ => SyncStatus::Created,
-                },
-                strategy: strategy_str.parse().unwrap_or(SyncStrategy::KeepBoth),
-                total_files: r.get::<i64, _>("total_files") as u64,
-                synced_files: r.get::<i64, _>("synced_files") as u64,
-                conflict_files: r.get::<i64, _>("conflict_files") as u64,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-            };
-            self.jobs.write().await.insert(job_id.to_string(), j);
+        let row = sqlx::query(
+            "SELECT id, user_id, source_connection_id, source_path, destination_connection_id, \
+             destination_path, status, strategy, total_files, synced_files, conflict_files, \
+             created_at, updated_at FROM sync_jobs WHERE id = ?",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        let mut jobs = self.jobs.write().await;
+        if let Some(row) = row {
+            let job = Self::sync_job_from_row(&row);
+            if Self::is_terminal_status(job.status) {
+                jobs.remove(job_id);
+            } else {
+                jobs.insert(job_id.to_string(), job);
+            }
+        } else {
+            jobs.remove(job_id);
         }
         Ok(())
     }
@@ -749,12 +826,10 @@ impl SyncManager {
 
         if let Some(r) = row {
             let rel_path: String = r.get("relative_path");
-            let job = {
-                let map = self.jobs.read().await;
-                map.get(job_id)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Job not found"))?
-            };
+            let job = self
+                .get_job(job_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Job not found"))?;
 
             match resolution {
                 "use_source" => {
@@ -841,8 +916,24 @@ impl SyncManager {
     }
 
     pub async fn list_jobs(&self) -> anyhow::Result<Vec<SyncJob>> {
-        let map = self.jobs.read().await;
-        Ok(map.values().cloned().collect())
+        let mut jobs_by_id: HashMap<String, SyncJob> = Self::load_jobs_from_db(&self.db)
+            .await?
+            .into_iter()
+            .map(|job| (job.id.clone(), job))
+            .collect();
+
+        // Overlay live execution state so callers see the most recent in-memory transition while
+        // terminal history can be reclaimed immediately after persistence.
+        {
+            let active = self.jobs.read().await;
+            for job in active.values() {
+                jobs_by_id.insert(job.id.clone(), job.clone());
+            }
+        }
+
+        let mut jobs: Vec<SyncJob> = jobs_by_id.into_values().collect();
+        jobs.sort_by_key(|job| std::cmp::Reverse(job.created_at));
+        Ok(jobs)
     }
 
     async fn get_provider(&self, conn_id: &str) -> anyhow::Result<Arc<dyn FileSystem>> {
@@ -853,18 +944,20 @@ impl SyncManager {
     }
 
     async fn update_job_status(&self, job_id: &str, status: SyncStatus) -> anyhow::Result<()> {
+        let now = Utc::now();
         sqlx::query("UPDATE sync_jobs SET status = ?, updated_at = ? WHERE id = ?")
             .bind(status.as_str())
-            .bind(Utc::now().to_rfc3339())
+            .bind(now.to_rfc3339())
             .bind(job_id)
             .execute(&self.db)
             .await?;
-        {
-            let mut map = self.jobs.write().await;
-            if let Some(j) = map.get_mut(job_id) {
-                j.status = status;
-                j.updated_at = Utc::now();
-            }
+
+        let mut map = self.jobs.write().await;
+        if Self::is_terminal_status(status) {
+            map.remove(job_id);
+        } else if let Some(job) = map.get_mut(job_id) {
+            job.status = status;
+            job.updated_at = now;
         }
         Ok(())
     }
@@ -1119,6 +1212,61 @@ mod tests {
             dest_manifest: None,
         };
         assert_eq!(SyncManager::operation_kind(&op), ("rename", Some("old.txt")));
+    }
+
+    #[test]
+    fn terminal_sync_statuses_are_db_only() {
+        assert!(SyncManager::is_terminal_status(SyncStatus::Completed));
+        assert!(SyncManager::is_terminal_status(SyncStatus::Failed));
+        assert!(SyncManager::is_terminal_status(SyncStatus::Conflict));
+        assert!(!SyncManager::is_terminal_status(SyncStatus::Created));
+        assert!(!SyncManager::is_terminal_status(SyncStatus::Executing));
+        assert!(!SyncManager::is_terminal_status(SyncStatus::Paused));
+    }
+
+    #[tokio::test]
+    async fn db_job_loader_preserves_terminal_history_and_timestamps() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE sync_jobs (\
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, source_connection_id TEXT NOT NULL, \
+                source_path TEXT NOT NULL, destination_connection_id TEXT NOT NULL, \
+                destination_path TEXT NOT NULL, status TEXT NOT NULL, strategy TEXT NOT NULL, \
+                total_files INTEGER NOT NULL, synced_files INTEGER NOT NULL, \
+                conflict_files INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL\
+            )",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let created_at = "2026-09-14T01:02:03+00:00";
+        let updated_at = "2026-09-14T04:05:06+00:00";
+        sqlx::query(
+            "INSERT INTO sync_jobs (\
+                id, user_id, source_connection_id, source_path, destination_connection_id, \
+                destination_path, status, strategy, total_files, synced_files, conflict_files, \
+                created_at, updated_at\
+             ) VALUES ('job-terminal', 'user-1', 'local', '/src', 'remote', '/dst', \
+                       'completed', 'source_wins', 10, 10, 0, ?, ?)",
+        )
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let jobs = SyncManager::load_jobs_from_db(&db).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "job-terminal");
+        assert_eq!(jobs[0].status, SyncStatus::Completed);
+        assert_eq!(jobs[0].strategy, SyncStrategy::SourceWins);
+        assert_eq!(jobs[0].created_at.to_rfc3339(), created_at);
+        assert_eq!(jobs[0].updated_at.to_rfc3339(), updated_at);
     }
 
     #[tokio::test]
