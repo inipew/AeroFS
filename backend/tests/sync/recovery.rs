@@ -3,7 +3,7 @@ use backend::{
     db::DbPool,
     events::EventJournal,
     runtime::{ResourceBudget, TaskSupervisor},
-    sync::{SyncManager, SyncStatus, StreamingSyncPlan, SCAN_BATCH_SIZE, SyncStrategy},
+    sync::{scanner::SCAN_BATCH_SIZE, SyncManager, SyncStatus, StreamingSyncPlan, SyncStrategy},
     transfer::{
         TransferExecutionMode, TransferJob, TransferManager, TransferPhase, TransferStatus,
         TransferType,
