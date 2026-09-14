@@ -171,3 +171,84 @@ impl RuntimeMetricsCollector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[tokio::test]
+    async fn snapshot_counts_only_nonterminal_execution_state() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        for (id, status) in [
+            ("t-queued", "queued"),
+            ("t-running", "running"),
+            ("t-cancelling", "cancellation_requested"),
+            ("t-completed", "completed"),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO transfer_jobs (
+                    id, name, transfer_type, source_connection_id, source_path,
+                    destination_connection_id, destination_path, status, created_at, updated_at
+                ) VALUES (?, ?, 'copy', 'local', '/src', 'local', '/dst', ?, ?, ?)
+                "#,
+            )
+            .bind(id)
+            .bind(id)
+            .bind(status)
+            .bind(&now)
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        for (id, status) in [
+            ("s-created", "created"),
+            ("s-executing", "executing"),
+            ("s-paused", "paused"),
+            ("s-completed", "completed"),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO sync_jobs (
+                    id, user_id, source_connection_id, source_path,
+                    destination_connection_id, destination_path, status, strategy,
+                    created_at, updated_at
+                ) VALUES (?, 'user-1', 'local', '/src', 'local', '/dst', ?, 'source_wins', ?, ?)
+                "#,
+            )
+            .bind(id)
+            .bind(status)
+            .bind(&now)
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let collector = RuntimeMetricsCollector::new(
+            Arc::new(ResourceBudget::default()),
+            TaskSupervisor::new(),
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(MetadataCache::default()),
+            db,
+        );
+        let execution = collector.snapshot().await.execution;
+
+        assert_eq!(execution.transfer_active, 3);
+        assert_eq!(execution.transfer_queue_depth, 1);
+        assert_eq!(execution.transfer_running, 2);
+        assert_eq!(execution.sync_active, 3);
+        assert_eq!(execution.sync_executing, 1);
+        assert_eq!(execution.sync_paused, 1);
+    }
+}
