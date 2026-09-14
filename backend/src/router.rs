@@ -311,6 +311,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(crate::api::health::health_check))
         .route("/health/live", get(crate::api::health::health_live))
         .route("/health/ready", get(crate::api::health::health_ready))
+        .route("/metrics", get(crate::api::health::runtime_metrics))
         .route("/api/v1/health/live", get(crate::api::health::health_live))
         .route("/api/v1/health/ready", get(crate::api::health::health_ready))
         .route("/api/v1/ws", get(ws::ws_handler))
