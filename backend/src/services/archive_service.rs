@@ -1,10 +1,10 @@
 use crate::domain::{Actor, ConnectionId, VfsPath};
 use crate::errors::AppError;
 use crate::filesystem::archive::{
-    compress_targz, compress_zip, extract_selected_archive_entries, extract_targz, extract_zip,
-    list_virtual_archive_entries, read_virtual_archive_entry, ArchiveFormat, ArchiveOverwriteMode,
-    VirtualArchiveEntry,
+    compress_targz, compress_zip, extract_selected_archive_entries, list_virtual_archive_entries,
+    read_virtual_archive_entry, ArchiveFormat, ArchiveOverwriteMode, VirtualArchiveEntry,
 };
+use crate::filesystem::archive_stream::{extract_targz_streaming, extract_zip_streaming};
 use crate::ports::{
     archive::ArchiveEffects,
     authorization::{Authorization, FileAction},
@@ -149,10 +149,12 @@ impl ArchiveService {
 
         let (count, skipped) = match format {
             ArchiveFormat::Zip => {
-                extract_zip(&provider, &archive_vfs, destination_dir, overwrite_mode).await?
+                extract_zip_streaming(&provider, &archive_vfs, destination_dir, overwrite_mode)
+                    .await?
             }
             ArchiveFormat::TarGz => {
-                extract_targz(&provider, &archive_vfs, destination_dir, overwrite_mode).await?
+                extract_targz_streaming(&provider, &archive_vfs, destination_dir, overwrite_mode)
+                    .await?
             }
         };
 
