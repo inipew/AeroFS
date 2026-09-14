@@ -327,35 +327,39 @@ pub async fn compress_targz_streaming(
     });
 
     let producer = async {
-        for (rel_path, full_vfs) in files_to_pack {
-            let meta = provider.stat(&full_vfs).await?;
+        let result = async {
+            for (rel_path, full_vfs) in files_to_pack {
+                let meta = provider.stat(&full_vfs).await?;
+                input_tx
+                    .send(ArchiveWriteCommand::StartEntry {
+                        path: rel_path,
+                        size: meta.size,
+                    })
+                    .await
+                    .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+                let reader = provider.read_stream(&full_vfs).await?;
+                let written = send_reader_to_worker(reader, &input_tx).await?;
+                input_tx
+                    .send(ArchiveWriteCommand::EndEntry { written })
+                    .await
+                    .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+            }
             input_tx
-                .send(ArchiveWriteCommand::StartEntry {
-                    path: rel_path,
-                    size: meta.size,
-                })
+                .send(ArchiveWriteCommand::Finish)
                 .await
                 .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
-            let reader = provider.read_stream(&full_vfs).await?;
-            let written = send_reader_to_worker(reader, &input_tx).await?;
-            input_tx
-                .send(ArchiveWriteCommand::EndEntry { written })
-                .await
-                .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
+            Ok::<(), VfsError>(())
         }
-        input_tx
-            .send(ArchiveWriteCommand::Finish)
-            .await
-            .map_err(|_| VfsError::IoError("Tar compressor stopped unexpectedly".into()))?;
-        Ok::<(), VfsError>(())
+        .await;
+
+        if result.is_err() {
+            let _ = input_tx.send(ArchiveWriteCommand::Abort).await;
+        }
+        result
     };
 
     let upload = provider.write_stream(&staging, Box::new(output_reader));
     let (producer_result, upload_result) = tokio::join!(producer, upload);
-
-    if producer_result.is_err() {
-        let _ = input_tx.send(ArchiveWriteCommand::Abort).await;
-    }
     drop(input_tx);
 
     let worker_result = worker
