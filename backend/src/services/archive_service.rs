@@ -5,7 +5,8 @@ use crate::filesystem::archive::{
     ArchiveFormat, ArchiveOverwriteMode, VirtualArchiveEntry,
 };
 use crate::filesystem::archive_compress_stream::compress_targz_streaming;
-use crate::filesystem::archive_stream::{extract_targz_streaming, extract_zip_streaming};
+use crate::filesystem::archive_stream::extract_targz_streaming;
+use crate::filesystem::archive_zip_range::extract_zip_adaptive;
 use crate::filesystem::archive_zip_stream::compress_zip_streaming;
 use crate::ports::{
     archive::ArchiveEffects,
@@ -151,7 +152,7 @@ impl ArchiveService {
 
         let (count, skipped) = match format {
             ArchiveFormat::Zip => {
-                extract_zip_streaming(&provider, &archive_vfs, destination_dir, overwrite_mode)
+                extract_zip_adaptive(&provider, &archive_vfs, destination_dir, overwrite_mode)
                     .await?
             }
             ArchiveFormat::TarGz => {

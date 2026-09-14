@@ -158,3 +158,44 @@ fn phase4_zip_compression_streams_traversal_and_stages_commits() {
         "Phase 4 regression: ArchiveService must continue using the hardened ZIP path"
     );
 }
+
+#[test]
+fn phase4_large_remote_zip_extraction_uses_bounded_range_seek() {
+    let zip = source("src/filesystem/archive_zip_range.rs");
+    let traits = source("src/vfs/traits.rs");
+    let service = source("src/services/archive_service.rs");
+
+    assert!(
+        zip.contains("ZIP_RANGE_CHUNK_SIZE: u64 = 2 * 1024 * 1024"),
+        "Phase 4 regression: ZIP range requests must stay coarse enough to avoid tiny-read amplification"
+    );
+    assert!(
+        zip.contains("ZIP_RANGE_CACHE_CHUNKS: usize = 4"),
+        "Phase 4 regression: ZIP random-access cache must remain strictly bounded"
+    );
+    assert!(
+        zip.contains("ZIP_RANGE_MIN_ARCHIVE_SIZE: u64 = 16 * 1024 * 1024"),
+        "Phase 4 regression: small ZIP files should retain the cheaper sequential temp-file path"
+    );
+    assert!(
+        zip.contains(".read_range(&archive_path, request.offset, request.length)"),
+        "Phase 4 regression: large remote ZIP extraction must use provider range reads"
+    );
+    assert!(
+        zip.contains("return extract_zip_streaming(provider, archive_path, target_dir, overwrite_mode).await;"),
+        "Phase 4 regression: providers without efficient native ranges must retain the safe fallback"
+    );
+    assert!(
+        traits.contains("fn supports_efficient_range_read(&self) -> bool"),
+        "Phase 4 regression: seek-heavy ZIP reads need an explicit efficient-range capability gate"
+    );
+    assert!(
+        traits.contains("capabilities.server_side_copy")
+            && traits.contains("capabilities.native_checksum"),
+        "Phase 4 regression: default efficient-range profile must remain conservative for S3-like providers"
+    );
+    assert!(
+        service.contains("extract_zip_adaptive("),
+        "Phase 4 regression: ArchiveService must route ZIP extraction through the adaptive path"
+    );
+}

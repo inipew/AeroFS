@@ -35,6 +35,20 @@ pub trait FileSystem: Send + Sync + 'static {
         capabilities.atomic_write && capabilities.atomic_rename && capabilities.native_copy
     }
 
+    /// Whether small, repeated random range reads are an efficient native operation.
+    ///
+    /// AeroFS intentionally keeps this stricter than the public `range_read` flag: some providers
+    /// can emulate ranges but would turn a seek-heavy ZIP workload into request amplification.
+    /// The default profile matches S3/S3-compatible backends in the currently supported provider
+    /// set while custom providers remain opt-out unless they override this method.
+    fn supports_efficient_range_read(&self) -> bool {
+        let capabilities = self.capabilities();
+        !self.is_local()
+            && capabilities.range_read
+            && capabilities.server_side_copy
+            && capabilities.native_checksum
+    }
+
     /// Return an asynchronous stream of directory entries (OpenDAL-native streaming primitive).
     ///
     /// Streams should stay cheap: provider-specific metadata that requires extra local syscalls or
