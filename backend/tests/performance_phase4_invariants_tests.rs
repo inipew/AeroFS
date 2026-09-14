@@ -199,3 +199,42 @@ fn phase4_large_remote_zip_extraction_uses_bounded_range_seek() {
         "Phase 4 regression: ArchiveService must route ZIP extraction through the adaptive path"
     );
 }
+
+#[test]
+fn phase4_archive_extractors_share_one_consumer_and_output_policy() {
+    let core = source("src/filesystem/archive_extract_core.rs");
+    let stream = source("src/filesystem/archive_stream.rs");
+    let range = source("src/filesystem/archive_zip_range.rs");
+
+    assert!(
+        core.contains("pub(crate) enum ExtractCommand")
+            && core.contains("pub(crate) async fn consume_commands("),
+        "Phase 4 regression: extraction command protocol and consumer must stay centralized"
+    );
+    assert!(
+        core.contains("ArchiveOverwriteMode::Skip")
+            && core.contains("ArchiveOverwriteMode::Overwrite")
+            && core.contains("ArchiveOverwriteMode::KeepBoth"),
+        "Phase 4 regression: overwrite policy must remain owned by the shared extraction core"
+    );
+    assert!(
+        core.contains("resolve_destination_permissions_strict")
+            && core.contains("write_stream(&destination_for_write, Box::new(reader))"),
+        "Phase 4 regression: permission inheritance and provider output streaming must remain centralized"
+    );
+    assert!(
+        stream.contains("consume_commands(") && stream.contains("request_file_stream("),
+        "Phase 4 regression: temp ZIP and TAR.GZ extraction must use the shared core"
+    );
+    assert!(
+        range.contains("run_zip_reader(range_reader, command_tx)")
+            && range.contains("consume_commands("),
+        "Phase 4 regression: range-backed ZIP extraction must reuse the same parser and consumer"
+    );
+    assert!(
+        !range.contains("enum ExtractCommand")
+            && !range.contains("struct ActiveFile")
+            && !range.contains("resolve_file_destination"),
+        "Phase 4 regression: range-backed ZIP must not reintroduce a second extraction policy implementation"
+    );
+}
