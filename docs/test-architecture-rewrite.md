@@ -40,9 +40,11 @@ Phase 2 adds a transfer-specific TestKit layer without exposing `TransferManager
 - `transfer_lifecycle_tests.rs` owns product behavior: copy/move, recursive copy, durable terminal history, retry from failed durable state, concurrent retry admission, dismiss/clear, ownership, cancellation cleanup, and connection-drain behavior.
 - `transfer_engine_invariants_tests.rs` owns intentionally implementation-level guarantees that cannot be expressed faithfully at the application boundary: retry permission revalidation, unavailable/disabled providers, cleanup-phase move recovery, retry CAS, finalizing cancellation, progress checkpoint persistence, enum/string stability, and terminal DB fallback parity.
 
-The old transfer suites remain in place during the first validation run. They are removed only after both the replacement suites and the complete legacy suite pass together on CI.
+The replacement suites were first run beside all legacy transfer suites. After that equivalence run passed, `transfer_tests.rs`, `plan3_transfer_lifecycle_invariants_tests.rs`, `plan38_transfer_lifecycle_tests.rs`, and `plan39_transfer_hardening_tests.rs` were removed. The migration therefore reduces the top-level Rust integration-test crate count from **49 to 47** and the historically named subset from **35 to 32**.
 
-One legacy transfer test is intentionally not migrated as a requirement: `test_transfer_dynamic_limits_update` only changed a settings value and then asserted that an unrelated small copy still completed. It did not verify concurrency changed. Runtime/settings concurrency behavior belongs in the settings/runtime migration with an observable concurrency contract rather than preserving that weak assertion.
+`p1_transfer_boundary_tests.rs` remains intentionally: it protects architecture boundaries rather than transfer lifecycle behavior and belongs to a later contract/architecture migration.
+
+One legacy transfer test was intentionally not migrated as a requirement: `test_transfer_dynamic_limits_update` only changed a settings value and then asserted that an unrelated small copy still completed. It did not verify concurrency changed. Runtime/settings concurrency behavior belongs in the settings/runtime migration with an observable concurrency contract rather than preserving that weak assertion.
 
 ## Rewrite rules
 
@@ -102,8 +104,8 @@ The exact physical grouping can evolve during migration; behavior ownership matt
 - consolidate queue/execution/cancellation/retry/persistence/ownership behavior around `support::transfer`
 - separate product behavior from engine invariants
 - replace fixed transfer polling loops with named convergence deadlines
-- run old and new transfer suites together before deleting superseded files
-- remove historical `plan3`, `plan38`, `plan39`, and duplicate `transfer_tests` ownership once CI proves equivalence
+- validate replacement and legacy transfer suites together
+- remove superseded `plan3`, `plan38`, `plan39`, and duplicate `transfer_tests` ownership
 
 ### Phase 3 — Sync and recovery
 
