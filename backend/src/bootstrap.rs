@@ -44,6 +44,9 @@ use crate::transfer::{TransferEngine, TransferManager};
 use crate::vfs::registry::ProviderRegistry;
 use std::sync::Arc;
 
+const REMOTE_PROVIDER_IDLE_TTL_SECS: u64 = 10 * 60;
+const REMOTE_PROVIDER_REAPER_INTERVAL_SECS: u64 = 60;
+
 pub struct BuiltApplication {
     pub state: AppState,
     pub runtime: RuntimeOwner,
@@ -118,6 +121,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         db.clone(),
         transfer_manager.clone(),
         runtime.supervisor.clone(),
+        resource_budget.clone(),
         event_journal.clone(),
         registry.providers_map(),
     ));
@@ -308,7 +312,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         health: HealthState::new(HealthService::new(Arc::new(RuntimeReadinessProbe::new(
             db.clone(),
             local_root.clone(),
-            registry,
+            registry.clone(),
             runtime.view(),
             runtime.supervisor.clone(),
         )))),
@@ -350,7 +354,7 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         )),
     };
 
-    spawn_runtime_tasks(&runtime, local_root, event_journal, db);
+    spawn_runtime_tasks(&runtime, local_root, event_journal, db, registry);
     BuiltApplication { state, runtime }
 }
 
@@ -359,7 +363,35 @@ fn spawn_runtime_tasks(
     local_root: std::path::PathBuf,
     journal: Arc<EventJournal>,
     housekeeping_db: DbPool,
+    registry: Arc<ProviderRegistry>,
 ) {
+    let provider_reaper_token = runtime.shutdown_token.clone();
+    let provider_reaper_health = runtime.supervisor.clone();
+    runtime
+        .supervisor
+        .spawn("provider_idle_reaper", async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                REMOTE_PROVIDER_REAPER_INTERVAL_SECS,
+            ));
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = provider_reaper_token.cancelled() => break,
+                    _ = interval.tick() => {
+                        let reclaimed = registry
+                            .reclaim_idle_connections(std::time::Duration::from_secs(
+                                REMOTE_PROVIDER_IDLE_TTL_SECS,
+                            ))
+                            .await;
+                        if !reclaimed.is_empty() {
+                            tracing::debug!(connections = ?reclaimed, "Reclaimed idle remote providers");
+                        }
+                        provider_reaper_health.record_success("provider_idle_reaper");
+                    }
+                }
+            }
+        });
+
     let cleanup_token = runtime.shutdown_token.clone();
     let cleanup_health = runtime.supervisor.clone();
     runtime

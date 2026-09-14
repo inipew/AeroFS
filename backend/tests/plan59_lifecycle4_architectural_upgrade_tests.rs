@@ -314,12 +314,13 @@ async fn test_sync_manager_creation_and_reconciliation() {
             .await
             .unwrap(),
     );
+    let resource_budget = Arc::new(ResourceBudget::default());
 
     let transfer_manager = backend::transfer::TransferManager::new(
         registry.providers_map(),
         pool.clone(),
         4,
-        Arc::new(ResourceBudget::default()),
+        resource_budget.clone(),
         event_journal.clone(),
         token,
         &tracker,
@@ -331,6 +332,7 @@ async fn test_sync_manager_creation_and_reconciliation() {
         pool.clone(),
         transfer_manager,
         supervisor,
+        resource_budget,
         event_journal,
         registry.providers_map(),
     );

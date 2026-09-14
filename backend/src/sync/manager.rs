@@ -1,7 +1,7 @@
 use crate::db::DbPool;
 use crate::domain::VfsPath;
 use crate::events::EventJournal;
-use crate::runtime::TaskSupervisor;
+use crate::runtime::{ResourceBudget, ResourceClass, TaskSupervisor};
 use crate::sync::models::{SyncJob, SyncOpKind, SyncOperation, SyncStatus, SyncStrategy};
 use crate::sync::streaming::StreamingSyncPlan;
 use crate::transfer::TransferManager;
@@ -34,6 +34,7 @@ pub struct SyncManager {
     db: DbPool,
     transfer_manager: TransferManager,
     supervisor: TaskSupervisor,
+    resource_budget: Arc<ResourceBudget>,
     event_journal: Arc<EventJournal>,
     providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
     jobs: Arc<RwLock<HashMap<String, SyncJob>>>,
@@ -44,6 +45,7 @@ impl SyncManager {
         db: DbPool,
         transfer_manager: TransferManager,
         supervisor: TaskSupervisor,
+        resource_budget: Arc<ResourceBudget>,
         event_journal: Arc<EventJournal>,
         providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
     ) -> Self {
@@ -51,6 +53,7 @@ impl SyncManager {
             db,
             transfer_manager,
             supervisor,
+            resource_budget,
             event_journal,
             providers,
             jobs: Arc::new(RwLock::new(HashMap::new())),
@@ -59,6 +62,24 @@ impl SyncManager {
 
     pub fn supervisor(&self) -> &TaskSupervisor {
         &self.supervisor
+    }
+
+    fn resource_class_for_connections(source: &str, destination: &str) -> ResourceClass {
+        match (source == "local", destination == "local") {
+            (true, true) => ResourceClass::LocalIo,
+            (false, false) => ResourceClass::NetworkIo,
+            _ => ResourceClass::MixedIo,
+        }
+    }
+
+    async fn acquire_sync_budget(&self, job: &SyncJob) -> anyhow::Result<crate::runtime::ResourcePermit> {
+        self.resource_budget
+            .acquire(Self::resource_class_for_connections(
+                &job.source_connection_id,
+                &job.destination_connection_id,
+            ))
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to acquire sync resource budget: {error}"))
     }
 
     pub async fn create_job(
@@ -143,6 +164,12 @@ impl SyncManager {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Job not found"))?
         };
+
+        // Sync scanning, DB-backed planning, and direct reconciliation operations all consume
+        // the same system-wide I/O admission budget as transfers/search/archive. The permit is
+        // held for the planning pipeline; transfer jobs spawned by sync are separately admitted
+        // by the transfer scheduler when they actually execute.
+        let _sync_permit = self.acquire_sync_budget(&job).await?;
 
         self.update_job_status(job_id, SyncStatus::Scanning).await?;
 
@@ -466,6 +493,7 @@ impl SyncManager {
                     Some(j) => j,
                     None => continue,
                 };
+                let _sync_permit = self.acquire_sync_budget(&job).await?;
 
                 let ops = self.list_operations(&id).await?;
                 let mut all_completed = true;
@@ -775,5 +803,26 @@ impl SyncManager {
         .bind(op_id)
         .execute(&self.db).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_resource_class_tracks_endpoint_pressure() {
+        assert_eq!(
+            SyncManager::resource_class_for_connections("local", "local"),
+            ResourceClass::LocalIo
+        );
+        assert_eq!(
+            SyncManager::resource_class_for_connections("sftp-a", "s3-b"),
+            ResourceClass::NetworkIo
+        );
+        assert_eq!(
+            SyncManager::resource_class_for_connections("local", "sftp-a"),
+            ResourceClass::MixedIo
+        );
     }
 }

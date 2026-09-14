@@ -1,7 +1,8 @@
-use crate::vfs::runtime::{BudgetedFileSystem, StorageRuntime};
+use crate::vfs::runtime::{BudgetedFileSystem, ProviderLoader, StorageRuntime};
 use crate::vfs::FileSystem;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,7 +15,7 @@ pub enum ConnectionStatus {
 
 #[derive(Clone)]
 pub struct ProviderHandle {
-    /// Budget-enforced provider surface. Use `runtime.provider()` only for
+    /// Budget-enforced provider surface. Use `StorageRuntime::provider_for_operation()` only for
     /// infrastructure code that explicitly needs the raw provider.
     pub provider: Arc<dyn FileSystem>,
     pub runtime: Arc<StorageRuntime>,
@@ -23,9 +24,9 @@ pub struct ProviderHandle {
 
 #[derive(Default)]
 pub struct ProviderRegistry {
-    /// Application/transfer-facing providers. Every entry is wrapped by
-    /// `BudgetedFileSystem`, making the per-connection semaphore unavoidable for
-    /// normal registry consumers.
+    /// Application/transfer-facing providers. Every entry is a lightweight
+    /// `BudgetedFileSystem` proxy. For reclaimable remote connections the heavyweight provider
+    /// behind the proxy may be dropped after the idle TTL and rebuilt lazily on demand.
     providers: Arc<RwLock<HashMap<String, Arc<dyn FileSystem>>>>,
     runtimes: Arc<RwLock<HashMap<String, Arc<StorageRuntime>>>>,
     connection_errors: Arc<RwLock<HashMap<String, String>>>,
@@ -82,6 +83,25 @@ impl ProviderRegistry {
             Arc::clone(&provider),
             64,
         ));
+        self.install_runtime(connection_id, runtime).await;
+    }
+
+    pub async fn register_reclaimable(
+        &self,
+        connection_id: String,
+        provider: Arc<dyn FileSystem>,
+        provider_loader: ProviderLoader,
+    ) {
+        let runtime = Arc::new(StorageRuntime::new_reclaimable(
+            &connection_id,
+            Arc::clone(&provider),
+            64,
+            provider_loader,
+        ));
+        self.install_runtime(connection_id, runtime).await;
+    }
+
+    async fn install_runtime(&self, connection_id: String, runtime: Arc<StorageRuntime>) {
         let budgeted: Arc<dyn FileSystem> = Arc::new(BudgetedFileSystem::new(runtime.clone()));
         let mut providers = self.providers.write().await;
         let mut runtimes = self.runtimes.write().await;
@@ -93,14 +113,7 @@ impl ProviderRegistry {
     }
 
     pub async fn register_runtime(&self, connection_id: String, runtime: Arc<StorageRuntime>) {
-        let budgeted: Arc<dyn FileSystem> = Arc::new(BudgetedFileSystem::new(runtime.clone()));
-        let mut providers = self.providers.write().await;
-        let mut runtimes = self.runtimes.write().await;
-        providers.insert(connection_id.clone(), budgeted);
-        runtimes.insert(connection_id.clone(), runtime);
-        drop(runtimes);
-        drop(providers);
-        self.clear_connection_error(&connection_id).await;
+        self.install_runtime(connection_id, runtime).await;
     }
 
     pub async fn remove(&self, connection_id: &str) {
@@ -138,15 +151,41 @@ impl ProviderRegistry {
         errors.remove(connection_id);
     }
 
-    /// List non-local connections that have 0 leases and have been idle for longer than TTL
-    pub async fn get_idle_connections(&self, ttl: std::time::Duration) -> Vec<String> {
-        let runtimes = self.runtimes.read().await;
-        let mut idle = Vec::new();
-        for (id, rt) in runtimes.iter() {
-            if id != "local" && rt.is_idle(ttl).await {
-                idle.push(id.clone());
+    /// Reclaim heavyweight providers that have no active leases and have exceeded the idle TTL.
+    ///
+    /// The lightweight registry proxy/runtime remains installed, so future users transparently
+    /// rebuild the provider instead of seeing a disconnected connection. Local storage is never
+    /// registered as reclaimable and therefore remains resident.
+    pub async fn reclaim_idle_connections(&self, ttl: Duration) -> Vec<String> {
+        let runtimes: Vec<(String, Arc<StorageRuntime>)> = {
+            let runtimes = self.runtimes.read().await;
+            runtimes
+                .iter()
+                .map(|(id, runtime)| (id.clone(), runtime.clone()))
+                .collect()
+        };
+
+        let mut reclaimed = Vec::new();
+        for (id, runtime) in runtimes {
+            if id == "local" {
+                continue;
+            }
+            if runtime.reclaim_if_idle(ttl).await {
+                reclaimed.push(id);
             }
         }
-        idle
+        reclaimed
+    }
+
+    /// Compatibility helper used by diagnostics/tests.
+    pub async fn get_idle_connections(&self, ttl: Duration) -> Vec<String> {
+        let runtimes = self.runtimes.read().await;
+        runtimes
+            .iter()
+            .filter_map(|(id, runtime)| {
+                (id != "local" && runtime.is_reclaimable() && runtime.is_idle(ttl))
+                    .then(|| id.clone())
+            })
+            .collect()
     }
 }
