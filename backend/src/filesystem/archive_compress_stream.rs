@@ -241,6 +241,11 @@ async fn target_exists(
     }
 }
 
+fn can_replace_atomically(provider: &Arc<dyn FileSystem>) -> bool {
+    let capabilities = provider.capabilities();
+    provider.is_local() && capabilities.atomic_rename
+}
+
 pub async fn compress_targz_streaming(
     provider: &Arc<dyn FileSystem>,
     connection_id: &str,
@@ -248,7 +253,9 @@ pub async fn compress_targz_streaming(
     relative_paths: &[String],
     target_targz_path: &VfsPath,
 ) -> Result<(), VfsError> {
-    if !provider.capabilities().atomic_rename || target_exists(provider, target_targz_path).await? {
+    let capabilities = provider.capabilities();
+    let exists = target_exists(provider, target_targz_path).await?;
+    if !capabilities.atomic_rename || (exists && !can_replace_atomically(provider)) {
         return compress_targz(
             provider,
             connection_id,
