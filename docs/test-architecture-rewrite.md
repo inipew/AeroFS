@@ -62,6 +62,36 @@ Replacement and legacy sync coverage first passed together in CI #436. Only afte
 
 The top-level Rust integration-test count remains **47** because one historical sync crate is replaced by one grouped sync crate; the historically named subset drops from **32 to 31**.
 
+## Phase 4 file/VFS migration
+
+Phase 4 groups file, VFS, editor, archive, upload, provider, and permission behavior behind `file_operations_tests.rs` and reusable filesystem doubles.
+
+- `support::filesystem::MemoryFileSystem` provides a reusable in-memory provider with deterministic permission failure injection.
+- `SwappableFileSystemResolver` makes admitted-provider generation behavior observable without inspecting source text.
+- `file_operations/vfs.rs` covers CRUD, range reads, root metadata, Unix permissions, provider capabilities, presign support, transfer-planner strategies, and cursor pagination.
+- `file_operations/editor.rs` covers ETag generation, stale preconditions, force/wildcard overwrite, concurrent writers, and editor CORS headers.
+- `file_operations/archive.rs` covers streaming ZIP/TAR.GZ extraction, overwrite modes, and partial-commit recovery semantics.
+- `file_operations/uploads.rs` covers pinned provider generations, mutable settings at admission, and the durable HTTP upload-session contract.
+- `file_operations/contracts.rs` covers cache/settings boundaries, local-only chmod, staged-write cleanup, and explicit partial-commit errors.
+
+Replacement and legacy coverage passed together before cleanup. `local_vfs_tests.rs`, `opendal_tests.rs`, `opendal_native_transformation_tests.rs`, `archive_streaming_extract_tests.rs`, `h8_upload_session_stability_tests.rs`, and `upload_session_contract_tests.rs` were then retired. `h8_file_boundary_tests.rs` was trimmed rather than deleted because some remaining assertions are intentionally architectural.
+
+Phase 4 reduces the top-level integration-test crate count from **47 to 42** and the historically named subset from **31 to 30**.
+
+## Phase 5 connection/provider lifecycle migration
+
+Phase 5 adds controlled connection doubles and groups connection/provider lifecycle behavior behind `connection_lifecycle_tests.rs`.
+
+- `support::connections` provides recording repository/runtime/effects adapters, cross-port event ordering, secret failure injection, prepare failures, cancellation failures, and exact detached-runtime restoration.
+- `connection_lifecycle/service.rs` verifies prepare -> durable commit -> activation ordering, Keep/Replace/Clear credentials, disable/remove behavior, deletion barriers, rollback, startup failure isolation, and authorization without source parsing.
+- `connection_lifecycle/persistence.rs` uses real file-backed SQLite migrations to prove encrypted credentials at rest, transactional credential mutations, active-transfer fencing during connection deletion, durable secret deletion, and explicit database failures.
+- `connection_lifecycle/runtime.rs` exercises the real provider registry/runtime to prove active and streaming leases block reclamation, idle remote providers are reclaimed and lazily rehydrated, local storage is excluded, and loader failures propagate cleanly.
+- `connection_lifecycle/api.rs` uses `TestAppBuilder` for S3/SFTP lifecycle contracts, secret non-disclosure, the local connection test endpoint, and unauthenticated rejection.
+
+Legacy and replacement coverage passed together in CI #451 before any deletion. After equivalence, `connection_tests.rs` was retired and the four behavioral source-shape assertions in `h6_connection_boundary_tests.rs` were removed. H6 retains only intentional architecture-boundary guards for service ports, narrow HTTP state, bootstrap composition, concrete adapter ownership, and CLI composition. Mixed `plan36_architecture_tests.rs` remains because most of that file belongs to settings/auth/file/search/trash and later subsystem phases; it is not safe to delete wholesale merely because a few connection smoke checks are now duplicated.
+
+The top-level integration-test crate count remains **42** because one legacy connection crate is replaced by one grouped connection crate; the historically named subset remains **30** because H6 still intentionally exists as an architecture suite.
+
 ## Rewrite rules
 
 Every legacy test is handled with the following sequence:
@@ -133,11 +163,18 @@ The exact physical grouping can evolve during migration; behavior ownership matt
 
 ### Phase 4 — File/VFS operations
 
-Consolidate local VFS, mutation concurrency, upload, archive transformation, filesystem boundary, and provider contract tests using reusable filesystem/provider fixtures.
+- consolidate file/VFS/editor/archive/upload behavior behind one grouped target
+- add reusable filesystem/provider fixtures and deterministic failure injection
+- replace behavioral source-shape tests where executable contracts are stronger
+- validate old+new coverage together before retiring duplicate VFS/OpenDAL/archive/upload suites
 
 ### Phase 5 — Connection/provider lifecycle
 
-Cover connection persistence, provider generation, lease/reclamation, reconnect/error behavior, and credential boundaries with controlled test doubles rather than source-shape assertions.
+- consolidate service/API/persistence/runtime lifecycle behavior behind one grouped target
+- add controlled repository/runtime/effects doubles with cross-port ordering
+- test credential persistence and connection deletion against real SQLite migrations
+- test provider leases, idle reclamation, and lazy rehydration against the real runtime registry
+- replace behavioral H6 source-shape assertions while retaining explicit architecture guards
 
 ### Phase 6 — API/authz contracts
 

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod connections;
 pub mod db;
 pub mod eventually;
 pub mod filesystem;
@@ -6,6 +7,11 @@ pub mod sync;
 pub mod transfer;
 
 pub use app::{TestApp, TestAppBuilder};
+pub use connections::{
+    event_log as connection_event_log, EventLog as ConnectionEventLog,
+    RecordingConnectionEffects, RecordingConnectionRepository, RecordingConnectionRuntime,
+    SecretFailure, StaticConnectionSettings,
+};
 pub use db::TestDatabase;
 pub use eventually::{
     eventually, eventually_default, DEFAULT_EVENTUALLY_POLL_INTERVAL, DEFAULT_EVENTUALLY_TIMEOUT,
