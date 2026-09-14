@@ -158,6 +158,7 @@ pub fn create_router(state: AppState) -> Router {
             HeaderName::from_static("x-idempotency-key"),
             HeaderName::from_static("idempotency-key"),
             HeaderName::from_static("x-cache-idempotency"),
+            HeaderName::from_static("x-next-cursor"),
         ];
 
         if !router_state.allowed_origins.is_empty() {

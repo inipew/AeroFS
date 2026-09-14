@@ -1,10 +1,15 @@
-use crate::api::extractors::{Json, Path};
+use crate::api::extractors::{Json, Path, Query};
 use crate::auth::AuthenticatedUser;
 use crate::domain::Actor;
 use crate::errors::{AppError, ErrorResponse};
 use crate::state::SyncState;
 use crate::sync::models::{SyncJob, SyncOperation, SyncStrategy};
-use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use crate::sync::SyncPageCursor;
+use axum::{
+    extract::State,
+    http::{HeaderMap, HeaderValue, StatusCode},
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -22,6 +27,12 @@ pub struct CreateSyncRequest {
 pub struct ResolveConflictRequest {
     pub op_id: String,
     pub resolution: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SyncHistoryQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -42,6 +53,17 @@ fn actor_from_user(user: &AuthenticatedUser) -> Actor {
         username: user.username().to_string(),
         is_admin: user.is_admin(),
     }
+}
+
+fn pagination_headers(next_cursor: Option<SyncPageCursor>) -> Result<HeaderMap, AppError> {
+    let mut headers = HeaderMap::new();
+    if let Some(cursor) = next_cursor {
+        let encoded = cursor.encode();
+        let value = HeaderValue::from_str(&encoded)
+            .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?;
+        headers.insert("x-next-cursor", value);
+    }
+    Ok(headers)
 }
 
 /// Create a new sync job
@@ -107,8 +129,17 @@ pub async fn create_sync_job(
 pub async fn list_sync_jobs(
     State(state): State<SyncState>,
     _user: AuthenticatedUser,
+    Query(query): Query<SyncHistoryQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(state.service.list_jobs().await?))
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(SyncPageCursor::decode_jobs)
+        .transpose()
+        .map_err(AppError::BadRequest)?;
+    let page = state.service.list_jobs(cursor.as_ref(), query.limit).await?;
+    let headers = pagination_headers(page.next_cursor)?;
+    Ok((headers, Json(page.items)))
 }
 
 /// List operations for a sync job
@@ -134,8 +165,20 @@ pub async fn list_operations(
     State(state): State<SyncState>,
     _user: AuthenticatedUser,
     Path(id): Path<String>,
+    Query(query): Query<SyncHistoryQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(state.service.list_operations(&id).await?))
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(SyncPageCursor::decode_operations)
+        .transpose()
+        .map_err(AppError::BadRequest)?;
+    let page = state
+        .service
+        .list_operations(&id, cursor.as_ref(), query.limit)
+        .await?;
+    let headers = pagination_headers(page.next_cursor)?;
+    Ok((headers, Json(page.items)))
 }
 
 /// Resolve a conflict in a sync job

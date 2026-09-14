@@ -4,7 +4,9 @@ use crate::ports::{
     authorization::{Authorization, FileAction},
     sync::SyncControl,
 };
-use crate::sync::{SyncJob, SyncOperationRow, SyncStrategy};
+use crate::sync::{
+    SyncHistoryPage, SyncJob, SyncOperationRow, SyncPageCursor, SyncStrategy,
+};
 use std::sync::Arc;
 
 /// Narrow capability exposed to the HTTP sync adapter.
@@ -57,12 +59,21 @@ impl SyncService {
             .await
     }
 
-    pub async fn list_jobs(&self) -> Result<Vec<SyncJob>, AppError> {
-        self.control.list_jobs().await
+    pub async fn list_jobs(
+        &self,
+        cursor: Option<&SyncPageCursor>,
+        limit: Option<usize>,
+    ) -> Result<SyncHistoryPage<SyncJob>, AppError> {
+        self.control.list_jobs(cursor, limit).await
     }
 
-    pub async fn list_operations(&self, job_id: &str) -> Result<Vec<SyncOperationRow>, AppError> {
-        self.control.list_operations(job_id).await
+    pub async fn list_operations(
+        &self,
+        job_id: &str,
+        cursor: Option<&SyncPageCursor>,
+        limit: Option<usize>,
+    ) -> Result<SyncHistoryPage<SyncOperationRow>, AppError> {
+        self.control.list_operations(job_id, cursor, limit).await
     }
 
     pub async fn resolve_conflict(
