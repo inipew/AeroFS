@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const SYNC_INSERT_CHUNK_ROWS: usize = 80;
+const SYNC_RECOVERY_BATCH_SIZE: usize = 256;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncOperationRow {
@@ -488,6 +489,53 @@ impl SyncManager {
         Ok(())
     }
 
+    async fn load_recovery_operation_page(
+        db: &DbPool,
+        job_id: &str,
+        after_id: Option<&str>,
+    ) -> anyhow::Result<Vec<SyncOperationRow>> {
+        let rows = if let Some(after_id) = after_id {
+            sqlx::query(
+                "SELECT id, job_id, op_kind, relative_path, old_path, status, transfer_job_id, error_message, created_at, updated_at \
+                 FROM sync_operations \
+                 WHERE job_id = ? AND status != 'completed' AND id > ? \
+                 ORDER BY id ASC LIMIT ?",
+            )
+            .bind(job_id)
+            .bind(after_id)
+            .bind(SYNC_RECOVERY_BATCH_SIZE as i64)
+            .fetch_all(db)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, job_id, op_kind, relative_path, old_path, status, transfer_job_id, error_message, created_at, updated_at \
+                 FROM sync_operations \
+                 WHERE job_id = ? AND status != 'completed' \
+                 ORDER BY id ASC LIMIT ?",
+            )
+            .bind(job_id)
+            .bind(SYNC_RECOVERY_BATCH_SIZE as i64)
+            .fetch_all(db)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|r| SyncOperationRow {
+                id: r.get("id"),
+                job_id: r.get("job_id"),
+                op_kind: r.get("op_kind"),
+                relative_path: r.get("relative_path"),
+                old_path: r.get("old_path"),
+                status: r.get("status"),
+                transfer_job_id: r.get("transfer_job_id"),
+                error_message: r.get("error_message"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect())
+    }
+
     pub async fn recover_interrupted_jobs(&self) -> anyhow::Result<()> {
         let rows = sqlx::query("SELECT id, status FROM sync_jobs WHERE status IN ('scanning', 'planning', 'reconciling', 'executing')")
             .fetch_all(&self.db).await?;
@@ -507,105 +555,182 @@ impl SyncManager {
                     None => continue,
                 };
                 let _sync_permit = self.acquire_sync_budget(&job).await?;
+                let dst_fs = match self.get_provider(&job.destination_connection_id).await {
+                    Ok(fs) => fs,
+                    Err(_) => continue,
+                };
 
-                let ops = self.list_operations(&id).await?;
-                let mut all_completed = true;
-
-                for op in ops {
-                    if op.status == "completed" {
-                        continue;
+                // Recovery is keyset-paginated so a large sync never materializes its complete
+                // operation history. Operation ids are immutable, making the cursor stable while
+                // status updates and transfer completions race with recovery.
+                let mut cursor: Option<String> = None;
+                loop {
+                    let page =
+                        Self::load_recovery_operation_page(&self.db, &id, cursor.as_deref()).await?;
+                    if page.is_empty() {
+                        break;
                     }
-                    if op.status == "conflict" {
-                        all_completed = false;
-                        continue;
-                    }
 
-                    all_completed = false;
-                    if let Some(ref tid) = op.transfer_job_id {
-                        let transfer_jobs = self.transfer_manager.list_jobs(None, true, true).await;
-                        if let Some(tj) = transfer_jobs.iter().find(|t| &t.id == tid) {
-                            match tj.status {
-                                crate::transfer::engine::TransferStatus::Completed => {
-                                    self.notify_transfer_completed(tid, true).await?;
-                                }
-                                crate::transfer::engine::TransferStatus::Failed
-                                | crate::transfer::engine::TransferStatus::Interrupted => {
-                                    let _ = self.transfer_manager.retry_job(tid, None, true).await;
-                                }
-                                _ => {}
-                            }
+                    let page_len = page.len();
+                    cursor = page.last().map(|op| op.id.clone());
+                    let mut immediate = Vec::with_capacity(page_len);
+
+                    for op in page {
+                        if op.status == "conflict" {
                             continue;
                         }
-                    }
 
-                    let dst_fs = match self.get_provider(&job.destination_connection_id).await {
-                        Ok(fs) => fs,
-                        Err(_) => continue,
-                    };
-
-                    match op.op_kind.as_str() {
-                        "create" | "update" => {
-                            let tid_res = self
-                                .transfer_manager
-                                .submit_job(
-                                    Some(job.user_id.clone()),
-                                    op.relative_path.clone(),
-                                    crate::transfer::engine::TransferType::Copy,
-                                    job.source_connection_id.clone(),
-                                    format!("{}/{}", job.source_path, op.relative_path),
-                                    job.destination_connection_id.clone(),
-                                    format!("{}/{}", job.destination_path, op.relative_path),
-                                )
-                                .await;
-                            if let Ok(tid) = tid_res {
-                                self.update_operation_status(&op.id, "running", Some(&tid), None)
-                                    .await?;
-                            }
-                        }
-                        "delete" => {
-                            if let Ok(target) = VfsPath::new(
-                                &job.destination_connection_id,
-                                format!("{}/{}", job.destination_path, op.relative_path),
-                            ) {
-                                if dst_fs.delete(&target).await.is_ok() {
-                                    self.update_operation_status(&op.id, "completed", None, None)
-                                        .await?;
-                                    self.increment_synced(&id).await?;
+                        if let Some(ref tid) = op.transfer_job_id {
+                            // `get_job` overlays active execution state and falls back to one
+                            // SQLite row. Avoid loading/sorting the complete transfer history for
+                            // every recovered sync operation.
+                            if let Some(tj) = self.transfer_manager.get_job(tid).await {
+                                match tj.status {
+                                    crate::transfer::engine::TransferStatus::Completed => {
+                                        self.notify_transfer_completed(tid, true).await?;
+                                    }
+                                    crate::transfer::engine::TransferStatus::Failed
+                                    | crate::transfer::engine::TransferStatus::Interrupted => {
+                                        let _ = self.transfer_manager.retry_job(tid, None, true).await;
+                                    }
+                                    _ => {}
                                 }
+                                continue;
                             }
                         }
-                        "rename" => {
-                            if let Some(old) = op.old_path {
-                                if let (Ok(from), Ok(to)) = (
-                                    VfsPath::new(
-                                        &job.destination_connection_id,
-                                        format!("{}/{}", job.destination_path, old),
-                                    ),
-                                    VfsPath::new(
-                                        &job.destination_connection_id,
+
+                        match op.op_kind.as_str() {
+                            "create" | "update" => {
+                                let tid_res = self
+                                    .transfer_manager
+                                    .submit_job(
+                                        Some(job.user_id.clone()),
+                                        op.relative_path.clone(),
+                                        crate::transfer::engine::TransferType::Copy,
+                                        job.source_connection_id.clone(),
+                                        format!("{}/{}", job.source_path, op.relative_path),
+                                        job.destination_connection_id.clone(),
                                         format!("{}/{}", job.destination_path, op.relative_path),
-                                    ),
-                                ) {
-                                    if dst_fs.rename(&from, &to).await.is_ok() {
+                                    )
+                                    .await;
+                                match tid_res {
+                                    Ok(tid) => {
                                         self.update_operation_status(
                                             &op.id,
-                                            "completed",
-                                            None,
+                                            "running",
+                                            Some(&tid),
                                             None,
                                         )
                                         .await?;
-                                        self.increment_synced(&id).await?;
+                                    }
+                                    Err(error) => immediate.push(ImmediateOutcome {
+                                        op_id: op.id,
+                                        status: "failed",
+                                        error_message: Some(error.to_string()),
+                                        synced_delta: 0,
+                                        conflict_delta: 0,
+                                    }),
+                                }
+                            }
+                            "delete" => {
+                                match VfsPath::new(
+                                    &job.destination_connection_id,
+                                    format!("{}/{}", job.destination_path, op.relative_path),
+                                ) {
+                                    Ok(target) => match dst_fs.delete(&target).await {
+                                        Ok(_) => immediate.push(ImmediateOutcome {
+                                            op_id: op.id,
+                                            status: "completed",
+                                            error_message: None,
+                                            synced_delta: 1,
+                                            conflict_delta: 0,
+                                        }),
+                                        Err(error) => immediate.push(ImmediateOutcome {
+                                            op_id: op.id,
+                                            status: "failed",
+                                            error_message: Some(error.to_string()),
+                                            synced_delta: 0,
+                                            conflict_delta: 0,
+                                        }),
+                                    },
+                                    Err(error) => immediate.push(ImmediateOutcome {
+                                        op_id: op.id,
+                                        status: "failed",
+                                        error_message: Some(error.to_string()),
+                                        synced_delta: 0,
+                                        conflict_delta: 0,
+                                    }),
+                                }
+                            }
+                            "rename" => {
+                                if let Some(old) = op.old_path {
+                                    match (
+                                        VfsPath::new(
+                                            &job.destination_connection_id,
+                                            format!("{}/{}", job.destination_path, old),
+                                        ),
+                                        VfsPath::new(
+                                            &job.destination_connection_id,
+                                            format!("{}/{}", job.destination_path, op.relative_path),
+                                        ),
+                                    ) {
+                                        (Ok(from), Ok(to)) => match dst_fs.rename(&from, &to).await {
+                                            Ok(_) => immediate.push(ImmediateOutcome {
+                                                op_id: op.id,
+                                                status: "completed",
+                                                error_message: None,
+                                                synced_delta: 1,
+                                                conflict_delta: 0,
+                                            }),
+                                            Err(error) => immediate.push(ImmediateOutcome {
+                                                op_id: op.id,
+                                                status: "failed",
+                                                error_message: Some(error.to_string()),
+                                                synced_delta: 0,
+                                                conflict_delta: 0,
+                                            }),
+                                        },
+                                        (Err(error), _) | (_, Err(error)) => {
+                                            immediate.push(ImmediateOutcome {
+                                                op_id: op.id,
+                                                status: "failed",
+                                                error_message: Some(error.to_string()),
+                                                synced_delta: 0,
+                                                conflict_delta: 0,
+                                            });
+                                        }
                                     }
                                 }
                             }
+                            // A restart can happen after the pending operation batch commits but
+                            // before its immediate outcome transaction. Reconcile these two kinds
+                            // as well instead of leaving the sync permanently Executing.
+                            "noop" => immediate.push(ImmediateOutcome {
+                                op_id: op.id,
+                                status: "completed",
+                                error_message: None,
+                                synced_delta: 1,
+                                conflict_delta: 0,
+                            }),
+                            "conflict" => immediate.push(ImmediateOutcome {
+                                op_id: op.id,
+                                status: "conflict",
+                                error_message: None,
+                                synced_delta: 0,
+                                conflict_delta: 1,
+                            }),
+                            _ => {}
                         }
-                        _ => {}
+                    }
+
+                    self.apply_recovery_outcomes(&id, immediate).await?;
+                    if page_len < SYNC_RECOVERY_BATCH_SIZE {
+                        break;
                     }
                 }
 
-                if all_completed {
-                    self.check_job_completion(&id).await?;
-                }
+                self.refresh_job(&id).await?;
+                self.check_job_completion(&id).await?;
             } else {
                 self.start_sync_background(id).await;
             }
@@ -870,6 +995,59 @@ impl SyncManager {
         Ok(())
     }
 
+    async fn apply_recovery_outcomes(
+        &self,
+        job_id: &str,
+        outcomes: Vec<ImmediateOutcome>,
+    ) -> anyhow::Result<()> {
+        if outcomes.is_empty() {
+            return Ok(());
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.db.begin().await?;
+        let mut synced_delta = 0u64;
+        let mut conflict_delta = 0u64;
+
+        for outcome in outcomes {
+            let updated = sqlx::query(
+                "UPDATE sync_operations \
+                 SET status = ?, error_message = ?, updated_at = ? \
+                 WHERE id = ? AND status NOT IN ('completed', 'conflict')",
+            )
+            .bind(outcome.status)
+            .bind(outcome.error_message.as_deref())
+            .bind(&now)
+            .bind(&outcome.op_id)
+            .execute(&mut *tx)
+            .await?;
+
+            if updated.rows_affected() == 1 {
+                synced_delta += outcome.synced_delta;
+                conflict_delta += outcome.conflict_delta;
+            }
+        }
+
+        if synced_delta > 0 || conflict_delta > 0 {
+            sqlx::query(
+                "UPDATE sync_jobs SET synced_files = synced_files + ?, conflict_files = conflict_files + ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(synced_delta as i64)
+            .bind(conflict_delta as i64)
+            .bind(&now)
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        if synced_delta > 0 || conflict_delta > 0 {
+            self.refresh_job(job_id).await?;
+        }
+        Ok(())
+    }
+
     async fn update_operation_status_if_pending(
         &self,
         op_id: &str,
@@ -941,5 +1119,59 @@ mod tests {
             dest_manifest: None,
         };
         assert_eq!(SyncManager::operation_kind(&op), ("rename", Some("old.txt")));
+    }
+
+    #[tokio::test]
+    async fn recovery_operations_are_keyset_paginated_and_bounded() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE sync_operations (\
+                id TEXT PRIMARY KEY, job_id TEXT NOT NULL, op_kind TEXT NOT NULL, \
+                relative_path TEXT NOT NULL, old_path TEXT, status TEXT NOT NULL, \
+                transfer_job_id TEXT, error_message TEXT, created_at TEXT NOT NULL, \
+                updated_at TEXT NOT NULL\
+            )",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        for index in 0..300usize {
+            let id = format!("op-{index:04}");
+            let status = if index < 10 { "completed" } else { "pending" };
+            sqlx::query(
+                "INSERT INTO sync_operations \
+                 (id, job_id, op_kind, relative_path, old_path, status, transfer_job_id, error_message, created_at, updated_at) \
+                 VALUES (?, 'job-1', 'noop', ?, NULL, ?, NULL, NULL, 'now', 'now')",
+            )
+            .bind(&id)
+            .bind(format!("file-{index:04}"))
+            .bind(status)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let first = SyncManager::load_recovery_operation_page(&db, "job-1", None)
+            .await
+            .unwrap();
+        assert_eq!(first.len(), SYNC_RECOVERY_BATCH_SIZE);
+        assert_eq!(first.first().unwrap().id, "op-0010");
+        assert_eq!(first.last().unwrap().id, "op-0265");
+
+        let second = SyncManager::load_recovery_operation_page(
+            &db,
+            "job-1",
+            Some(&first.last().unwrap().id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.len(), 34);
+        assert_eq!(second.first().unwrap().id, "op-0266");
+        assert_eq!(second.last().unwrap().id, "op-0299");
     }
 }
