@@ -104,7 +104,7 @@ impl DomainEvent {
             action: "rename".into(),
             old_path: Some(from_str),
             parent_path: parent,
-            old_parent_path: None,
+            old_parent_path: old_parent,
         }
     }
 
