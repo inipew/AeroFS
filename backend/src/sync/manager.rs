@@ -18,6 +18,8 @@ use uuid::Uuid;
 const SYNC_INSERT_CHUNK_ROWS: usize = 80;
 const SYNC_RECOVERY_BATCH_SIZE: usize = 256;
 
+pub mod history;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncOperationRow {
     pub id: String,
