@@ -6,5 +6,7 @@ mod authentication;
 mod authorization;
 #[path = "api_contract/http.rs"]
 mod http;
+#[path = "api_contract/middleware.rs"]
+mod middleware;
 #[path = "api_contract/public_access.rs"]
 mod public_access;
