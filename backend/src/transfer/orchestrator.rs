@@ -1,4 +1,5 @@
 use crate::transfer::{RetryTransferError, TransferJob, TransferManager, TransferType};
+use tokio_util::sync::CancellationToken;
 
 /// Canonical command admitted by the transfer subsystem. HTTP, Sync and future
 /// schedulers should submit this command rather than call TransferManager directly.
@@ -48,15 +49,29 @@ pub struct TransferAdmission {
 #[derive(Clone)]
 pub struct TransferEngine {
     manager: TransferManager,
+    shutdown_token: CancellationToken,
 }
 
 impl TransferEngine {
     pub fn new(manager: TransferManager) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            shutdown_token: CancellationToken::new(),
+        }
+    }
+
+    pub fn with_shutdown(manager: TransferManager, shutdown_token: CancellationToken) -> Self {
+        Self {
+            manager,
+            shutdown_token,
+        }
     }
 
     pub async fn submit(&self, command: TransferCommand) -> Result<TransferAdmission, String> {
         command.validate()?;
+        if self.shutdown_token.is_cancelled() {
+            return Err("Server is shutting down; no new transfers accepted".to_string());
+        }
         let job_id = self
             .manager
             .submit_job(
