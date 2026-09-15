@@ -8,6 +8,8 @@ mod archive_http;
 mod archive_roundtrip;
 #[path = "file_operations/cache.rs"]
 mod cache;
+#[path = "file_operations/cache_singleflight.rs"]
+mod cache_singleflight;
 #[path = "file_operations/contracts.rs"]
 mod contracts;
 #[path = "file_operations/delete.rs"]
@@ -24,6 +26,10 @@ mod presign;
 mod provider_auth;
 #[path = "file_operations/staging.rs"]
 mod staging;
+#[path = "file_operations/staging_cleanup.rs"]
+mod staging_cleanup;
+#[path = "file_operations/upload_lock.rs"]
+mod upload_lock;
 #[path = "file_operations/uploads.rs"]
 mod uploads;
 #[path = "file_operations/vfs.rs"]
