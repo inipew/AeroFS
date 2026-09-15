@@ -46,6 +46,22 @@ async fn archive_http_round_trip_virtual_read_selective_extract_and_audit() {
         b"Root Level File"
     );
 
+    // Preserve the legacy cross-feature contract: freshly extracted content must be
+    // immediately visible to the normal search API, not just present on disk.
+    let search = app
+        .json_request(
+            Method::GET,
+            "/api/v1/connections/local/search?path=/extracted&query=report",
+            TestAuth::Cookie(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(search.status(), StatusCode::OK);
+    let search = response_json(search).await;
+    assert!(search["results"].as_array().unwrap().iter().any(|entry| {
+        entry["path"] == "/extracted/documents/report.txt"
+    }));
+
     let entries = app
         .json_request(
             Method::GET,
