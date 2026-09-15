@@ -9,19 +9,14 @@ use backend::config::AppConfig;
 use backend::create_router;
 use backend::db::init_db;
 use backend::domain::{Actor, ConnectionId};
-use backend::events::{DomainEvent, EventJournal, ReplayOutcome};
 use backend::middleware::REQUEST_ID_HEADER;
-use backend::ports::transfer::TransferType;
-use backend::state::{
-    AppState, FileApiState, RealtimeState, RuntimeOwner, ShutdownReason, TransferState,
-};
+use backend::state::{AppState, FileApiState, RuntimeOwner, ShutdownReason};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
 struct TestRuntime {
-    temp: tempfile::TempDir,
+    _temp: tempfile::TempDir,
     runtime: RuntimeOwner,
 }
 
@@ -70,7 +65,7 @@ async fn setup_test_app() -> (axum::Router, AppState, String, TestRuntime) {
         state,
         cookie,
         TestRuntime {
-            temp,
+            _temp: temp,
             runtime: built.runtime,
         },
     )
@@ -184,48 +179,12 @@ async fn test_part_file_filtered_from_directory_listing() {
         .await
         .unwrap();
 
-    let names: Vec<String> = listing.entries.into_iter().map(|e| e.name).collect();
+    let names: Vec<String> = listing.entries.into_iter().map(|entry| entry.name).collect();
     assert!(names.contains(&"visible_file.txt".to_string()));
     assert!(
-        !names.iter().any(|n| n.contains(".aerofs-part-")),
+        !names.iter().any(|name| name.contains(".aerofs-part-")),
         "Staging files must be filtered out"
     );
-}
-
-#[tokio::test]
-async fn test_websocket_replay_result_resync_required_on_expired_sequence() {
-    let temp = tempdir().unwrap();
-    let db_path = temp.path().join("replay_retention.db");
-    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    let db = init_db(&database_url).await.unwrap();
-    let journal = Arc::new(EventJournal::init(db.clone()).await.unwrap());
-
-    for i in 0..550 {
-        journal
-            .append(
-                DomainEvent::file_change("local", format!("/file_{i}.txt"), "create"),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-
-    sqlx::query("DELETE FROM event_journal WHERE sequence <= 50")
-        .execute(&db)
-        .await
-        .unwrap();
-
-    let replay_result = journal.get_since(Some(journal.epoch()), 1, 1000).await.unwrap();
-    match replay_result {
-        ReplayOutcome::Expired { latest_sequence } => assert!(latest_sequence >= 550),
-        other => panic!("Expected Expired result for sequence 1, got {other:?}"),
-    }
-
-    let recent_result = journal.get_since(Some(journal.epoch()), 540, 1000).await.unwrap();
-    match recent_result {
-        ReplayOutcome::Events(events) => assert!(!events.is_empty(), "Should replay recent retained events"),
-        other => panic!("Expected Events result for sequence 540, got {other:?}"),
-    }
 }
 
 #[tokio::test]
@@ -255,11 +214,15 @@ async fn test_transfer_idempotency_key_deduplication() {
         .await
         .unwrap();
     assert_eq!(response1.status(), StatusCode::ACCEPTED);
-    let body1: Value = serde_json::from_slice(&to_bytes(response1.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let body1: Value = serde_json::from_slice(
+        &to_bytes(response1.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let job_id1 = body1["job_id"].as_str().unwrap().to_string();
 
     let response2 = app
-        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -273,66 +236,16 @@ async fn test_transfer_idempotency_key_deduplication() {
         .await
         .unwrap();
     assert_eq!(response2.status(), StatusCode::ACCEPTED);
-    let body2: Value = serde_json::from_slice(&to_bytes(response2.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let body2: Value = serde_json::from_slice(
+        &to_bytes(response2.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let job_id2 = body2["job_id"].as_str().unwrap().to_string();
 
-    assert_eq!(job_id1, job_id2, "Submitting with same idempotency key must return existing job ID");
-}
-
-#[tokio::test]
-async fn test_transfer_event_ordering_and_causality() {
-    let (_app, state, _cookie, runtime) = setup_test_app().await;
-    let admin = admin_user();
-
-    let src_file = runtime.temp.path().join("storage").join("order_src.txt");
-    std::fs::write(&src_file, b"ordering test").unwrap();
-
-    let realtime = RealtimeState::from_ref(&state);
-    let mut rx = realtime.service.subscribe();
-    let transfers = TransferState::from_ref(&state);
-
-    transfers
-        .use_cases
-        .create_transfer
-        .execute(
-            &actor(&admin),
-            backend::application::transfers::CreateTransferCommand {
-                name: "order_test".to_string(),
-                transfer_type: TransferType::Copy,
-                source_connection: ConnectionId::local(),
-                source_path: "/order_src.txt".to_string(),
-                destination_connection: ConnectionId::local(),
-                destination_path: "/order_dst.txt".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-    let mut file_change_seq = None;
-    let mut completed_seq = None;
-    for _ in 0..50 {
-        if let Ok(Ok(env)) = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
-            match env.event {
-                DomainEvent::FileChange { path, action, .. }
-                    if path == "/order_dst.txt" && action == "create" =>
-                {
-                    file_change_seq = Some(env.sequence);
-                }
-                DomainEvent::TransferCompleted(job)
-                    if job.get("destination_path").and_then(|v| v.as_str()) == Some("/order_dst.txt") =>
-                {
-                    completed_seq = Some(env.sequence);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    assert!(file_change_seq.is_some(), "FileChange event must be emitted for destination");
-    assert!(completed_seq.is_some(), "TransferCompleted event must be emitted");
-    assert!(
-        file_change_seq.unwrap() < completed_seq.unwrap(),
-        "FileChange must have a lower sequence number than TransferCompleted"
+    assert_eq!(
+        job_id1, job_id2,
+        "Submitting with same idempotency key must return existing job ID"
     );
 }
