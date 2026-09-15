@@ -1,4 +1,7 @@
-use crate::support::{architecture_source as source, compact_source as compact, source_exists};
+use crate::support::{
+    architecture_async_function as async_function, architecture_source as source,
+    compact_source as compact, source_exists,
+};
 
 #[test]
 fn file_http_uses_narrow_capability_without_raw_storage_or_compatibility_dependencies() {
@@ -19,9 +22,6 @@ fn file_http_uses_narrow_capability_without_raw_storage_or_compatibility_depende
         "SafePath::resolve",
         "FileApplicationService::from_state",
         "FileApplicationService::new",
-        "provider.copy",
-        "metadata_cache",
-        "event_journal",
     ] {
         assert!(!compact.contains(forbidden), "file HTTP leaked {forbidden}");
     }
@@ -34,6 +34,20 @@ fn file_http_uses_narrow_capability_without_raw_storage_or_compatibility_depende
         ".copy_entry",
     ] {
         assert!(compact.contains(expected), "file HTTP missing boundary call {expected}");
+    }
+}
+
+#[test]
+fn file_copy_handler_delegates_orchestration_without_raw_copy_effects() {
+    let src = source("src/api/files.rs");
+    let handler = async_function(&src, "copy_entry");
+
+    assert!(handler.contains(".copy_entry"));
+    for forbidden in ["provider.copy", "record_audit_log", "metadata_cache", "event_journal"] {
+        assert!(
+            !handler.contains(forbidden),
+            "copy handler leaked orchestration dependency {forbidden}"
+        );
     }
 }
 
