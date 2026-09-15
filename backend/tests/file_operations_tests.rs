@@ -8,6 +8,8 @@ mod archive_http;
 mod contracts;
 #[path = "file_operations/editor.rs"]
 mod editor;
+#[path = "file_operations/editor_permissions.rs"]
+mod editor_permissions;
 #[path = "file_operations/staging.rs"]
 mod staging;
 #[path = "file_operations/uploads.rs"]
