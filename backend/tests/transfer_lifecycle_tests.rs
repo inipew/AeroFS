@@ -9,8 +9,8 @@ use backend::{
     state::{ConnectionState, FileApiState, RealtimeState, TransferState},
 };
 use support::{
-    create_local_transfer, create_transfer, list_transfers, transfer_actor, transfer_admin_actor,
-    wait_completed, wait_failed, wait_for_status, TestAppBuilder,
+    create_local_transfer, create_transfer, eventually_default, list_transfers, transfer_actor,
+    transfer_admin_actor, wait_completed, wait_failed, wait_for_status, TestAppBuilder,
 };
 use std::time::Duration;
 
@@ -329,7 +329,7 @@ async fn cancellation_emits_terminal_event_and_removes_staging_file() {
     let transfers = TransferState::from_ref(&app.state);
     transfers.use_cases.cancel(&admin, &job_id).await.unwrap();
 
-    tokio::time::timeout(Duration::from_secs(8), async {
+    let cancelled_event = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             let envelope = events
                 .recv()
@@ -337,7 +337,7 @@ async fn cancellation_emits_terminal_event_and_removes_staging_file() {
                 .expect("realtime event stream should stay open");
             if let DomainEvent::TransferCancelled(value) = envelope.event {
                 if value.get("id").and_then(|id| id.as_str()) == Some(job_id.as_str()) {
-                    break;
+                    break value;
                 }
             }
         }
@@ -345,8 +345,25 @@ async fn cancellation_emits_terminal_event_and_removes_staging_file() {
     .await
     .expect("cancelled transfer event should arrive before deadline");
 
-    let cancelled = wait_for_status(&app, &admin, &job_id, &[TransferStatus::Cancelled]).await;
-    assert_eq!(cancelled.status, TransferStatus::Cancelled);
+    assert_eq!(
+        cancelled_event.get("status").and_then(|value| value.as_str()),
+        Some("cancelled"),
+        "terminal cancellation event must carry the terminal transfer status"
+    );
+
+    let durable_status = eventually_default("cancelled transfer status to persist", || async {
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM transfer_jobs WHERE id = ?",
+        )
+        .bind(&job_id)
+        .fetch_optional(&app.db)
+        .await
+        .ok()
+        .flatten()?;
+        (status == "cancelled").then_some(status)
+    })
+    .await;
+    assert_eq!(durable_status, "cancelled");
 
     let staging = app.storage_path(format!(
         ".cancel-destination.bin.aerofs-part-{job_id}"
