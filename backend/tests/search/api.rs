@@ -36,7 +36,9 @@ async fn search_requires_authentication_and_returns_recursive_matches() {
     let body = response_json(response).await;
     let results = body["results"].as_array().unwrap();
     assert_eq!(results.len(), 2);
-    assert!(results.iter().any(|entry| entry["path"] == "/documents/report.txt"));
+    assert!(results
+        .iter()
+        .any(|entry| entry["path"] == "/documents/report.txt"));
     assert!(results
         .iter()
         .any(|entry| entry["path"] == "/documents/deep/report-42.pdf"));
@@ -67,7 +69,10 @@ async fn search_honors_path_depth_regex_and_limit_parameters() {
     assert_eq!(shallow.status(), StatusCode::OK);
     let shallow = response_json(shallow).await;
     assert_eq!(shallow["results"].as_array().unwrap().len(), 1);
-    assert_eq!(shallow["results"][0]["path"], "/documents/report-direct.txt");
+    assert_eq!(
+        shallow["results"][0]["path"],
+        "/documents/report-direct.txt"
+    );
 
     let regex = app
         .json_request(
@@ -93,4 +98,28 @@ async fn search_honors_path_depth_regex_and_limit_parameters() {
     let limited = response_json(limited).await;
     assert_eq!(limited["results"].as_array().unwrap().len(), 1);
     assert_eq!(limited["truncated"], true);
+}
+
+#[tokio::test]
+async fn search_rejects_malformed_connection_id_with_structured_bad_request() {
+    let app = TestAppBuilder::new().running().build().await;
+    let admin = app.login_session("admin", "admin12345").await;
+    let invalid_connection = "x".repeat(129);
+    let uri = format!(
+        "/api/v1/connections/{invalid_connection}/search?query=report"
+    );
+
+    let response = app
+        .json_request(Method::GET, &uri, TestAuth::Cookie(&admin), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], "BAD_REQUEST");
+    assert_eq!(body["error"]["category"], "validation");
+    assert_eq!(body["error"]["retryable"], false);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Identifier too long"));
 }
