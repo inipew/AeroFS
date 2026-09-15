@@ -4,3 +4,5 @@ mod support;
 mod errors_retry;
 #[path = "domain_contracts/operations.rs"]
 mod operations;
+#[path = "domain_contracts/provider.rs"]
+mod provider;
