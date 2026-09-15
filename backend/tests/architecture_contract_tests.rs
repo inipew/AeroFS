@@ -8,6 +8,8 @@ mod connections;
 mod file_transfer;
 #[path = "architecture_contracts/health.rs"]
 mod health;
+#[path = "architecture_contracts/mutation_safety.rs"]
+mod mutation_safety;
 #[path = "architecture_contracts/realtime.rs"]
 mod realtime;
 #[path = "architecture_contracts/sync.rs"]
