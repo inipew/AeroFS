@@ -4,6 +4,8 @@ mod support;
 mod api;
 #[path = "connection_lifecycle/persistence.rs"]
 mod persistence;
+#[path = "connection_lifecycle/provider_components.rs"]
+mod provider_components;
 #[path = "connection_lifecycle/runtime.rs"]
 mod runtime;
 #[path = "connection_lifecycle/runtime_concurrency.rs"]
