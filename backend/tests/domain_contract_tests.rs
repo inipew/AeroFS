@@ -6,3 +6,7 @@ mod errors_retry;
 mod operations;
 #[path = "domain_contracts/provider.rs"]
 mod provider;
+#[path = "domain_contracts/retry_operations.rs"]
+mod retry_operations;
+#[path = "domain_contracts/write_strategy.rs"]
+mod write_strategy;
