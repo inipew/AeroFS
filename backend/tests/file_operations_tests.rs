@@ -4,6 +4,10 @@ mod support;
 mod archive;
 #[path = "file_operations/archive_http.rs"]
 mod archive_http;
+#[path = "file_operations/archive_roundtrip.rs"]
+mod archive_roundtrip;
+#[path = "file_operations/cache.rs"]
+mod cache;
 #[path = "file_operations/contracts.rs"]
 mod contracts;
 #[path = "file_operations/delete.rs"]
