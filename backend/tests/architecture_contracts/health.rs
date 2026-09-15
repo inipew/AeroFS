@@ -1,21 +1,12 @@
-use std::fs;
-use std::path::PathBuf;
-
-fn source(path: &str) -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(root.join(path)).expect("source file should be readable")
-}
+use crate::support::architecture_source as source;
 
 #[test]
-fn app_state_exposes_health_and_runtime_substate_foundation() {
+fn health_http_uses_only_health_capability() {
     let state = source("src/state.rs");
     assert!(state.contains("pub struct HealthState"));
     assert!(state.contains("impl_from_ref!(HealthState, health)"));
     assert!(state.contains("pub struct RuntimeView"));
-}
 
-#[test]
-fn health_http_uses_only_health_capability() {
     let api = source("src/api/health.rs");
     assert!(api.contains("State<HealthState>"));
     for forbidden in [
@@ -26,15 +17,12 @@ fn health_http_uses_only_health_capability() {
         "state.runtime",
         "sqlx::",
     ] {
-        assert!(
-            !api.contains(forbidden),
-            "health HTTP adapter leaked dependency: {forbidden}"
-        );
+        assert!(!api.contains(forbidden), "health HTTP adapter leaked {forbidden}");
     }
 }
 
 #[test]
-fn health_service_uses_readiness_port_not_concrete_runtime_dependencies() {
+fn health_service_depends_on_readiness_port_and_infrastructure_owns_runtime_details() {
     let service = source("src/services/health_service.rs");
     assert!(service.contains("Arc<dyn ReadinessProbe>"));
     assert!(service.contains("pub async fn readiness(&self)"));
@@ -46,17 +34,11 @@ fn health_service_uses_readiness_port_not_concrete_runtime_dependencies() {
         "TaskSupervisor",
         "sqlx::",
     ] {
-        assert!(
-            !service.contains(forbidden),
-            "health service leaked concrete dependency: {forbidden}"
-        );
+        assert!(!service.contains(forbidden), "health service leaked {forbidden}");
     }
 
     let adapter = source("src/infrastructure/health.rs");
     for expected in ["DbPool", "ProviderRegistry", "RuntimeView", "TaskSupervisor"] {
-        assert!(
-            adapter.contains(expected),
-            "health infrastructure adapter missing concrete dependency: {expected}"
-        );
+        assert!(adapter.contains(expected), "health adapter missing {expected}");
     }
 }

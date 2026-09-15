@@ -1,12 +1,4 @@
-use std::fs;
-
-fn source(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
-}
-
-fn compact(src: &str) -> String {
-    src.chars().filter(|ch| !ch.is_whitespace()).collect()
-}
+use crate::support::{architecture_source as source, compact_source as compact};
 
 #[test]
 fn connection_service_depends_only_on_application_ports() {
@@ -52,30 +44,24 @@ fn connection_http_uses_precomposed_narrow_capability_state() {
 }
 
 #[test]
-fn bootstrap_owns_connection_repository_runtime_and_effects_composition() {
-    let src = source("src/bootstrap.rs");
-    let compact = compact(&src);
-    assert!(compact.contains("SqliteConnectionRepository::new(db.clone(),credentials)"));
-    assert!(compact.contains("RegistryConnectionRuntime::new("));
-    assert!(compact.contains("config.clone(),registry.clone(),"));
-    assert!(compact.contains("RuntimeConnectionEffects::new("));
-    assert!(compact.contains("transfer_manager.clone(),metadata_cache.clone(),"));
-    assert!(compact.contains("letconnection_service=ConnectionService::new("));
-    assert!(compact.contains(
+fn bootstrap_owns_connection_composition_and_concrete_lifecycle_adapters() {
+    let bootstrap = compact(&source("src/bootstrap.rs"));
+    assert!(bootstrap.contains("SqliteConnectionRepository::new(db.clone(),credentials)"));
+    assert!(bootstrap.contains("RegistryConnectionRuntime::new("));
+    assert!(bootstrap.contains("config.clone(),registry.clone(),"));
+    assert!(bootstrap.contains("RuntimeConnectionEffects::new("));
+    assert!(bootstrap.contains("transfer_manager.clone(),metadata_cache.clone(),"));
+    assert!(bootstrap.contains("letconnection_service=ConnectionService::new("));
+    assert!(bootstrap.contains(
         "connection_service.load_all_providers_from_db().await.expect(\"Failedtoloadpersistedstorageconnectionstate\")"
     ));
-    assert!(compact.contains("connections:ConnectionState::new(connection_service)"));
-}
+    assert!(bootstrap.contains("connections:ConnectionState::new(connection_service)"));
 
-#[test]
-fn runtime_and_effects_adapters_own_concrete_lifecycle_dependencies() {
     let runtime = source("src/infrastructure/connection_runtime.rs");
     let compact_runtime = compact(&runtime);
-
-    assert!(runtime.contains("ProviderFactory"));
-    assert!(runtime.contains("ProviderRegistry"));
-    assert!(runtime.contains("TransferManager"));
-    assert!(runtime.contains("MetadataCache"));
+    for expected in ["ProviderFactory", "ProviderRegistry", "TransferManager", "MetadataCache"] {
+        assert!(runtime.contains(expected), "runtime adapter missing {expected}");
+    }
     assert!(compact_runtime.contains("implConnectionRuntimeforRegistryConnectionRuntime"));
     assert!(compact_runtime.contains("implConnectionEffectsforRuntimeConnectionEffects"));
     assert!(compact_runtime.contains("validate_after_dns("));

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod architecture;
 pub mod connections;
 pub mod db;
 pub mod eventually;
@@ -8,6 +9,10 @@ pub mod sync;
 pub mod transfer;
 
 pub use app::{TestApp, TestAppBuilder};
+pub use architecture::{
+    async_function as architecture_async_function, compact as compact_source,
+    source as architecture_source, source_exists,
+};
 pub use connections::{
     event_log as connection_event_log, EventLog as ConnectionEventLog,
     RecordingConnectionEffects, RecordingConnectionRepository, RecordingConnectionRuntime,

@@ -1,33 +1,28 @@
-use std::fs;
-use std::path::PathBuf;
-
-fn source(path: &str) -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(root.join(path)).expect("source file should be readable")
-}
+use crate::support::architecture_source as source;
 
 #[test]
-fn app_state_exposes_realtime_substate() {
+fn websocket_http_uses_only_realtime_capability() {
     let state = source("src/state.rs");
     assert!(state.contains("pub struct RealtimeState"));
     assert!(state.contains("impl_from_ref!(RealtimeState, realtime)"));
     assert!(state.contains("pub(crate) realtime: RealtimeState"));
-}
 
-#[test]
-fn websocket_http_uses_only_realtime_capability() {
     let api = source("src/api/ws.rs");
     assert!(api.contains("State<RealtimeState>"));
     assert!(api.contains("ws authorization snapshot failed"));
     assert!(api.contains("ws authorization refresh failed"));
     for forbidden in [
-        "State<AppState>", "AppState", "DbPool", "EventJournal", "sqlx::", "state.db",
-        "state.event_journal", "state.runtime", "SELECT connection_id FROM permissions",
+        "State<AppState>",
+        "AppState",
+        "DbPool",
+        "EventJournal",
+        "sqlx::",
+        "state.db",
+        "state.event_journal",
+        "state.runtime",
+        "SELECT connection_id FROM permissions",
     ] {
-        assert!(
-            !api.contains(forbidden),
-            "websocket HTTP adapter leaked dependency: {forbidden}"
-        );
+        assert!(!api.contains(forbidden), "websocket HTTP adapter leaked {forbidden}");
     }
 }
 
@@ -44,28 +39,17 @@ fn realtime_service_uses_authorization_port_and_propagates_failures() {
         "pub fn is_event_authorized",
         "pub async fn replay",
     ] {
-        assert!(
-            service.contains(expected),
-            "realtime capability missing dependency or operation: {expected}"
-        );
+        assert!(service.contains(expected), "realtime capability missing {expected}");
     }
     for forbidden in ["AppState", "DbPool", "sqlx::", "unwrap_or_default()"] {
-        assert!(
-            !service.contains(forbidden),
-            "realtime service leaked concrete persistence/failure fallback: {forbidden}"
-        );
+        assert!(!service.contains(forbidden), "realtime service leaked {forbidden}");
     }
 }
 
 #[test]
-fn bootstrap_composes_realtime_once() {
+fn bootstrap_composes_realtime_capability_once() {
     let bootstrap = source("src/bootstrap.rs");
-    assert_eq!(
-        bootstrap
-            .matches("RealtimeState::new(RealtimeService::new(")
-            .count(),
-        1
-    );
+    assert_eq!(bootstrap.matches("RealtimeState::new(RealtimeService::new(").count(), 1);
     assert!(bootstrap.contains("realtime: RealtimeState::new("));
     assert!(bootstrap.contains("SqliteRealtimeAuthorization::new(db.clone())"));
 }

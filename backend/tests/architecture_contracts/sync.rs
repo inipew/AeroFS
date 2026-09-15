@@ -1,24 +1,14 @@
-use std::fs;
-use std::path::PathBuf;
-
-fn source(path: &str) -> String {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(root.join(path)).expect("source file should be readable")
-}
+use crate::support::architecture_source as source;
 
 #[test]
-fn app_state_exposes_sync_substate() {
+fn sync_http_uses_only_sync_capability() {
     let state = source("src/state.rs");
     assert!(state.contains("pub struct SyncState"));
     assert!(state.contains("impl_from_ref!(SyncState, sync)"));
     assert!(state.contains("pub(crate) sync: SyncState"));
-}
 
-#[test]
-fn sync_http_uses_only_sync_capability() {
     let api = source("src/api/sync.rs");
     assert!(api.contains("State<SyncState>"));
-
     for forbidden in [
         "State<AppState>",
         "AppState",
@@ -28,10 +18,7 @@ fn sync_http_uses_only_sync_capability() {
         "PermissionAction",
         "sqlx::",
     ] {
-        assert!(
-            !api.contains(forbidden),
-            "sync HTTP adapter leaked dependency: {forbidden}"
-        );
+        assert!(!api.contains(forbidden), "sync HTTP adapter leaked {forbidden}");
     }
 }
 
@@ -48,12 +35,8 @@ fn sync_service_owns_authorization_and_control_boundary() {
         "pub async fn list_operations",
         "pub async fn resolve_conflict",
     ] {
-        assert!(
-            service.contains(expected),
-            "sync capability missing dependency or operation: {expected}"
-        );
+        assert!(service.contains(expected), "sync capability missing {expected}");
     }
-
     for forbidden in [
         "AppState",
         "check_permission",
@@ -61,23 +44,17 @@ fn sync_service_owns_authorization_and_control_boundary() {
         "ProviderRegistry",
         "SyncManager",
     ] {
-        assert!(
-            !service.contains(forbidden),
-            "sync service leaked concrete dependency: {forbidden}"
-        );
+        assert!(!service.contains(forbidden), "sync service leaked {forbidden}");
     }
 }
 
 #[test]
-fn bootstrap_composes_sync_capability_once() {
+fn bootstrap_composes_sync_capability_and_manager_stays_behind_control_port() {
     let bootstrap = source("src/bootstrap.rs");
     assert!(bootstrap.contains("SyncState::new(SyncService::new("));
     assert!(bootstrap.contains("sync_manager"));
     assert!(bootstrap.contains("sync:"));
-}
 
-#[test]
-fn sync_manager_remains_runtime_engine_not_http_dependency() {
     let api = source("src/api/sync.rs");
     let manager = source("src/sync/manager.rs");
     let adapter = source("src/infrastructure/sync.rs");
