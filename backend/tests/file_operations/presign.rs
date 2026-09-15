@@ -9,7 +9,7 @@ use backend::{
 use crate::support::{transfer_admin_actor, TestAppBuilder};
 
 #[tokio::test]
-async fn complete_presigned_validates_existing_upload_and_missing_target() {
+async fn complete_presigned_validates_existing_upload_size_and_missing_target() {
     let app = TestAppBuilder::new()
         .running()
         .with_file("presigned-upload.bin", vec![1, 2, 3, 4, 5])
@@ -34,6 +34,22 @@ async fn complete_presigned_validates_existing_upload_and_missing_target() {
         .unwrap();
     assert_eq!(metadata.size, 5);
     assert_eq!(metadata.name, "presigned-upload.bin");
+
+    let size_mismatch = files
+        .files
+        .complete_presigned
+        .execute(
+            &actor,
+            CompletePresignedCommand {
+                connection: ConnectionId::local(),
+                path: "/presigned-upload.bin".into(),
+                expected_size: Some(999),
+                expected_checksum: None,
+            },
+        )
+        .await
+        .expect_err("size mismatch must fail presigned-upload completion");
+    assert!(matches!(size_mismatch, AppError::BadRequest(message) if message.contains("size mismatch")));
 
     let missing = files
         .files

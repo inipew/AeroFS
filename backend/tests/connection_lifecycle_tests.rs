@@ -6,5 +6,7 @@ mod api;
 mod persistence;
 #[path = "connection_lifecycle/runtime.rs"]
 mod runtime;
+#[path = "connection_lifecycle/runtime_concurrency.rs"]
+mod runtime_concurrency;
 #[path = "connection_lifecycle/service.rs"]
 mod service;
