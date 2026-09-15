@@ -14,6 +14,10 @@ mod editor;
 mod editor_permissions;
 #[path = "file_operations/preconditions.rs"]
 mod preconditions;
+#[path = "file_operations/presign.rs"]
+mod presign;
+#[path = "file_operations/provider_auth.rs"]
+mod provider_auth;
 #[path = "file_operations/staging.rs"]
 mod staging;
 #[path = "file_operations/uploads.rs"]
