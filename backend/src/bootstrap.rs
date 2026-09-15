@@ -108,7 +108,10 @@ pub async fn build_application(config: AppConfig, db: DbPool) -> BuiltApplicatio
         &runtime.task_tracker,
     )
     .await;
-    let transfer_engine = TransferEngine::new(transfer_manager.clone());
+    let transfer_engine = TransferEngine::with_shutdown(
+        transfer_manager.clone(),
+        runtime.shutdown_token.clone(),
+    );
     let upload_execution = Arc::new(TransferUploadExecution::new(
         transfer_manager.clone(),
         resource_budget.clone(),
