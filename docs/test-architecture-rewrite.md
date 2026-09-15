@@ -92,6 +92,22 @@ Legacy and replacement coverage passed together in CI #451 before any deletion. 
 
 The top-level integration-test crate count remains **42** because one legacy connection crate is replaced by one grouped connection crate; the historically named subset remains **30** because H6 still intentionally exists as an architecture suite.
 
+## Phase 6 API/authz contract migration
+
+Phase 6 separates transport contracts from authorization policy and groups them behind `api_contract_tests.rs`.
+
+- `support::http` owns user seeding, explicit permission grants, parsed login sessions, Cookie/Bearer request authentication, JSON request construction, and structured JSON response parsing.
+- `api_contract/authentication.rs` verifies invalid-credential envelopes, Cookie/Bearer principal parity, missing/expired-session behavior, logout invalidation/cookie clearing, and websocket authentication enforcement.
+- `api_contract/authorization.rs` exercises the real `SqliteAuthorization` port adapter for local fallback, explicit remote grants, read-only grants, administrator behavior, and connection-level read-only policy. It separately verifies the HTTP distinction between unauthenticated `401` and authenticated-but-forbidden `403` behavior.
+- `api_contract/http.rs` owns OpenAPI surface checks, malformed JSON, structured API fallback/405 responses, shutdown mutation fencing, security headers/HSTS, idempotency replay, and health endpoint transport contracts.
+- `api_contract/public_access.rs` verifies password-protected public-share access without conflating it with authenticated application permissions.
+
+Legacy and replacement coverage first ran together in CI #457 before cleanup. After equivalence, `share_and_auth_tests.rs` and `contract_and_error_tests.rs` were retired because their supported behavior is now represented by the grouped suite and shared TestKit.
+
+`api_tests.rs` remains intentionally for now: it still contains static asset/SPA, editor permission preservation, editable-size, preview-isolation, and other behavior whose final subsystem ownership belongs to Phase 7 or existing file-operation contracts. `phase9_http_boundary_tests.rs` also remains because it protects intentional HTTP/application architecture boundaries rather than transport behavior; it should only be replaced by a stronger architecture/compile-time mechanism, not by black-box HTTP tests.
+
+Phase 6 reduces the top-level integration-test crate count from **42 to 41**. The historically named subset remains **30**.
+
 ## Rewrite rules
 
 Every legacy test is handled with the following sequence:
@@ -178,7 +194,11 @@ The exact physical grouping can evolve during migration; behavior ownership matt
 
 ### Phase 6 — API/authz contracts
 
-Separate HTTP serialization/status contracts from application authorization behavior; centralize authenticated request fixtures and user/permission builders.
+- centralize user/session/permission/request fixtures in `support::http`
+- separate transport authentication/error/header semantics from application authorization policy
+- verify authorization against the real application port adapter instead of only exercising it indirectly through HTTP
+- validate old+new suites together before retiring duplicated auth/share/error bootstrap fixtures
+- preserve intentionally architectural HTTP boundary guards for a later compile-time architecture pass
 
 ### Phase 7 — Remaining subsystems and runtime
 
