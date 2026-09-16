@@ -10,7 +10,7 @@ async fn password_protected_share_requires_the_correct_public_credential() {
         .with_file("shared_file.txt", b"Secret shared contents".to_vec())
         .build()
         .await;
-    let admin = app.login_session("admin", "admin12345").await;
+    let admin = app.admin_session().await;
 
     let create = app
         .json_request(
