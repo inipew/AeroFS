@@ -70,6 +70,28 @@ jobs:
         with:
           workspaces: "backend -> target"
 
+      - name: Install sccache
+        run: |
+          archive="${RUNNER_TEMP}/sccache-v0.17.0.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz" \
+            --output "$archive"
+          echo "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          install -m 0755 \
+            "$RUNNER_TEMP/sccache-v0.17.0-x86_64-unknown-linux-musl/sccache" \
+            "$HOME/.cargo/bin/sccache"
+          sccache --version
+
+      - name: Configure sccache
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            core.exportVariable('SCCACHE_GHA_ENABLED', 'on');
+            core.exportVariable('RUSTC_WRAPPER', 'sccache');
+
       # Prepare lightweight stub so rust-embed compiles without running redundant frontend build
       - name: Prepare embedded frontend stub
         run: |
@@ -79,6 +101,10 @@ jobs:
       - name: Test backend
         working-directory: backend
         run: cargo test --locked
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
 
   perf-harness:
     name: Perf Harness
