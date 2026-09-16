@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 pub mod app;
 pub mod architecture;
 pub mod connections;
