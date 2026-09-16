@@ -95,7 +95,7 @@ async fn method_not_allowed_preserves_allow_and_uses_standard_error_envelope() {
 #[tokio::test]
 async fn shutdown_guard_rejects_mutations_but_keeps_logout_available() {
     let app = TestAppBuilder::new().running().build().await;
-    let session = app.login_session("admin", "admin12345").await;
+    let session = app.admin_session().await;
     app.runtime.set_phase(RuntimePhase::ShuttingDown);
 
     let rejected = app
@@ -157,7 +157,7 @@ async fn security_headers_are_global_and_https_requests_receive_hsts() {
 #[tokio::test]
 async fn idempotency_replays_the_original_mutation_response() {
     let app = TestAppBuilder::new().running().build().await;
-    let session = app.login_session("admin", "admin12345").await;
+    let session = app.admin_session().await;
     let mut headers = HeaderMap::new();
     headers.insert(
         "idempotency-key",
