@@ -1,6 +1,9 @@
 mod support;
 
-use axum::{body::Body, http::{header, Request, StatusCode}};
+use axum::{
+    body::Body,
+    http::{header, Request, StatusCode},
+};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -27,6 +30,41 @@ async fn test_database_runs_real_migrations_without_seed_data() {
         .expect("sqlx migration history must exist");
     assert!(migrations.0 > 0, "real project migrations must have run");
     assert!(database.path.exists());
+}
+
+#[tokio::test]
+async fn seeded_databases_clone_defaults_without_sharing_mutations() {
+    let first = TestDatabase::seeded("seeded-first.db").await;
+    let second = TestDatabase::seeded("seeded-second.db").await;
+
+    assert_ne!(first.path, second.path);
+
+    let first_defaults: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM users WHERE username = 'admin'), (SELECT COUNT(*) FROM connections WHERE id = 'local')",
+    )
+    .fetch_one(&first.pool)
+    .await
+    .expect("query first seeded defaults");
+    let second_defaults: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM users WHERE username = 'admin'), (SELECT COUNT(*) FROM connections WHERE id = 'local')",
+    )
+    .fetch_one(&second.pool)
+    .await
+    .expect("query second seeded defaults");
+    assert_eq!(first_defaults, (1, 1));
+    assert_eq!(second_defaults, (1, 1));
+
+    sqlx::query("UPDATE connections SET name = 'first-only' WHERE id = 'local'")
+        .execute(&first.pool)
+        .await
+        .expect("mutate first seeded fixture");
+
+    let second_local_name: (String,) =
+        sqlx::query_as("SELECT name FROM connections WHERE id = 'local'")
+            .fetch_one(&second.pool)
+            .await
+            .expect("query second local connection");
+    assert_eq!(second_local_name.0, "Local Storage");
 }
 
 #[tokio::test]
