@@ -5,7 +5,7 @@ use backend::{
         CreateDirectory, CreateDirectoryCommand, WriteFile, WriteFileCommand,
     },
     config::AppConfig,
-    domain::{Actor, Capabilities, ConnectionId, FileMetadata, VfsPath},
+    domain::{Actor, Capabilities, ConnectionId, VfsPath},
     errors::AppError,
     infrastructure::files::SqliteFileSettings,
     ports::{
