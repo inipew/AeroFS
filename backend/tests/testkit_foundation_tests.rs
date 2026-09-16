@@ -93,6 +93,21 @@ async fn test_app_builder_owns_isolated_runtime_storage_and_authenticated_router
 }
 
 #[tokio::test]
+async fn direct_session_fixture_uses_production_session_validation() {
+    let app = TestAppBuilder::new().running().build().await;
+    let session = app.admin_session().await;
+
+    let request = Request::builder()
+        .uri("/api/v1/auth/me")
+        .method("GET")
+        .header(header::COOKIE, &session.cookie)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn eventually_observes_async_convergence_instead_of_assuming_a_delay() {
     let ready = Arc::new(AtomicBool::new(false));
     let producer_ready = Arc::clone(&ready);
