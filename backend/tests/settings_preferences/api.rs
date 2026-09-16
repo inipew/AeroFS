@@ -12,8 +12,8 @@ async fn settings_require_authentication_and_only_admins_can_update() {
         .await;
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 
-    let regular = app.seed_user("settings-user", "settings-pass", false).await;
-    let session = app.login_session(&regular.username, "settings-pass").await;
+    let regular = app.seed_session_user("settings-user", false).await;
+    let session = app.session_for_user(&regular).await;
 
     let readable = app
         .json_request(
@@ -43,7 +43,7 @@ async fn settings_require_authentication_and_only_admins_can_update() {
 #[tokio::test]
 async fn admin_settings_update_persists_and_activates_new_local_root() {
     let app = TestAppBuilder::new().running().build().await;
-    let admin = app.login_session("admin", "admin12345").await;
+    let admin = app.admin_session().await;
     let new_root = app.temp.path().join("settings-root");
     std::fs::create_dir_all(&new_root).unwrap();
     std::fs::write(new_root.join("root-marker.txt"), b"active root").unwrap();
@@ -117,10 +117,10 @@ async fn admin_settings_update_persists_and_activates_new_local_root() {
 #[tokio::test]
 async fn user_preferences_round_trip_and_remain_isolated_between_users() {
     let app = TestAppBuilder::new().running().build().await;
-    let alice = app.seed_user("prefs-alice", "alice-pass", false).await;
-    let bob = app.seed_user("prefs-bob", "bob-pass", false).await;
-    let alice_session = app.login_session(&alice.username, "alice-pass").await;
-    let bob_session = app.login_session(&bob.username, "bob-pass").await;
+    let alice = app.seed_session_user("prefs-alice", false).await;
+    let bob = app.seed_session_user("prefs-bob", false).await;
+    let alice_session = app.session_for_user(&alice).await;
+    let bob_session = app.session_for_user(&bob).await;
 
     let anonymous = app
         .json_request(

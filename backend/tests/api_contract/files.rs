@@ -10,7 +10,7 @@ use crate::support::TestAppBuilder;
 #[tokio::test]
 async fn file_crud_preserves_conflict_envelope_and_listing_contract() {
     let app = TestAppBuilder::new().running().build().await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
 
     let mkdir = app
         .router
@@ -95,7 +95,7 @@ async fn file_crud_preserves_conflict_envelope_and_listing_contract() {
 #[tokio::test]
 async fn oversized_editor_write_returns_payload_too_large() {
     let app = TestAppBuilder::new().running().build().await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
 
     let created = app
         .router
@@ -143,7 +143,7 @@ async fn editor_preview_content_is_isolated_by_security_headers() {
         .with_file("vector.svg", b"<svg><script>alert(1)</script></svg>".to_vec())
         .build()
         .await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
 
     let response = app
         .router

@@ -27,7 +27,7 @@ async fn seed_remote_connection(app: &crate::support::TestApp, id: &str, read_on
 #[tokio::test]
 async fn authorization_policy_distinguishes_local_fallback_remote_grants_and_read_only() {
     let app = TestAppBuilder::new().running().build().await;
-    let regular = app.seed_user("policy-user", "policy-pass", false).await;
+    let regular = app.seed_session_user("policy-user", false).await;
     let authorization = SqliteAuthorization::new(app.db.clone());
     let actor = Actor {
         id: regular.id.clone(),
@@ -121,8 +121,8 @@ async fn http_distinguishes_unauthenticated_from_authenticated_but_forbidden() {
     assert_eq!(anonymous["error"]["code"], "SESSION_EXPIRED");
     assert_eq!(anonymous["error"]["category"], "authentication");
 
-    let regular = app.seed_user("regular-http", "regular-pass", false).await;
-    let session = app.login_session(&regular.username, "regular-pass").await;
+    let regular = app.seed_session_user("regular-http", false).await;
+    let session = app.session_for_user(&regular).await;
     let forbidden = app
         .json_request(
             Method::POST,
@@ -144,8 +144,8 @@ async fn authenticated_regular_user_can_use_documented_local_permission_fallback
         .with_file("visible.txt", b"visible".to_vec())
         .build()
         .await;
-    let user = app.seed_user("local-user", "local-pass", false).await;
-    let session = app.login_session(&user.username, "local-pass").await;
+    let user = app.seed_session_user("local-user", false).await;
+    let session = app.session_for_user(&user).await;
 
     let response = app
         .json_request(
