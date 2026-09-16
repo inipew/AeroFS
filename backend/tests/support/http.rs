@@ -3,11 +3,13 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode},
 };
-use backend::auth::hash_password;
+use backend::auth::{create_session, hash_password};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
+
+const FIXTURE_SESSION_TTL_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct TestUser {
@@ -77,8 +79,29 @@ impl PermissionGrant {
 
 impl TestApp {
     pub async fn seed_user(&self, username: &str, password: &str, is_admin: bool) -> TestUser {
-        let id = Uuid::new_v4().to_string();
         let password_hash = hash_password(password).expect("hash fixture password");
+        self.insert_fixture_user(username, password_hash, is_admin).await
+    }
+
+    /// Seed a user for tests that exercise authorization/session behavior rather than
+    /// password hashing. Reuse the already-valid seeded admin hash so the fixture row
+    /// remains structurally production-realistic without paying another Argon2 hash.
+    pub async fn seed_session_user(&self, username: &str, is_admin: bool) -> TestUser {
+        let password_hash: String =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE username = 'admin'")
+                .fetch_one(&self.db)
+                .await
+                .expect("seeded admin password hash must exist");
+        self.insert_fixture_user(username, password_hash, is_admin).await
+    }
+
+    async fn insert_fixture_user(
+        &self,
+        username: &str,
+        password_hash: String,
+        is_admin: bool,
+    ) -> TestUser {
+        let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO users (id, username, password_hash, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -124,6 +147,8 @@ impl TestApp {
         .expect("upsert fixture permissions");
     }
 
+    /// Exercise the real login endpoint, including password verification and response
+    /// cookie attributes. Keep this for authentication-specific tests.
     pub async fn login_session(&self, username: &str, password: &str) -> TestSession {
         let response = self
             .json_request(
@@ -161,6 +186,39 @@ impl TestApp {
             token,
             set_cookie,
         }
+    }
+
+    /// Create a production session row directly for tests whose subject is downstream
+    /// authorization or request behavior rather than password authentication.
+    pub async fn session_for_user(&self, user: &TestUser) -> TestSession {
+        let token = create_session(&self.db, &user.id, FIXTURE_SESSION_TTL_SECS)
+            .await
+            .expect("create fixture session");
+        let cookie = format!("session_id={token}");
+        TestSession {
+            set_cookie: cookie.clone(),
+            cookie,
+            token,
+        }
+    }
+
+    pub async fn admin_session(&self) -> TestSession {
+        let (id, username, is_admin): (String, String, i64) = sqlx::query_as(
+            "SELECT id, username, is_admin FROM users WHERE username = 'admin'",
+        )
+        .fetch_one(&self.db)
+        .await
+        .expect("seeded admin must exist");
+        self.session_for_user(&TestUser {
+            id,
+            username,
+            is_admin: is_admin != 0,
+        })
+        .await
+    }
+
+    pub async fn admin_cookie(&self) -> String {
+        self.admin_session().await.cookie
     }
 
     pub async fn json_request(
