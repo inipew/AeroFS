@@ -23,7 +23,7 @@ async fn search_requires_authentication_and_returns_recursive_matches() {
         .await;
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 
-    let admin = app.login_session("admin", "admin12345").await;
+    let admin = app.admin_session().await;
     let response = app
         .json_request(
             Method::GET,
@@ -56,7 +56,7 @@ async fn search_honors_path_depth_regex_and_limit_parameters() {
         .with_file("documents/deep/notes.md", b"notes".to_vec())
         .build()
         .await;
-    let admin = app.login_session("admin", "admin12345").await;
+    let admin = app.admin_session().await;
 
     let shallow = app
         .json_request(
@@ -103,7 +103,7 @@ async fn search_honors_path_depth_regex_and_limit_parameters() {
 #[tokio::test]
 async fn search_rejects_malformed_connection_id_with_structured_bad_request() {
     let app = TestAppBuilder::new().running().build().await;
-    let admin = app.login_session("admin", "admin12345").await;
+    let admin = app.admin_session().await;
     let invalid_connection = "x".repeat(129);
     let uri = format!(
         "/api/v1/connections/{invalid_connection}/search?query=report"
