@@ -14,7 +14,7 @@ async fn json_body(response: axum::response::Response) -> Value {
 #[tokio::test]
 async fn admin_can_create_list_get_and_delete_remote_connection_without_exposing_secret() {
     let app = TestAppBuilder::new().running().build().await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
 
     let create = app
         .router
@@ -123,7 +123,7 @@ async fn admin_can_create_list_get_and_delete_remote_connection_without_exposing
 #[tokio::test]
 async fn sftp_connection_kind_round_trips_through_http_detail_contract() {
     let app = TestAppBuilder::new().running().build().await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
     let create = app
         .router
         .clone()
@@ -176,7 +176,7 @@ async fn sftp_connection_kind_round_trips_through_http_detail_contract() {
 #[tokio::test]
 async fn local_connection_test_endpoint_is_immediate_and_successful() {
     let app = TestAppBuilder::new().running().build().await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
     let response = app
         .router
         .clone()
