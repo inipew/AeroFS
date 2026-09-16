@@ -64,7 +64,7 @@ async fn transfer_submission_idempotency_replays_the_original_job() {
         .with_file("source.txt", b"idempotent transfer payload".to_vec())
         .build()
         .await;
-    let cookie = app.login_admin().await;
+    let cookie = app.admin_cookie().await;
     let body = json!({
         "name": "idempotent transfer",
         "transfer_type": "copy",
